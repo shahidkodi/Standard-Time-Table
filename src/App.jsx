@@ -1785,7 +1785,7 @@ function openPrint(title, css, bodyHtml) {
   w.document.close();
 }
 
-var GRID_CSS = "@page{size:A4 landscape;margin:10mm} body{font-family:Arial,Helvetica,sans-serif;color:#111;margin:0} .page{page-break-after:always;padding:6px} .page:last-child{page-break-after:auto} h2{font-size:16px;margin:0 0 2px} .sub{font-size:11px;color:#555;margin:0 0 8px} table{border-collapse:collapse;width:100%} th,td{border:1px solid #444;padding:6px 4px;text-align:center;font-size:11px} th{background:#e8e8e8} .t{font-weight:bold} .s{color:#555;font-size:10px}";
+var GRID_CSS = "@page{size:A4 landscape;margin:1cm} html,body{margin:0;height:100%} .page{page-break-after:always;height:190mm;box-sizing:border-box;display:flex;flex-direction:column} .page:last-child{page-break-after:auto} h2{font-size:20px;margin:0 0 4px;text-align:center} .sub{font-size:13px;color:#333;margin:0 0 8px;text-align:center} table{border-collapse:collapse;width:100%;height:100%;table-layout:fixed;flex:1;border:2px solid #111} th,td{border:1px solid #333;text-align:center;padding:3px;font-size:14px} tr>*:first-child{width:64px;font-weight:700} th{background:#e6e6e6;font-weight:700} td .t{font-weight:800;font-size:16px} td .s{color:#444;font-size:12px}";
 
 function gridHead(cfg) {
   var head = "<tr><th>Day / Period</th>";
@@ -1838,7 +1838,7 @@ function exportTeachersPDF(cfg) {
 }
 
 function exportFreeReportPDF(cfg) {
-  var css = "@page{size:A4 portrait;margin:12mm} body{font-family:Arial,Helvetica,sans-serif;color:#111} h2{font-size:16px;margin:0 0 10px} table{border-collapse:collapse;width:100%} th,td{border:1px solid #444;padding:5px 6px;text-align:center;font-size:11px} th{background:#e8e8e8}";
+  var css = "@page{size:A4 portrait;margin:1cm} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#111} h2{font-size:20px;margin:0 0 12px;text-align:center} table{border-collapse:collapse;width:100%;border:2px solid #111} th,td{border:1px solid #333;padding:8px 9px;text-align:center;font-size:13.5px} th{background:#e6e6e6;font-weight:700} td:first-child,th:first-child{text-align:left}";
   var head = "<tr><th style='text-align:left'>Teacher</th>";
   for (var di = 0; di < cfg.days.length; di++) head += "<th>" + esc(DAY_FULL[cfg.days[di]].slice(0, 3)) + "</th>";
   head += "<th>Total free</th></tr>";
