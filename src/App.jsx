@@ -105,9 +105,9 @@ function autoSchedule(cfg, mode = "all", onlyClass = null) {
       frozen.add(c + "|" + di + "|" + p);
       if (mode === "all") { const slot = cfg.grid[c][day] && cfg.grid[c][day][p]; if (slot && slot[0]) { grid[c][di][p] = [slot[0], slot[1]]; tOf(slot[0]).forEach((t) => tbusy[di][p].add(t)); mark(c, slot[1], di, p); } }
     }
-    const free = (c, d, p) => !grid[c][d][p][0] && !frozen.has(c + "|" + d + "|" + p);
+    const free = (c, d, p) => grid[c] ? (!grid[c][d][p][0] && !frozen.has(c + "|" + d + "|" + p)) : false;
     const tFree = (toks, d, p) => toks.every((t) => !tbusy[d][p].has(t));
-    const book = (c, d, p, code, sub) => { grid[c][d][p] = [code, sub]; tOf(code).forEach((t) => tbusy[d][p].add(t)); mark(c, sub, d, p); };
+    const book = (c, d, p, code, sub) => { if (!grid[c]) return; grid[c][d][p] = [code, sub]; tOf(code).forEach((t) => tbusy[d][p].add(t)); mark(c, sub, d, p); };
     const unbook = (c, d, p) => { const cur = grid[c][d][p]; const code = cur[0], sub = cur[1]; if (!code) return; tOf(code).forEach((t) => tbusy[d][p].delete(t)); if (subDay[`${c}|${sub}|${d}`]) subDay[`${c}|${sub}|${d}`]--; if (subPer[`${c}|${sub}|${p}`]) subPer[`${c}|${sub}|${p}`]--; grid[c][d][p] = [null, null]; };
     const okSoft = (c, sub, d, p) => { const lim = twiceOK(c, sub) ? 2 : 1; if ((subDay[`${c}|${sub}|${d}`] || 0) >= lim) return false; if (R(sub).distinct && subPer[`${c}|${sub}|${p}`]) return false; return true; };
     const slots = () => { const s = []; for (let d = 0; d < D; d++) for (let p = 0; p < P; p++) s.push([d, p]); return s; };
@@ -137,23 +137,26 @@ function autoSchedule(cfg, mode = "all", onlyClass = null) {
     placeFixed(mode === "all" ? cfg.classes : [onlyClass]);
 
     if (mode === "all" && (cfg.combined || []).length) {
-      // Parallel language block: place EVERY language session at the SAME period-slots, so the
-      // shared language teachers each teach one pooled group per slot (not serialised across the week).
-      const need = Math.max(...cfg.combined.map((sx) => pf(sx.divisions[0] || cfg.classes[0], sx.sub)));
-      const combT = new Set(); cfg.combined.forEach((sx) => sx.teachers.forEach((t) => singles.has(t) && combT.add(t)));
-      const combSub = cfg.combined[0].sub;
-      let placed = 0; const usedD = new Set();
-      for (const d of shuf([...Array(D).keys()], r)) {
-        if (placed >= need) break; if (usedD.has(d)) continue;
-        for (const p of shuf([...Array(P).keys()], r)) {
-          if (!allowed(combSub, p)) continue;
-          let ok = true;
-          for (const t of combT) if (tbusy[d][p].has(t)) { ok = false; break; }
-          if (ok) for (const sx of cfg.combined) { for (const c of sx.divisions) if (!free(c, d, p) || !okSoft(c, sx.sub, d, p)) { ok = false; break; } if (!ok) break; }
-          if (ok) { for (const sx of cfg.combined) for (const c of sx.divisions) book(c, d, p, sx.name, sx.sub); placed++; usedD.add(d); break; }
+      // Combined-session blocks, grouped by subject (LAN, PET, ...): each subject's sessions are
+      // co-scheduled at the same period-slots so their shared teachers teach one pooled group per slot.
+      const bySub = {}; for (const sx of cfg.combined) (bySub[sx.sub] || (bySub[sx.sub] = [])).push(sx);
+      for (const sub in bySub) {
+        const sessions = bySub[sub];
+        const need = Math.max(...sessions.map((sx) => pf(sx.divisions[0] || cfg.classes[0], sx.sub)));
+        const combT = new Set(); sessions.forEach((sx) => sx.teachers.forEach((t) => singles.has(t) && combT.add(t)));
+        let placed = 0; const usedD = new Set();
+        for (const d of shuf([...Array(D).keys()], r)) {
+          if (placed >= need) break; if (usedD.has(d)) continue;
+          for (const p of shuf([...Array(P).keys()], r)) {
+            if (!allowed(sub, p)) continue;
+            let ok = true;
+            for (const t of combT) if (tbusy[d][p].has(t)) { ok = false; break; }
+            if (ok) for (const sx of sessions) { for (const c of sx.divisions) if (!grid[c] || !free(c, d, p) || !okSoft(c, sx.sub, d, p)) { ok = false; break; } if (!ok) break; }
+            if (ok) { for (const sx of sessions) for (const c of sx.divisions) if (grid[c]) book(c, d, p, sx.name, sx.sub); placed++; usedD.add(d); break; }
+          }
         }
+        unplaced += Math.max(0, need - placed) * sessions.reduce((a, sx) => a + sx.divisions.length, 0);
       }
-      unplaced += Math.max(0, need - placed) * cfg.combined.reduce((a, sx) => a + sx.divisions.length, 0);
     }
 
     const targets = mode === "class" ? [onlyClass] : cfg.classes;
@@ -192,7 +195,11 @@ function autoSchedule(cfg, mode = "all", onlyClass = null) {
         const oc = occ[0], os = occ[1], otoks = tOf(oc);
         unbook(l.c, d, p);
         let moved = null;
-        for (const [d2, p2] of shuf(slots(), r)) { if (d2 === d && p2 === p) continue; if (allowed(os, p2) && free(l.c, d2, p2) && tFree(otoks, d2, p2) && okSoft(l.c, os, d2, p2)) { book(l.c, d2, p2, oc, os); moved = [d2, p2]; break; } }
+        const relCand = [];
+        for (let pp = p + 1; pp < P; pp++) relCand.push([d, pp]);
+        for (let pp = 0; pp < p; pp++) relCand.push([d, pp]);
+        for (const dd of shuf([...Array(D).keys()], r)) if (dd !== d) for (let pp = 0; pp < P; pp++) relCand.push([dd, pp]);
+        for (const [d2, p2] of relCand) { if (allowed(os, p2) && free(l.c, d2, p2) && tFree(otoks, d2, p2) && okSoft(l.c, os, d2, p2)) { book(l.c, d2, p2, oc, os); moved = [d2, p2]; break; } }
         if (moved && free(l.c, d, p) && tFree(toks, d, p) && okSoft(l.c, l.sub, d, p)) { book(l.c, d, p, l.teacher, l.sub); fixed = true; break; }
         else { if (moved) unbook(l.c, moved[0], moved[1]); book(l.c, d, p, oc, os); }
       }
@@ -915,22 +922,26 @@ function EditView({ cfg, cls, update, expand, clashTokens, occupancy, ask }) {
   const genAll = () => ask("Auto-generate a fresh, clash-free timetable for the whole school from the B-Key? This replaces every current assignment.", () => {
     setReport("Generating… this can take a few seconds.");
     setTimeout(() => {
-      const res = autoSchedule(cfg, "all");
-      update((n) => { n.grid = res.grid; });
-      setReport(res.unplaced === 0 ? "Generated a complete clash-free timetable for all classes." : `Generated. ${res.unplaced} period(s) couldn't be placed — open Analysis to see which teacher/subject is short.`);
+      try {
+        const res = autoSchedule(cfg, "all");
+        update((n) => { n.grid = res.grid; });
+        setReport(res.unplaced === 0 ? "Generated a complete clash-free timetable for all classes." : `Generated. ${res.unplaced} period(s) couldn't be placed — open Analysis to see which teacher/subject is short.`);
+      } catch (e) { setReport("Couldn't generate: " + ((e && e.message) || e) + ". A rule/language-session may reference a class or teacher that no longer exists — check Classes & setup, or try 'Fill remaining'."); }
     }, 60);
   });
   const genFillAll = () => {
     setReport("Filling remaining slots…");
     setTimeout(() => {
-      const res = autoSchedule(cfg, "gaps");
-      update((n) => { n.grid = res.grid; });
-      setReport(res.unplaced === 0 ? "Filled all remaining empty slots — your rules, language block and locks were kept." : `Filled the remaining slots. ${res.unplaced} period(s) still can't fit — open Analysis to see why.`);
+      try {
+        const res = autoSchedule(cfg, "gaps");
+        update((n) => { n.grid = res.grid; });
+        setReport(res.unplaced === 0 ? "Filled all remaining empty slots — your rules, language block and locks were kept." : `Filled the remaining slots. ${res.unplaced} period(s) still can't fit — open Analysis to see why.`);
+      } catch (e) { setReport("Couldn't fill: " + ((e && e.message) || e) + ". Check Classes & setup for a removed class/teacher still referenced by a rule or language session."); }
     }, 60);
   };
   const fillClass = () => {
     setReport(`Filling ${cls}…`);
-    setTimeout(() => { const res = autoSchedule(cfg, "class", cls); update((n) => { n.grid = res.grid; }); setReport(`Filled empty slots for ${cls} around the existing timetable.`); }, 60);
+    setTimeout(() => { try { const res = autoSchedule(cfg, "class", cls); update((n) => { n.grid = res.grid; }); setReport(`Filled empty slots for ${cls} around the existing timetable.`); } catch (e) { setReport("Couldn't fill " + cls + ": " + ((e && e.message) || e)); } }, 60);
   };
   const clearClass = () => ask(`Clear the entire timetable for ${cls}?`, () => { update((n) => { for (const d of n.days) n.grid[cls][d] = emptyDay(); }); setReport(`Cleared ${cls}.`); });
   const clearAllTT = () => ask("Clear EVERY class's timetable and start completely blank? All locks are also removed.", () => { update((n) => { for (const c of n.classes) for (const d of n.days) n.grid[c][d] = emptyDay(); n.locked = {}; }); setReport("All timetables cleared — everything is blank."); });
