@@ -704,15 +704,27 @@ function FreeView({ cfg, occupancy, fday, setFday, fper, setFper, mobile }) {
 function parseBKeyRows(arr) {
   const clean = (arr || []).filter((r) => r && r.some((x) => String(x == null ? "" : x).trim() !== ""));
   if (!clean.length) return [];
+  const cell = (r, k) => String((k >= 0 && r[k] != null) ? r[k] : "").trim();
   const hdr = clean[0].map((x) => String(x == null ? "" : x).trim().toLowerCase());
-  let ci = hdr.indexOf("class"), si = hdr.indexOf("subject"), ti = hdr.indexOf("teacher"), start = 0;
-  if (ci >= 0 && si >= 0) start = 1; else { ci = 0; si = 1; ti = 2; }
+  let ci = hdr.indexOf("class"), di = hdr.indexOf("division"), si = hdr.indexOf("subject"), ti = hdr.indexOf("teacher");
+  let start = 0;
+  const hasHeader = ci >= 0 || si >= 0 || ti >= 0 || di >= 0;
+  if (hasHeader) {
+    start = 1;
+    if (ci < 0) ci = 0;
+    if (si < 0) si = di >= 0 ? 2 : 1;
+    if (ti < 0) ti = di >= 0 ? 3 : 2;
+  } else {
+    // positional: column 1 = Class (with division), 2 = Subject, 3 = Teacher
+    ci = 0; si = 1; ti = 2; di = -1;
+  }
   const out = [];
   for (let i = start; i < clean.length; i++) {
     const r = clean[i];
-    const cls = String(r[ci] == null ? "" : r[ci]).trim();
-    const sub = String(r[si] == null ? "" : r[si]).trim().toUpperCase();
-    const teacher = String((ti >= 0 ? r[ti] : "") == null ? "" : r[ti]).trim();
+    let cls = cell(r, ci);
+    if (di >= 0) { const dv = cell(r, di); if (dv) cls = (cls + " " + dv).trim(); }
+    const sub = cell(r, si).toUpperCase();
+    const teacher = cell(r, ti);
     if (cls && sub) out.push({ cls, sub, teacher });
   }
   return out;
