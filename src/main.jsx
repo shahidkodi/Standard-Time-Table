@@ -47,7 +47,7 @@ const THEMES = {
 const TABS = [
   ["classes", "Class timetables"], ["teachers", "Teacher timetables"], ["free", "Free & substitution"],
   ["bkey", "B-Key & teacher load"], ["edit", "Assign timetable"], ["rules", "Scheduling rules"],
-  ["combined", "Language sessions"], ["analysis", "Analysis & checks"], ["assistant", "AI assistant"], ["setup", "Classes & setup"],
+  ["combined", "Combined subjects"], ["analysis", "Analysis & checks"], ["assistant", "AI assistant"], ["setup", "Classes & setup"],
 ];
 
 function useIsMobile(q = "(max-width: 760px)") {
@@ -81,6 +81,8 @@ function autoSchedule(cfg, mode = "all", onlyClass = null) {
   const pf = (c, sub) => Number(cfg.stdPeriods?.[stdOf(c)]?.[sub]) || 0;
   const D = cfg.days.length, P = cfg.periods.length;
   const RULES = cfg.rules || {};
+  const coveredBySession = new Set();
+  for (const sx of (cfg.combined || [])) for (const c of sx.divisions) coveredBySession.add(c + "|" + sx.sub);
   const R = (sub) => RULES[sub] || {};
   const twiceOK = (c, sub) => !!(cfg.twice && cfg.twice[stdOf(c)] && cfg.twice[stdOf(c)][sub]);
   const allowed = (sub, p) => { const r = R(sub); if (r.pin && r.pin !== p + 1) return false; if (r.forbid && r.forbid.includes(p + 1)) return false; return true; };
@@ -165,6 +167,7 @@ function autoSchedule(cfg, mode = "all", onlyClass = null) {
     let lessons = [];
     for (const c of targets) for (const row of cfg.bkey[c] || []) {
       if (isC(row.teacher)) continue;
+      if (coveredBySession.has(c + "|" + row.sub)) continue;
       let already = 0; for (let d = 0; d < D; d++) for (let p = 0; p < P; p++) if (grid[c][d][p][0] === row.teacher && grid[c][d][p][1] === row.sub) already++;
       for (let k = already; k < pf(c, row.sub); k++) lessons.push({ c, sub: row.sub, teacher: row.teacher });
     }
@@ -786,7 +789,7 @@ function BKeyView({ cfg, cls, update, expand, teacherLoad, mobile }) {
                   <td style={{ ...cellTd, height: 40, padding: 5 }}>
                     <select className="tt-sel" value={r.teacher} onChange={(e) => setRow(i, "teacher", e.target.value)}>
                       <optgroup label="Teachers">{cfg.singles.map((t) => <option key={t}>{t}</option>)}</optgroup>
-                      {combinedNames.length > 0 && <optgroup label="Language sessions">{combinedNames.map((t) => <option key={t}>{t}</option>)}</optgroup>}
+                      {combinedNames.length > 0 && <optgroup label="Combined subjects">{combinedNames.map((t) => <option key={t}>{t}</option>)}</optgroup>}
                     </select>
                   </td>
                   <td style={{ ...cellTd, height: 40 }}>
@@ -1217,7 +1220,7 @@ function buildContext(cfg, teacherLoad) {
   L.push(`Classes: ${cfg.classes.join(", ")}.`);
   L.push(`Subjects: ${cfg.subjects.join(", ")}.`);
   L.push(`Standard periods/week: ` + standardsOf(cfg).map((s) => `Std ${s} {` + cfg.subjects.filter((su) => cfg.stdPeriods?.[s]?.[su]).map((su) => `${su}:${cfg.stdPeriods[s][su]}`).join(",") + `}`).join("; "));
-  if ((cfg.combined || []).length) L.push(`Language (parallel) sessions: ` + cfg.combined.map((s) => `${s.name} [teachers ${s.teachers.join("/")}; divisions ${s.divisions.join("/")}]`).join("; "));
+  if ((cfg.combined || []).length) L.push(`Combined (parallel) subjects: ` + cfg.combined.map((s) => `${s.name} [teachers ${s.teachers.join("/")}; divisions ${s.divisions.join("/")}]`).join("; "));
   const rl = Object.entries(cfg.rules || {}).filter(([, v]) => v && Object.keys(v).length);
   if (rl.length) L.push(`Scheduling rules: ` + rl.map(([s, v]) => `${s}{${[v.pin ? "pin P" + v.pin : "", v.forbid?.length ? "never P" + v.forbid.join("/P") : "", v.band ? v.band : "", v.distinct ? "distinct-periods" : ""].filter(Boolean).join(",")}}`).join("; "));
   const crl = Object.entries(cfg.classRules || {}).filter(([, v]) => v && Object.keys(v).length);
@@ -1338,7 +1341,7 @@ function CombinedView({ cfg, update, ask, mobile, occupancy }) {
 
   return (
     <div>
-      <ViewHeader title="Language sessions" note="Define a parallel session once — its teachers and the divisions that merge for it. Placing it fills every division at once, and those teachers never clash with each other during it." />
+      <ViewHeader title="Combined subjects" note="Define a combined/parallel subject once (language, PET, etc.) — its teachers and the divisions that merge for it. Placing it fills every division at once, and those teachers never clash with each other during it. Member divisions get this subject from the block, so you don’t also key it normally." />
       <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "210px minmax(0,1fr)", gap: 16, alignItems: "start" }}>
         <div style={card}>
           <Panelhead text="Sessions" count={sessions.length} />
@@ -1398,7 +1401,7 @@ function CombinedView({ cfg, update, ask, mobile, occupancy }) {
               <div style={{ padding: "0 14px 12px", fontSize: 12, color: C.sub, lineHeight: 1.6 }}>“running” = placed for all {s.divisions.length} member division{s.divisions.length === 1 ? "" : "s"}. A <b style={{ color: C.clash }}>⚠ red</b> slot means one of this session’s teachers is already taking a regular class that period (a real clash) — avoid it. An <b style={{ color: C.warn }}>amber +</b> means placing will overwrite another subject in some division.</div>
             </div>
           </div>
-        ) : <div style={{ ...card, padding: 24, color: C.sub }}>No language sessions yet. Create one to merge divisions for a parallel language period.</div>}
+        ) : <div style={{ ...card, padding: 24, color: C.sub }}>No combined subjects yet. Create one to merge divisions for a parallel period (language, PET, etc.).</div>}
       </div>
     </div>
   );
