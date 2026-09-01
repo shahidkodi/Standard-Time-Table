@@ -920,6 +920,14 @@ function EditView({ cfg, cls, update, expand, clashTokens, occupancy, ask }) {
       setReport(res.unplaced === 0 ? "Generated a complete clash-free timetable for all classes." : `Generated. ${res.unplaced} period(s) couldn't be placed — open Analysis to see which teacher/subject is short.`);
     }, 60);
   });
+  const genFillAll = () => {
+    setReport("Filling remaining slots…");
+    setTimeout(() => {
+      const res = autoSchedule(cfg, "gaps");
+      update((n) => { n.grid = res.grid; });
+      setReport(res.unplaced === 0 ? "Filled all remaining empty slots — your rules, language block and locks were kept." : `Filled the remaining slots. ${res.unplaced} period(s) still can't fit — open Analysis to see why.`);
+    }, 60);
+  };
   const fillClass = () => {
     setReport(`Filling ${cls}…`);
     setTimeout(() => { const res = autoSchedule(cfg, "class", cls); update((n) => { n.grid = res.grid; }); setReport(`Filled empty slots for ${cls} around the existing timetable.`); }, 60);
@@ -942,10 +950,11 @@ function EditView({ cfg, cls, update, expand, clashTokens, occupancy, ask }) {
   return (
     <div>
       <ViewHeader title={`Assign timetable · Class ${cls}`} note="Each slot offers only this class's B-Key subjects. Picking one sets the teacher automatically." right={<>
+        <button className="tt-btn" onClick={genFillAll} style={solidBtn}>Fill remaining (all)</button>
         <button className="tt-btn" onClick={fillClass} style={ghostBtn}>Auto-fill {cls}</button>
         <button className="tt-btn" onClick={clearClass} style={ghostBtn}>Clear {cls}</button>
         <button className="tt-btn" onClick={clearAllTT} style={{ ...ghostBtn, color: C.clash }}>Clear all</button>
-        <button className="tt-btn" onClick={genAll} style={solidBtn}>Auto-generate all</button>
+        <button className="tt-btn" onClick={genAll} style={ghostBtn}>Regenerate (replace all)</button>
       </>} />
       {report && <Banner tone="primary">{report}</Banner>}
       <Banner tone="warn">Tap the 🔓 on any slot to lock it. Locked slots (filled or empty) are kept exactly as they are when you Auto-generate — an empty locked slot stays blank (frozen for assembly, activities, etc.). Use “Clear all” to start blank.</Banner>
