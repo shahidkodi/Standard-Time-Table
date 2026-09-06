@@ -1954,7 +1954,7 @@ function exportFreeSlotsPDF(cfg, paper) {
 }
 
 function miniGridPages(cfg, items, per, cols, title, cellFor) {
-  var css = "@page{size:A3 landscape;margin:8mm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#111} .sheet{height:281mm;display:flex;flex-direction:column;page-break-after:always;box-sizing:border-box} .sheet:last-child{page-break-after:auto} h2{font-size:15px;text-align:center;margin:0 0 4px;color:#0a4f55} .grid{flex:1;display:grid;grid-template-columns:repeat(" + cols + ",1fr);grid-auto-rows:1fr;gap:4px} .mini{border:1px solid #0e6b73;display:flex;flex-direction:column;overflow:hidden} .mh{background:#0e6b73;color:#fff;font-weight:800;font-size:9px;text-align:center;padding:2px} table{border-collapse:collapse;width:100%;flex:1;table-layout:fixed} td,th{border:1px solid #b9c9c9;font-size:6.5px;text-align:center;padding:0;line-height:1.05} th{background:#e1f0f0;font-weight:700}";
+  var css = "@page{size:A3 landscape;margin:8mm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#111} h2{font-size:16px;text-align:center;margin:2px 0 10px;color:#0a4f55} .grid{display:grid;grid-template-columns:repeat(" + cols + ",1fr);gap:8px} .mini{border:1px solid #0e6b73;break-inside:avoid;page-break-inside:avoid} .mh{background:#0e6b73;color:#fff;font-weight:800;font-size:11px;text-align:center;padding:3px} table{border-collapse:collapse;width:100%;table-layout:fixed} td,th{border:1px solid #b9c9c9;font-size:9px;text-align:center;padding:2px 1px;line-height:1.15} th{background:#e1f0f0;font-weight:700}";
   var head = "<tr><th></th>"; for (var p = 0; p < cfg.periods.length; p++) head += "<th>" + cfg.periods[p] + "</th>"; head += "</tr>";
   var sheets = "";
   for (var start = 0; start < items.length; start += per) {
@@ -1968,9 +1968,9 @@ function miniGridPages(cfg, items, per, cols, title, cellFor) {
       }
       minis += "<div class=mini><div class=mh>" + esc(it) + "</div><table><thead>" + head + "</thead><tbody>" + body + "</tbody></table></div>";
     }
-    sheets += "<div class=sheet><h2>" + esc(cfg.school) + " - " + title + "</h2><div class=grid>" + minis + "</div></div>";
+    sheets += minis;
   }
-  return { css: css, body: sheets };
+  return { css: css, body: "<h2>" + esc(cfg.school) + " - " + title + "</h2><div class=grid>" + sheets + "</div>" };
 }
 
 function exportClassesOverviewPDF(cfg) {
