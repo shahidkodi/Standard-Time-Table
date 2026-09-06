@@ -62,7 +62,7 @@ function useIsMobile(q = "(max-width: 760px)") {
   return m;
 }
 
-const emptyDay = () => Array.from({ length: 8 }, () => [null, null]);
+const emptyDay = (p) => Array.from({ length: p || 8 }, () => [null, null]);
 const clone = (o) => JSON.parse(JSON.stringify(o));
 const stdOf = (cls) => String(cls).split(" ")[0];
 const baseName = (code) => (code ? code.replace(/ \d+$/, "") : code);
@@ -306,7 +306,7 @@ export default function App() {
     for (const day of cfg.days) {
       occ[day] = cfg.periods.map(() => ({ tok: new Map(), sessions: new Map() }));
       for (const cn of cfg.classes) {
-        (cfg.grid[cn]?.[day] || emptyDay()).forEach((slot, p) => {
+        (cfg.grid[cn]?.[day] || emptyDay(cfg.periods.length)).forEach((slot, p) => {
           const code = slot[0]; if (!code) return;
           const comb = isCombined(code); const base = baseName(code);
           if (comb) { if (!occ[day][p].sessions.has(base)) occ[day][p].sessions.set(base, new Set()); occ[day][p].sessions.get(base).add(cn); }
@@ -393,11 +393,11 @@ export default function App() {
         <div style={{ width: 40, height: 40, borderRadius: 11, background: "rgba(255,255,255,.16)", border: "1px solid rgba(255,255,255,.25)", color: "#fff", display: "grid", placeItems: "center", fontWeight: 800, fontSize: 16, letterSpacing: -0.5 }}>TT</div>
         <div style={{ marginRight: "auto" }}>
           <div style={{ fontSize: 16.5, fontWeight: 800, letterSpacing: -0.3 }}>{cfg.school}</div>
-          {!mobile && <div style={{ fontSize: 12, color: "rgba(255,255,255,.8)", marginTop: 1, fontWeight: 500 }}>Timetable Manager · {cfg.classes.length} classes · {cfg.singles.length} teachers · {cfg.days.length} days</div>}
+          {!mobile && <div style={{ fontSize: 12, color: "rgba(255,255,255,.8)", marginTop: 1, fontWeight: 500 }}>Standard Timetable Manager · {cfg.classes.length} classes · {cfg.singles.length} teachers · {cfg.days.length} days</div>}
         </div>
         <ClashBadge n={totalClashes} />
         <span style={{ fontSize: 12, color: "rgba(255,255,255,.85)", minWidth: 56, textAlign: "right", fontWeight: 500 }}>{saved}</span>
-        <button className="tt-btn" onClick={() => ask("Reset — clear ALL class timetables to blank? Your B-Key, classes, teachers and rules are kept.", () => update((n) => { for (const c of n.classes) for (const d of n.days) n.grid[c][d] = emptyDay(); n.locked = {}; }))} style={headerBtn}>Reset</button>
+        <button className="tt-btn" onClick={() => ask("Reset — clear ALL class timetables to blank? Your mapping, classes, teachers and rules are kept.", () => update((n) => { for (const c of n.classes) for (const d of n.days) n.grid[c][d] = emptyDay(n.periods.length); n.locked = {}; }))} style={headerBtn}>Reset</button>
         <button className="tt-btn" onClick={() => ask("MASTER RESET  -  permanently delete EVERYTHING (all classes, teachers, subjects, mapping, combined subjects, rules, standard periods, and the whole timetable) and start from a blank app? This cannot be undone.", () => update((n) => { n.classes = []; n.singles = []; n.subjects = []; n.combined = []; n.bkey = {}; n.classTeacher = {}; n.grid = {}; n.stdPeriods = {}; n.rules = {}; n.twice = {}; n.classRules = {}; n.locked = {}; }))} style={{ ...headerBtn, border: "1px solid rgba(255,255,255,.5)", background: "rgba(214,69,69,.35)" }}>Master reset</button>
       </header>
 
@@ -614,7 +614,7 @@ function NavDrawer({ open, onClose, view, setView, TH, school, theme, setTheme, 
         <div style={{ background: `linear-gradient(115deg, ${TH.g2}, ${TH.g1})`, color: "#fff", padding: "18px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div>
             <div style={{ fontWeight: 800, fontSize: 15 }}>{school}</div>
-            <div style={{ fontSize: 11.5, color: "rgba(255,255,255,.8)" }}>Timetable Manager</div>
+            <div style={{ fontSize: 11.5, color: "rgba(255,255,255,.8)" }}>Standard Timetable Manager</div>
           </div>
           <button className="tt-btn" onClick={onClose} aria-label="Close" style={{ border: "none", background: "transparent", color: "#fff", fontSize: 24, cursor: "pointer", lineHeight: 1 }}>×</button>
         </div>
@@ -817,7 +817,7 @@ function BKeyView({ cfg, cls, update, expand, teacherLoad, mobile }) {
             <span style={{ fontSize: 13, fontWeight: 700 }}>Subject → teacher · {cls}</span>
             <label style={{ fontSize: 12, color: C.sub, marginLeft: "auto" }}>Class teacher:&nbsp;
               <select className="tt-sel" style={{ width: 120, display: "inline-block" }} value={cfg.classTeacher[cls] || ""} onChange={(e) => setCT(e.target.value)}>
-                <option value="">—</option>{cfg.singles.map((t) => <option key={t}>{t}</option>)}
+                <option value="">—</option>{cfg.singles.filter((t) => t === cfg.classTeacher[cls] || !Object.values(cfg.classTeacher).includes(t)).map((t) => <option key={t}>{t}</option>)}
               </select>
             </label>
           </div>
@@ -1022,8 +1022,8 @@ function EditView({ cfg, cls, update, expand, clashTokens, occupancy, ask }) {
     setReport(`Filling ${cls}…`);
     setTimeout(() => { try { const res = autoSchedule(cfg, "class", cls); update((n) => { n.grid = res.grid; }); setReport(`Filled empty slots for ${cls} around the existing timetable.`); } catch (e) { setReport("Couldn't fill " + cls + ": " + ((e && e.message) || e)); } }, 60);
   };
-  const clearClass = () => ask(`Clear the entire timetable for ${cls}?`, () => { update((n) => { for (const d of n.days) n.grid[cls][d] = emptyDay(); }); setReport(`Cleared ${cls}.`); });
-  const clearAllTT = () => ask("Clear EVERY class's timetable and start completely blank? All locks are also removed.", () => { update((n) => { for (const c of n.classes) for (const d of n.days) n.grid[c][d] = emptyDay(); n.locked = {}; }); setReport("All timetables cleared — everything is blank."); });
+  const clearClass = () => ask(`Clear the entire timetable for ${cls}?`, () => { update((n) => { for (const d of n.days) n.grid[cls][d] = emptyDay(n.periods.length); }); setReport(`Cleared ${cls}.`); });
+  const clearAllTT = () => ask("Clear EVERY class's timetable and start completely blank? All locks are also removed.", () => { update((n) => { for (const c of n.classes) for (const d of n.days) n.grid[c][d] = emptyDay(n.periods.length); n.locked = {}; }); setReport("All timetables cleared — everything is blank."); });
   const toggleLock = (d, pi) => update((n) => { const k = `${cls}|${d}|${pi}`; if (n.locked[k]) delete n.locked[k]; else n.locked[k] = true; });
 
   const placedCount = (r) => {
@@ -1498,6 +1498,7 @@ function ChipPicker({ label, all, selected, onToggle, onSetAll }) {
 
 /* ---------------- Export / PDF ---------------- */
 function ExportView({ cfg }) {
+  const [paper, setPaper] = useState("A4");
   const Card = ({ title, desc, actions }) => (
     <div style={{ ...card, padding: 18 }}>
       <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 4 }}>{title}</div>
@@ -1507,16 +1508,24 @@ function ExportView({ cfg }) {
   );
   return (
     <div>
-      <ViewHeader title="Export / PDF" note="Save timetables and reports as A4 PDFs. When the print dialog opens, choose Save as PDF, paper A4." />
+      <ViewHeader title="Export / PDF" note="Save timetables and reports as PDF. Pick a paper size (default A4), then export." right={
+        <label style={{ fontSize: 12.5, color: C.sub, display: "inline-flex", alignItems: "center", gap: 6 }}>Paper
+          <select className="tt-sel" style={{ width: 110 }} value={paper} onChange={(e) => setPaper(e.target.value)}>
+            <option>A4</option><option>A3</option><option>Letter</option><option>Legal</option>
+          </select>
+        </label>
+      } />
       <div style={{ display: "grid", gap: 16 }}>
-        <Card title="Class timetables" desc="One A4 (landscape) page per class \u2014 periods across the top, weekdays down the side, subject + teacher in each cell."
-          actions={<button className="tt-btn" onClick={() => exportClassesPDF(cfg)} style={solidBtn}>Export all class timetables (A4 PDF)</button>} />
-        <Card title="Teacher timetables" desc="One A4 (landscape) page per teacher \u2014 shows the class and subject they take each period."
-          actions={<button className="tt-btn" onClick={() => exportTeachersPDF(cfg)} style={solidBtn}>Export all teacher timetables (A4 PDF)</button>} />
-        <Card title="Leisure / free periods" desc="Two formats: a grid marking exactly WHICH periods each teacher is free (green dot), or a simple count of free periods per day."
+        <Card title="Class timetables" desc="One page per class (landscape) - periods across the top, weekdays down the side, subject + teacher in each cell."
+          actions={<button className="tt-btn" onClick={() => exportClassesPDF(cfg, paper)} style={solidBtn}>Export all class timetables ({paper})</button>} />
+        <Card title="Teacher timetables" desc="One page per teacher (landscape) - the class and subject they take each period."
+          actions={<button className="tt-btn" onClick={() => exportTeachersPDF(cfg, paper)} style={solidBtn}>Export all teacher timetables ({paper})</button>} />
+        <Card title="All classes on one sheet (A3 overview)" desc="Every class as a small timetable packed onto A3 sheets (about 40 per sheet) - a wall-chart overview."
+          actions={<button className="tt-btn" onClick={() => exportClassesOverviewPDF(cfg)} style={solidBtn}>Export A3 overview</button>} />
+        <Card title="Leisure / free periods" desc="Either a grid marking exactly which periods each teacher is free (green dot), or a simple count per day."
           actions={<>
-            <button className="tt-btn" onClick={() => exportFreeSlotsPDF(cfg)} style={solidBtn}>Free periods by period (A4 PDF)</button>
-            <button className="tt-btn" onClick={() => exportFreeReportPDF(cfg)} style={ghostBtn}>Free-period counts per day (A4 PDF)</button>
+            <button className="tt-btn" onClick={() => exportFreeSlotsPDF(cfg, paper)} style={solidBtn}>Free periods by period ({paper})</button>
+            <button className="tt-btn" onClick={() => exportFreeReportPDF(cfg, paper)} style={ghostBtn}>Free-period counts per day ({paper})</button>
           </>} />
       </div>
     </div>
@@ -1709,13 +1718,14 @@ function SetupView({ cfg, update, ask, mobile }) {
   const [newTch, setNewTch] = useState("");
   const [err, setErr] = useState("");
 
+  const setPeriods = (val) => update((n) => { const N = Math.max(1, Math.min(12, parseInt(val, 10) || 8)); n.periods = Array.from({ length: N }, (_, i) => i + 1); for (const c of n.classes) for (const d of n.days) { const a = n.grid[c][d] || []; while (a.length < N) a.push([null, null]); a.length = N; n.grid[c][d] = a; } });
   const toggleDay = (d) => update((n) => {
     if (n.days.includes(d)) {
       n.days = n.days.filter((x) => x !== d);
       for (const c of n.classes) delete n.grid[c][d];
     } else {
       n.days = WEEK_ORDER.filter((x) => n.days.includes(x) || x === d);
-      for (const c of n.classes) n.grid[c][d] = emptyDay();
+      for (const c of n.classes) n.grid[c][d] = emptyDay(n.periods.length);
     }
   });
 
@@ -1726,7 +1736,7 @@ function SetupView({ cfg, update, ask, mobile }) {
     update((n) => {
       n.classes.push(nm);
       n.classTeacher[nm] = ct || null;
-      n.grid[nm] = {}; n.days.forEach((d) => (n.grid[nm][d] = emptyDay()));
+      n.grid[nm] = {}; n.days.forEach((d) => (n.grid[nm][d] = emptyDay(n.periods.length)));
       if (clonefrom && n.bkey[clonefrom]) n.bkey[nm] = clone(n.bkey[clonefrom]);
       const s = stdOf(nm);
       if (!n.stdPeriods[s]) {
@@ -1752,6 +1762,13 @@ function SetupView({ cfg, update, ask, mobile }) {
       <ViewHeader title="Classes & setup" note="Add or remove classes each academic year, choose the working days, and maintain the subject and teacher lists." />
 
       <div style={{ ...card, marginBottom: 16 }}>
+        <Panelhead text="School name" />
+        <div style={{ padding: 14 }}>
+          <input className="tt-in" style={{ maxWidth: 380, fontSize: 14, padding: "9px 11px" }} value={cfg.school} onChange={(e) => update((n) => { n.school = e.target.value; })} placeholder="Your school name" />
+        </div>
+      </div>
+
+      <div style={{ ...card, marginBottom: 16 }}>
         <Panelhead text="Working days" />
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: 14 }}>
           {WEEK_ORDER.map((d) => {
@@ -1760,6 +1777,15 @@ function SetupView({ cfg, update, ask, mobile }) {
           })}
         </div>
         <div style={{ padding: "0 14px 12px", fontSize: 12, color: C.sub }}>Turning a day off deletes that day’s columns from every class. Turning it on adds empty columns.</div>
+      </div>
+
+      <div style={{ ...card, marginBottom: 16 }}>
+        <Panelhead text="Periods per day" />
+        <div style={{ padding: 14, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 13, color: C.sub }}>Number of periods each day:</span>
+          <input className="tt-in" type="number" min={1} max={12} style={{ width: 80, textAlign: "center" }} value={cfg.periods.length} onChange={(e) => setPeriods(e.target.value)} />
+          <span style={{ fontSize: 12, color: C.sub }}>e.g. 6, 7 or 8. Changing this adds or trims period columns across every class.</span>
+        </div>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "minmax(0,1.2fr) minmax(0,1fr)", gap: 16, alignItems: "start" }}>
@@ -1777,7 +1803,7 @@ function SetupView({ cfg, update, ask, mobile }) {
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <input className="tt-in" style={{ width: 110 }} placeholder="e.g. 8 A" value={name} onChange={(e) => setName(e.target.value)} />
               <select className="tt-sel" style={{ width: 130 }} value={ct} onChange={(e) => setCt(e.target.value)}>
-                <option value="">class teacher…</option>{cfg.singles.map((t) => <option key={t}>{t}</option>)}
+                <option value="">class teacher…</option>{cfg.singles.filter((t) => !Object.values(cfg.classTeacher).includes(t)).map((t) => <option key={t}>{t}</option>)}
               </select>
               <select className="tt-sel" style={{ width: 150 }} value={clonefrom} onChange={(e) => setClonefrom(e.target.value)}>
                 <option value="">blank B-Key</option>{cfg.classes.map((c) => <option key={c} value={c}>copy B-Key from {c}</option>)}
@@ -1844,7 +1870,10 @@ function openPrint(title, css, bodyHtml) {
   w.document.close();
 }
 
-var GRID_CSS = "@page{size:A4 landscape;margin:1cm} html,body{margin:0;height:100%} .page{page-break-after:always;height:190mm;box-sizing:border-box;display:flex;flex-direction:column} .page:last-child{page-break-after:auto} h2{font-size:20px;margin:0 0 4px;text-align:center} .sub{font-size:13px;color:#333;margin:0 0 8px;text-align:center} table{border-collapse:collapse;width:100%;height:100%;table-layout:fixed;flex:1;border:2px solid #111} th,td{border:1px solid #333;text-align:center;padding:3px;font-size:14px} tr>*:first-child{width:64px;font-weight:700} th{background:#e6e6e6;font-weight:700} td .t{font-weight:800;font-size:16px} td .s{color:#444;font-size:12px}";
+function subTint(sub) { var hex = SUBJECT_BAR[sub]; if (!hex) return "#ffffff"; var nn = parseInt(hex.slice(1), 16); return "rgba(" + ((nn >> 16) & 255) + "," + ((nn >> 8) & 255) + "," + (nn & 255) + ",0.16)"; }
+function subCol(sub) { return SUBJECT_BAR[sub] || "#444"; }
+
+function gridCss(paper) { return "@page{size:" + (paper || "A4") + " landscape;margin:1cm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact} html,body{margin:0;height:100%} .page{page-break-after:always;height:190mm;box-sizing:border-box;display:flex;flex-direction:column} .page:last-child{page-break-after:auto} h2{font-size:20px;margin:0 0 6px;text-align:center;background:#0e6b73;color:#fff;padding:8px;border-radius:6px} .sub{font-size:13px;color:#0a4f55;margin:0 0 8px;text-align:center;font-weight:700} table{border-collapse:collapse;width:100%;height:100%;table-layout:fixed;flex:1;border:2px solid #0e6b73} th,td{border:1px solid #a9c6c6;text-align:center;padding:3px;font-size:14px} tr>*:first-child{width:64px;font-weight:800;background:#e1f0f0;color:#0a4f55} thead th{background:#0e6b73;color:#fff;font-weight:700} td .t{font-weight:800;font-size:16px} td .s{font-size:12px;font-weight:700}"; }
 
 function gridHead(cfg) {
   var head = "<tr><th>Day / Period</th>";
@@ -1862,7 +1891,7 @@ function teacherAt(cfg, t, d, p) {
   return null;
 }
 
-function exportClassesPDF(cfg) {
+function exportClassesPDF(cfg, paper) {
   var head = gridHead(cfg), pages = "";
   for (var ci = 0; ci < cfg.classes.length; ci++) {
     var c = cfg.classes[ci], body = "";
@@ -1870,16 +1899,16 @@ function exportClassesPDF(cfg) {
       var d = cfg.days[di], row = "<tr><th>" + esc(DAY_FULL[d]) + "</th>";
       for (var p = 0; p < cfg.periods.length; p++) {
         var slot = (cfg.grid[c] && cfg.grid[c][d] && cfg.grid[c][d][p]) || [null, null];
-        row += "<td>" + (slot[0] ? '<span class="t">' + esc(slot[1]) + '</span><br><span class="s">' + esc(slot[0]) + '</span>' : "") + "</td>";
+        row += slot[0] ? ('<td style="background:' + subTint(slot[1]) + ';border-left:5px solid ' + subCol(slot[1]) + '"><span class="t" style="color:' + subCol(slot[1]) + '">' + esc(slot[1]) + '</span><br><span class="s">' + esc(slot[0]) + '</span></td>') : "<td></td>";
       }
       body += row + "</tr>";
     }
     pages += '<div class="page"><h2>' + esc(cfg.school) + " &mdash; Class " + esc(c) + '</h2><p class="sub">Class teacher: ' + esc(cfg.classTeacher[c] || "-") + '</p><table><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>';
   }
-  openPrint(esc(cfg.school) + " - Class timetables", GRID_CSS, pages);
+  openPrint(esc(cfg.school) + " - Class timetables", gridCss(paper), pages);
 }
 
-function exportTeachersPDF(cfg) {
+function exportTeachersPDF(cfg, paper) {
   var head = gridHead(cfg), pages = "";
   for (var ti = 0; ti < cfg.singles.length; ti++) {
     var t = cfg.singles[ti], body = "";
@@ -1887,18 +1916,18 @@ function exportTeachersPDF(cfg) {
       var d = cfg.days[di], row = "<tr><th>" + esc(DAY_FULL[d]) + "</th>";
       for (var p = 0; p < cfg.periods.length; p++) {
         var r = teacherAt(cfg, t, d, p);
-        row += "<td>" + (r ? '<span class="t">' + esc(r.c) + '</span><br><span class="s">' + esc(r.sub) + '</span>' : "") + "</td>";
+        row += r ? ('<td style="background:' + subTint(r.sub) + ';border-left:5px solid ' + subCol(r.sub) + '"><span class="t">' + esc(r.c) + '</span><br><span class="s" style="color:' + subCol(r.sub) + '">' + esc(r.sub) + '</span></td>') : "<td></td>";
       }
       body += row + "</tr>";
     }
     pages += '<div class="page"><h2>' + esc(cfg.school) + " &mdash; Teacher " + esc(t) + '</h2><table><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>';
   }
-  openPrint(esc(cfg.school) + " - Teacher timetables", GRID_CSS, pages);
+  openPrint(esc(cfg.school) + " - Teacher timetables", gridCss(paper), pages);
 }
 
 
-function exportFreeSlotsPDF(cfg) {
-  var css = "@page{size:A4 landscape;margin:1cm} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#111} h2{font-size:19px;margin:0 0 10px;text-align:center} table{border-collapse:collapse;width:100%;border:2px solid #111;table-layout:fixed} th,td{border:1px solid #333;padding:5px 3px;text-align:center;font-size:11.5px} th{background:#e6e6e6;font-weight:700} td.free{background:#e3f5ec;color:#1f9d57;font-weight:700} td.busy{color:#999} .tname{text-align:left;font-weight:800;background:#f2f4f7} .dsep{border-left:2px solid #111}";
+function exportFreeSlotsPDF(cfg, paper) {
+  var css = "@page{size:" + (paper || "A4") + " landscape;margin:1cm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#111} h2{font-size:19px;margin:0 0 10px;text-align:center} table{border-collapse:collapse;width:100%;border:2px solid #111;table-layout:fixed} th,td{border:1px solid #333;padding:5px 3px;text-align:center;font-size:11.5px} th{background:#e6e6e6;font-weight:700} td.free{background:#e3f5ec;color:#1f9d57;font-weight:700} td.busy{color:#999} .tname{text-align:left;font-weight:800;background:#f2f4f7} .dsep{border-left:2px solid #111}";
   var head1 = "<tr><th rowspan=2 class=tname>Teacher</th>";
   for (var di = 0; di < cfg.days.length; di++) head1 += "<th colspan=" + cfg.periods.length + " class=dsep>" + esc(DAY_FULL[cfg.days[di]]) + "</th>";
   head1 += "<th rowspan=2>Free</th></tr>";
@@ -1921,8 +1950,25 @@ function exportFreeSlotsPDF(cfg) {
   openPrint(esc(cfg.school) + " - Teacher free periods (by period)", css, "<h2>" + esc(cfg.school) + " - Teacher free (leisure) periods \u2014 green dot = free</h2><table><thead>" + head1 + head2 + "</thead><tbody>" + rows + "</tbody></table>");
 }
 
-function exportFreeReportPDF(cfg) {
-  var css = "@page{size:A4 portrait;margin:1cm} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#111} h2{font-size:20px;margin:0 0 12px;text-align:center} table{border-collapse:collapse;width:100%;border:2px solid #111} th,td{border:1px solid #333;padding:8px 9px;text-align:center;font-size:13.5px} th{background:#e6e6e6;font-weight:700} td:first-child,th:first-child{text-align:left}";
+function exportClassesOverviewPDF(cfg) {
+  var css = "@page{size:A3 landscape;margin:8mm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#111} h2{font-size:16px;text-align:center;margin:0 0 8px} .grid{display:grid;grid-template-columns:repeat(5,1fr);gap:6px} .mini{border:1px solid #333;break-inside:avoid;page-break-inside:avoid} .mh{background:#0e6b73;color:#fff;font-weight:800;font-size:10px;text-align:center;padding:3px} table{border-collapse:collapse;width:100%} td,th{border:1px solid #aaa;font-size:7px;text-align:center;padding:1px;line-height:1.1} th{background:#f2f2f2;font-weight:700}";
+  var minis = "";
+  for (var ci = 0; ci < cfg.classes.length; ci++) {
+    var c = cfg.classes[ci];
+    var head = "<tr><th></th>"; for (var p = 0; p < cfg.periods.length; p++) head += "<th>" + cfg.periods[p] + "</th>"; head += "</tr>";
+    var body = "";
+    for (var di = 0; di < cfg.days.length; di++) {
+      var d = cfg.days[di]; body += "<tr><th>" + esc(DAY_FULL[d].slice(0, 2)) + "</th>";
+      for (var pp = 0; pp < cfg.periods.length; pp++) { var slot = (cfg.grid[c] && cfg.grid[c][d] && cfg.grid[c][d][pp]) || [null, null]; body += slot[1] ? ('<td style="background:' + subTint(slot[1]) + ';color:' + subCol(slot[1]) + ';font-weight:700">' + esc(slot[1]) + '</td>') : "<td></td>"; }
+      body += "</tr>";
+    }
+    minis += "<div class=mini><div class=mh>" + esc(c) + "</div><table><thead>" + head + "</thead><tbody>" + body + "</tbody></table></div>";
+  }
+  openPrint(esc(cfg.school) + " - All classes overview", css, "<h2>" + esc(cfg.school) + " - All class timetables</h2><div class=grid>" + minis + "</div>");
+}
+
+function exportFreeReportPDF(cfg, paper) {
+  var css = "@page{size:" + (paper || "A4") + " portrait;margin:1cm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#111} h2{font-size:20px;margin:0 0 12px;text-align:center} table{border-collapse:collapse;width:100%;border:2px solid #111} th,td{border:1px solid #333;padding:8px 9px;text-align:center;font-size:13.5px} th{background:#e6e6e6;font-weight:700} td:first-child,th:first-child{text-align:left}";
   var head = "<tr><th style='text-align:left'>Teacher</th>";
   for (var di = 0; di < cfg.days.length; di++) head += "<th>" + esc(DAY_FULL[cfg.days[di]].slice(0, 3)) + "</th>";
   head += "<th>Total free</th></tr>";
