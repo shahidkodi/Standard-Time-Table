@@ -25,7 +25,7 @@ function Login() {
     <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "linear-gradient(120deg,#0a4f55,#0e6b73)", fontFamily: sans }}>
       <div style={{ background: "#fff", borderRadius: 16, padding: 30, width: 360, maxWidth: "90vw", boxShadow: "0 18px 50px rgba(0,0,0,.25)" }}>
         <div style={{ width: 46, height: 46, borderRadius: 12, background: "#0e6b73", color: "#fff", display: "grid", placeItems: "center", fontWeight: 800, fontSize: 18, marginBottom: 16 }}>TT</div>
-        <h1 style={{ margin: "0 0 4px", fontSize: 20, color: "#16213a" }}>Timetable Manager</h1>
+        <h1 style={{ margin: "0 0 4px", fontSize: 20, color: "#16213a" }}>Standard Timetable Manager</h1>
         <p style={{ margin: "0 0 20px", fontSize: 13, color: "#647189" }}>Sign in with your staff username and password.</p>
         {!supabaseReady && <p style={{ color: "#d64545", fontSize: 12.5 }}>Supabase isn't configured yet — set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.</p>}
         <input placeholder="Username" value={user} onChange={(e) => setUser(e.target.value)} autoCapitalize="none" autoCorrect="off" style={inp} />
