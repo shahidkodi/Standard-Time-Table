@@ -392,8 +392,8 @@ export default function App() {
         <button className="tt-btn" onClick={() => setMenuOpen(true)} aria-label="Menu" style={{ border: "1px solid rgba(255,255,255,.28)", background: "rgba(255,255,255,.14)", color: "#fff", width: 40, height: 40, borderRadius: 10, fontSize: 20, lineHeight: 1, display: "grid", placeItems: "center", flexShrink: 0 }}>☰</button>
         <div style={{ width: 40, height: 40, borderRadius: 11, background: "rgba(255,255,255,.16)", border: "1px solid rgba(255,255,255,.25)", color: "#fff", display: "grid", placeItems: "center", fontWeight: 800, fontSize: 16, letterSpacing: -0.5 }}>TT</div>
         <div style={{ marginRight: "auto" }}>
-          <div style={{ fontSize: 16.5, fontWeight: 800, letterSpacing: -0.3 }}>{cfg.school}</div>
-          {!mobile && <div style={{ fontSize: 12, color: "rgba(255,255,255,.8)", marginTop: 1, fontWeight: 500 }}>Standard Timetable Manager · {cfg.classes.length} classes · {cfg.singles.length} teachers · {cfg.days.length} days</div>}
+          <div style={{ fontSize: 16.5, fontWeight: 800, letterSpacing: -0.3 }}>TIME TABLE</div>
+          {!mobile && <div style={{ fontSize: 12, color: "rgba(255,255,255,.8)", marginTop: 1, fontWeight: 500 }}>{cfg.school} · {cfg.classes.length} classes · {cfg.singles.length} teachers · {cfg.days.length} days</div>}
         </div>
         <ClashBadge n={totalClashes} />
         <span style={{ fontSize: 12, color: "rgba(255,255,255,.85)", minWidth: 56, textAlign: "right", fontWeight: 500 }}>{saved}</span>
@@ -613,8 +613,8 @@ function NavDrawer({ open, onClose, view, setView, TH, school, theme, setTheme, 
       <div onClick={(e) => e.stopPropagation()} style={{ position: "absolute", top: 0, left: 0, bottom: 0, width: 280, maxWidth: "84%", background: "#fff", boxShadow: "2px 0 24px rgba(0,0,0,.25)", display: "flex", flexDirection: "column", animation: "ttslide .2s ease" }}>
         <div style={{ background: `linear-gradient(115deg, ${TH.g2}, ${TH.g1})`, color: "#fff", padding: "18px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div>
-            <div style={{ fontWeight: 800, fontSize: 15 }}>{school}</div>
-            <div style={{ fontSize: 11.5, color: "rgba(255,255,255,.8)" }}>Standard Timetable Manager</div>
+            <div style={{ fontWeight: 800, fontSize: 15 }}>TIME TABLE</div>
+            <div style={{ fontSize: 11.5, color: "rgba(255,255,255,.8)" }}>{school}</div>
           </div>
           <button className="tt-btn" onClick={onClose} aria-label="Close" style={{ border: "none", background: "transparent", color: "#fff", fontSize: 24, cursor: "pointer", lineHeight: 1 }}>×</button>
         </div>
@@ -1527,7 +1527,7 @@ function ExportView({ cfg }) {
           </>} />
         <Card title="Leisure / free periods" desc="Either a grid marking exactly which periods each teacher is free (green dot) \u2014 all teachers on one A3 page \u2014 or a simple count per day."
           actions={<>
-            <button className="tt-btn" onClick={() => exportFreeSlotsPDF(cfg, paper)} style={solidBtn}>Free periods by period ({paper})</button>
+            <button className="tt-btn" onClick={() => exportFreeSlotsPDF(cfg, paper)} style={solidBtn}>Free periods by period (A3 PDF)</button>
             <button className="tt-btn" onClick={() => exportFreeReportPDF(cfg, paper)} style={ghostBtn}>Free-period counts per day ({paper})</button>
           </>} />
       </div>
