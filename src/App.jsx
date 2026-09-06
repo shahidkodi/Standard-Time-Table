@@ -1520,9 +1520,12 @@ function ExportView({ cfg }) {
           actions={<button className="tt-btn" onClick={() => exportClassesPDF(cfg, paper)} style={solidBtn}>Export all class timetables ({paper})</button>} />
         <Card title="Teacher timetables" desc="One page per teacher (landscape) - the class and subject they take each period."
           actions={<button className="tt-btn" onClick={() => exportTeachersPDF(cfg, paper)} style={solidBtn}>Export all teacher timetables ({paper})</button>} />
-        <Card title="All classes on one sheet (A3 overview)" desc="Every class as a small timetable packed onto A3 sheets (about 40 per sheet) - a wall-chart overview."
-          actions={<button className="tt-btn" onClick={() => exportClassesOverviewPDF(cfg)} style={solidBtn}>Export A3 overview</button>} />
-        <Card title="Leisure / free periods" desc="Either a grid marking exactly which periods each teacher is free (green dot), or a simple count per day."
+        <Card title="Compact overview sheets (A3, landscape, fit-to-page)" desc="All class timetables packed about 40 per A3 page, and all teacher timetables about 24 per A3 page."
+          actions={<>
+            <button className="tt-btn" onClick={() => exportClassesOverviewPDF(cfg)} style={solidBtn}>All classes (A3, ~40/sheet)</button>
+            <button className="tt-btn" onClick={() => exportTeachersOverviewPDF(cfg)} style={solidBtn}>All teachers (A3, ~24/sheet)</button>
+          </>} />
+        <Card title="Leisure / free periods" desc="Either a grid marking exactly which periods each teacher is free (green dot) \u2014 all teachers on one A3 page \u2014 or a simple count per day."
           actions={<>
             <button className="tt-btn" onClick={() => exportFreeSlotsPDF(cfg, paper)} style={solidBtn}>Free periods by period ({paper})</button>
             <button className="tt-btn" onClick={() => exportFreeReportPDF(cfg, paper)} style={ghostBtn}>Free-period counts per day ({paper})</button>
@@ -1927,7 +1930,7 @@ function exportTeachersPDF(cfg, paper) {
 
 
 function exportFreeSlotsPDF(cfg, paper) {
-  var css = "@page{size:" + (paper || "A4") + " landscape;margin:1cm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#111} h2{font-size:19px;margin:0 0 10px;text-align:center} table{border-collapse:collapse;width:100%;border:2px solid #111;table-layout:fixed} th,td{border:1px solid #333;padding:5px 3px;text-align:center;font-size:11.5px} th{background:#e6e6e6;font-weight:700} td.free{background:#e3f5ec;color:#1f9d57;font-weight:700} td.busy{color:#999} .tname{text-align:left;font-weight:800;background:#f2f4f7} .dsep{border-left:2px solid #111}";
+  var css = "@page{size:A3 landscape;margin:8mm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#111} h2{font-size:16px;margin:0 0 8px;text-align:center;color:#0a4f55} table{border-collapse:collapse;width:100%;border:2px solid #0e6b73;table-layout:fixed} th,td{border:1px solid #bcd;padding:2px 1px;text-align:center;font-size:9px} thead th{background:#0e6b73;color:#fff;font-weight:700} td.free{background:#c9efd8;color:#0e7a45;font-weight:800} td.busy{color:#bbb} .tname{text-align:left;font-weight:800;background:#e1f0f0} .dsep{border-left:2px solid #0e6b73}";
   var head1 = "<tr><th rowspan=2 class=tname>Teacher</th>";
   for (var di = 0; di < cfg.days.length; di++) head1 += "<th colspan=" + cfg.periods.length + " class=dsep>" + esc(DAY_FULL[cfg.days[di]]) + "</th>";
   head1 += "<th rowspan=2>Free</th></tr>";
@@ -1950,21 +1953,40 @@ function exportFreeSlotsPDF(cfg, paper) {
   openPrint(esc(cfg.school) + " - Teacher free periods (by period)", css, "<h2>" + esc(cfg.school) + " - Teacher free (leisure) periods \u2014 green dot = free</h2><table><thead>" + head1 + head2 + "</thead><tbody>" + rows + "</tbody></table>");
 }
 
-function exportClassesOverviewPDF(cfg) {
-  var css = "@page{size:A3 landscape;margin:8mm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#111} h2{font-size:16px;text-align:center;margin:0 0 8px} .grid{display:grid;grid-template-columns:repeat(5,1fr);gap:6px} .mini{border:1px solid #333;break-inside:avoid;page-break-inside:avoid} .mh{background:#0e6b73;color:#fff;font-weight:800;font-size:10px;text-align:center;padding:3px} table{border-collapse:collapse;width:100%} td,th{border:1px solid #aaa;font-size:7px;text-align:center;padding:1px;line-height:1.1} th{background:#f2f2f2;font-weight:700}";
-  var minis = "";
-  for (var ci = 0; ci < cfg.classes.length; ci++) {
-    var c = cfg.classes[ci];
-    var head = "<tr><th></th>"; for (var p = 0; p < cfg.periods.length; p++) head += "<th>" + cfg.periods[p] + "</th>"; head += "</tr>";
-    var body = "";
-    for (var di = 0; di < cfg.days.length; di++) {
-      var d = cfg.days[di]; body += "<tr><th>" + esc(DAY_FULL[d].slice(0, 2)) + "</th>";
-      for (var pp = 0; pp < cfg.periods.length; pp++) { var slot = (cfg.grid[c] && cfg.grid[c][d] && cfg.grid[c][d][pp]) || [null, null]; body += slot[1] ? ('<td style="background:' + subTint(slot[1]) + ';color:' + subCol(slot[1]) + ';font-weight:700">' + esc(slot[1]) + '</td>') : "<td></td>"; }
-      body += "</tr>";
+function miniGridPages(cfg, items, per, cols, title, cellFor) {
+  var css = "@page{size:A3 landscape;margin:8mm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#111} .sheet{height:281mm;display:flex;flex-direction:column;page-break-after:always;box-sizing:border-box} .sheet:last-child{page-break-after:auto} h2{font-size:15px;text-align:center;margin:0 0 4px;color:#0a4f55} .grid{flex:1;display:grid;grid-template-columns:repeat(" + cols + ",1fr);grid-auto-rows:1fr;gap:4px} .mini{border:1px solid #0e6b73;display:flex;flex-direction:column;overflow:hidden} .mh{background:#0e6b73;color:#fff;font-weight:800;font-size:9px;text-align:center;padding:2px} table{border-collapse:collapse;width:100%;flex:1;table-layout:fixed} td,th{border:1px solid #b9c9c9;font-size:6.5px;text-align:center;padding:0;line-height:1.05} th{background:#e1f0f0;font-weight:700}";
+  var head = "<tr><th></th>"; for (var p = 0; p < cfg.periods.length; p++) head += "<th>" + cfg.periods[p] + "</th>"; head += "</tr>";
+  var sheets = "";
+  for (var start = 0; start < items.length; start += per) {
+    var minis = "";
+    for (var k = start; k < Math.min(start + per, items.length); k++) {
+      var it = items[k], body = "";
+      for (var di = 0; di < cfg.days.length; di++) {
+        var d = cfg.days[di]; body += "<tr><th>" + esc(DAY_FULL[d].slice(0, 1)) + "</th>";
+        for (var pp = 0; pp < cfg.periods.length; pp++) body += cellFor(it, d, pp);
+        body += "</tr>";
+      }
+      minis += "<div class=mini><div class=mh>" + esc(it) + "</div><table><thead>" + head + "</thead><tbody>" + body + "</tbody></table></div>";
     }
-    minis += "<div class=mini><div class=mh>" + esc(c) + "</div><table><thead>" + head + "</thead><tbody>" + body + "</tbody></table></div>";
+    sheets += "<div class=sheet><h2>" + esc(cfg.school) + " - " + title + "</h2><div class=grid>" + minis + "</div></div>";
   }
-  openPrint(esc(cfg.school) + " - All classes overview", css, "<h2>" + esc(cfg.school) + " - All class timetables</h2><div class=grid>" + minis + "</div>");
+  return { css: css, body: sheets };
+}
+
+function exportClassesOverviewPDF(cfg) {
+  var out = miniGridPages(cfg, cfg.classes, 40, 8, "All class timetables", function (c, d, pp) {
+    var s = (cfg.grid[c] && cfg.grid[c][d] && cfg.grid[c][d][pp]) || [null, null];
+    return s[1] ? ('<td style="background:' + subTint(s[1]) + ';color:' + subCol(s[1]) + ';font-weight:700">' + esc(s[1]) + '</td>') : "<td></td>";
+  });
+  openPrint(esc(cfg.school) + " - All classes (A3)", out.css, out.body);
+}
+
+function exportTeachersOverviewPDF(cfg) {
+  var out = miniGridPages(cfg, cfg.singles, 24, 6, "All teacher timetables", function (t, d, pp) {
+    var r = teacherAt(cfg, t, d, pp);
+    return r ? ('<td style="background:' + subTint(r.sub) + ';color:' + subCol(r.sub) + ';font-weight:700">' + esc(r.c) + '</td>') : "<td></td>";
+  });
+  openPrint(esc(cfg.school) + " - All teachers (A3)", out.css, out.body);
 }
 
 function exportFreeReportPDF(cfg, paper) {
