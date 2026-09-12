@@ -5,10 +5,10 @@ import { supabase } from "./supabaseClient";
 
 /* ============================================================
    AMUPS Pallikkal — Timetable Manager  (v2)
-   The B-Key is the source of truth: it sets which teacher takes
+   The mapping is the source of truth: it sets which teacher takes
    which subject in each class, and how many periods per week.
-   The master grid can only place what the B-Key allows, and every
-   teacher's load is tracked against their B-Key target.
+   The master grid can only place what the mapping allows, and every
+   teacher's load is tracked against their mapping target.
    ============================================================ */
 
 const STORE_KEY = "tt_cfg_v2";
@@ -581,7 +581,7 @@ function TeacherView({ cfg, tch, occupancy, teacherLoad, combinedByBase }) {
   const freeCount = cfg.days.length * cfg.periods.length - placed;
   return (
     <div>
-      <ViewHeader title={`Teacher ${tch}`} note={`${placed} periods placed · ${freeCount} free · B-Key target ${ld.target}`} right={<button className="tt-btn" onClick={printNow} style={ghostBtn}>Print / PDF</button>} />
+      <ViewHeader title={`Teacher ${tch}`} note={`${placed} periods placed · ${freeCount} free · mapping target ${ld.target}`} right={<button className="tt-btn" onClick={printNow} style={ghostBtn}>Print / PDF</button>} />
       <div className="tt-printarea" style={card}>
         <div className="tt-printtitle" style={{ display: "none", fontWeight: 700, fontSize: 15, padding: "10px 12px" }}>{cfg.school} · Teacher {tch}</div>
         <GridTable cfg={cfg} render={(d, pi) => {
@@ -713,7 +713,7 @@ function FreeView({ cfg, occupancy, fday, setFday, fper, setFper, mobile }) {
   );
 }
 
-/* ---------------- B-Key & teacher load ---------------- */
+/* ---------------- mapping & teacher load ---------------- */
 function parseBKeyRows(arr) {
   const clean = (arr || []).filter((r) => r && r.some((x) => String(x == null ? "" : x).trim() !== ""));
   if (!clean.length) return [];
@@ -743,7 +743,7 @@ function parseBKeyRows(arr) {
   return out;
 }
 
-function BKeyView({ cfg, cls, update, expand, teacherLoad, mobile }) {
+function BKeyView({ cfg, cls, update, expand, teacherLoad, mobile, ask }) {
   const rows = cfg.bkey[cls] || [];
   const fileRef = useRef(null);
   const [imp, setImp] = useState("");
@@ -768,7 +768,7 @@ function BKeyView({ cfg, cls, update, expand, teacherLoad, mobile }) {
         for (const c in byClass) n.bkey[c] = byClass[c];
         n.singles.sort();
       });
-      setImp(`Imported ${parsed.length} B-Key row(s) across ${new Set(parsed.map((r) => r.cls)).size} class(es). Set each standard's periods in the table above.`);
+      setImp(`Imported ${parsed.length} mapping row(s) across ${new Set(parsed.map((r) => r.cls)).size} class(es). Set each standard's periods in the table above.`);
     } catch (e) {
       setImp("Couldn't read that file. A CSV with columns Class, Subject, Teacher always works. (Excel .xlsx works on the deployed app.)");
     }
@@ -781,21 +781,42 @@ function BKeyView({ cfg, cls, update, expand, teacherLoad, mobile }) {
     const existing = cfg.bkey[cls];
     if (existing) return; // only auto-load for brand-new classes; an explicit Clear leaves an empty array
     const st = stdOf(cls);
-    const withPer = cfg.subjects.filter((su) => Number(cfg.stdPeriods?.[st]?.[su]) > 0);
+    const withPer = Object.keys(cfg.stdPeriods?.[st] || {}).filter((su) => cfg.subjects.includes(su) && Number(cfg.stdPeriods[st][su]) > 0);
     if (!withPer.length) return;
     update((n) => { n.bkey[cls] = withPer.map((su) => ({ sub: su, teacher: "" })); });
   }, [cls]);
 
   const setRow = (i, field, val) => update((n) => { n.bkey[cls][i][field] = val; });
-  const addRow = () => update((n) => { (n.bkey[cls] ||= []).push({ sub: cfg.subjects[0], teacher: cfg.singles[0] }); });
+  const addRow = () => update((n) => { (n.bkey[cls] ||= []).push({ sub: cfg.subjects[0], teacher: "" }); });
   const delRow = (i) => update((n) => { n.bkey[cls].splice(i, 1); });
   const setCT = (v) => update((n) => { n.classTeacher[cls] = v; });
-  const subsForStd = (n, c) => { const st = stdOf(c); const withPer = n.subjects.filter((su) => Number(n.stdPeriods?.[st]?.[su]) > 0); return withPer.length ? withPer : n.subjects; };
+  const subsForStd = (n, c) => { const st = stdOf(c); const ks = Object.keys(n.stdPeriods?.[st] || {}).filter((su) => n.subjects.includes(su) && Number(n.stdPeriods[st][su]) > 0); return ks.length ? ks : n.subjects; };
   const autofillAll = () => { update((n) => { for (const c of n.classes) { const have = new Set((n.bkey[c] || []).map((r) => r.sub)); (n.bkey[c] || (n.bkey[c] = [])); for (const su of subsForStd(n, c)) if (!have.has(su)) n.bkey[c].push({ sub: su, teacher: "" }); } }); setImp("Added each standard’s subjects to every class. Now assign a teacher to each row (blank rows are skipped until you do)."); };
   const fillClassSubs = () => { update((n) => { const have = new Set((n.bkey[cls] || []).map((r) => r.sub)); (n.bkey[cls] || (n.bkey[cls] = [])); for (const su of subsForStd(n, cls)) if (!have.has(su)) n.bkey[cls].push({ sub: su, teacher: "" }); }); };
   const clearThisClass = () => ask(`Clear all mapping (subjects + teachers) for ${cls}?`, () => update((n) => { n.bkey[cls] = []; }));
   const clearAllMapping = () => ask("Clear the mapping (subjects + teachers) AND combined subjects for EVERY class? Standard periods, classes and the teacher list are kept.", () => update((n) => { for (const c of n.classes) n.bkey[c] = []; n.combined = []; }));
   const [copyTargets, setCopyTargets] = useState([]);
+  const [showPaste, setShowPaste] = useState(false);
+  const [pasteSub, setPasteSub] = useState("");
+  const [pasteTea, setPasteTea] = useState("");
+  const splitCol = (txt) => txt.split(/\r?\n/).map((l) => l.replace(/\t.*$/, "").trim());
+  const applyPaste = () => {
+    // Paste a Subjects column and a Teachers column straight from Excel/Sheets; rows align top-to-bottom.
+    // If the Subjects box itself has two tab/comma columns, use those and ignore the Teachers box.
+    let subCells = pasteSub.split(/\r?\n/).map((l) => l.trim()).filter((l, i, a) => l !== "" || i < a.length - 1);
+    let teaCol = pasteTea.split(/\r?\n/).map((l) => l.trim());
+    const twoCol = subCells.some((l) => /[,\t]/.test(l));
+    const rows = [];
+    for (let i = 0; i < subCells.length; i++) {
+      let sub = subCells[i], teacher = teaCol[i] || "";
+      if (twoCol) { const p = subCells[i].split(/[,\t]/); sub = (p[0] || "").trim(); teacher = (p[1] || "").trim(); }
+      sub = sub.trim().toUpperCase();
+      if (sub) rows.push({ sub: sub, teacher: (teacher || "").trim() });
+    }
+    if (!rows.length) return;
+    update((n) => { n.bkey[cls] = rows; for (const r of rows) { if (r.sub && !n.subjects.includes(r.sub)) n.subjects.push(r.sub); if (r.teacher && r.teacher.indexOf(" ") < 0 && !n.singles.includes(r.teacher)) n.singles.push(r.teacher); } n.singles.sort(); });
+    setImp("Applied pasted mapping to " + cls + " (" + rows.length + " rows).");
+  };
   const toggleTarget = (v) => setCopyTargets((p) => (p.includes(v) ? p.filter((x) => x !== v) : [...p, v]));
   const doCopy = () => { if (!copyTargets.length) return; ask(`Copy ${cls}'s full mapping (subjects + teachers) to ${copyTargets.length} class(es)? Their current mapping is replaced.`, () => { update((n) => { const src = JSON.stringify(n.bkey[cls] || []); for (const t of copyTargets) n.bkey[t] = JSON.parse(src); }); setImp(`Copied ${cls}'s mapping to: ${copyTargets.join(", ")}.`); setCopyTargets([]); }); };
 
@@ -809,7 +830,7 @@ function BKeyView({ cfg, cls, update, expand, teacherLoad, mobile }) {
       </>} />
       {imp && <Banner tone="primary">{imp}</Banner>}
 
-      <StandardPeriods cfg={cfg} update={update} highlightStd={std} mobile={mobile} />
+      <StandardPeriods cfg={cfg} update={update} highlightStd={std} mobile={mobile} ask={ask} />
 
       <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "minmax(0,1.3fr) minmax(0,1fr)", gap: 16, alignItems: "start", marginTop: 16 }}>
         <div style={card}>
@@ -820,6 +841,7 @@ function BKeyView({ cfg, cls, update, expand, teacherLoad, mobile }) {
                 <option value="">—</option>{cfg.singles.filter((t) => t === cfg.classTeacher[cls] || !Object.values(cfg.classTeacher).includes(t)).map((t) => <option key={t}>{t}</option>)}
               </select>
             </label>
+            <button className="tt-btn" onClick={() => setShowPaste((v) => !v)} style={{ ...ghostBtn, padding: "5px 11px" }}>{showPaste ? "Hide paste" : "Paste from Excel"}</button>
           </div>
           <table style={tbl}>
             <thead><tr><th style={{ ...th, textAlign: "left", paddingLeft: 12 }}>Subject</th><th style={{ ...th, textAlign: "left" }}>Teacher</th><th style={{ ...th, width: 62 }}>Periods</th><th style={{ ...th, width: 40 }}></th></tr></thead>
@@ -853,6 +875,23 @@ function BKeyView({ cfg, cls, update, expand, teacherLoad, mobile }) {
               {totalKeyed} periods keyed of {weekSlots} weekly slots{totalKeyed > weekSlots ? " · over capacity" : ""}
             </span>
           </div>
+          {showPaste && <div style={{ borderTop: `1px solid ${C.line}`, padding: 12 }}>
+            <div style={{ fontSize: 11.5, color: C.sub, fontWeight: 700, marginBottom: 6 }}>Paste from Excel / Sheets for {cls} — copy the Subjects column into the left box and the Teachers column into the right box (rows line up top to bottom). This replaces the rows for the class.</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 10.5, color: C.sub, fontWeight: 700, marginBottom: 3 }}>SUBJECTS</div>
+                <textarea className="tt-in" style={{ width: "100%", minHeight: 120, fontFamily: mono, resize: "vertical" }} value={pasteSub} onChange={(e) => setPasteSub(e.target.value)} placeholder={"MAT\nENG\nSS"} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 10.5, color: C.sub, fontWeight: 700, marginBottom: 3 }}>TEACHERS</div>
+                <textarea className="tt-in" style={{ width: "100%", minHeight: 120, fontFamily: mono, resize: "vertical" }} value={pasteTea} onChange={(e) => setPasteTea(e.target.value)} placeholder={"KPM\nDN\nMPS"} />
+              </div>
+            </div>
+            <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center" }}>
+              <button className="tt-btn" onClick={applyPaste} style={solidBtn}>Apply paste to {cls}</button>
+              <span style={{ fontSize: 11.5, color: C.sub }}>Tip: you can also paste both columns together into the Subjects box (tab or comma separated).</span>
+            </div>
+          </div>}
         </div>
 
         <TeacherLoad cfg={cfg} teacherLoad={teacherLoad} />
@@ -887,25 +926,32 @@ function NumInput({ value, onCommit }) {
   );
 }
 
-function StandardPeriods({ cfg, update, highlightStd, mobile }) {
+function StandardPeriods({ cfg, update, highlightStd, mobile, ask }) {
   const stds = standardsOf(cfg);
   const cap = cfg.days.length * cfg.periods.length;
   const setP = (s, sub, val) => update((n) => { (n.stdPeriods[s] || (n.stdPeriods[s] = {}))[sub] = Math.max(0, +val || 0); });
   const removeSub = (s, sub) => update((n) => { if (n.stdPeriods[s]) delete n.stdPeriods[s][sub]; });
   const addSub = (s, sub) => update((n) => { (n.stdPeriods[s] || (n.stdPeriods[s] = {})); if (!(Number(n.stdPeriods[s][sub]) > 0)) n.stdPeriods[s][sub] = 5; });
+  const moveSub = (s, sub, dir) => update((n) => { const keys = Object.keys(n.stdPeriods[s] || {}); const i = keys.indexOf(sub); const j = i + dir; if (i < 0 || j < 0 || j >= keys.length) return; const tmp = keys[i]; keys[i] = keys[j]; keys[j] = tmp; const re = {}; for (const k of keys) re[k] = n.stdPeriods[s][k]; n.stdPeriods[s] = re; });
+  const copyStd = (from, to) => { if (!to || to === from) return; ask("Copy Standard " + from + "'s subjects and periods to Standard " + to + "? It replaces Standard " + to + "'s current subjects.", () => update((n) => { n.stdPeriods[to] = JSON.parse(JSON.stringify(n.stdPeriods[from] || {})); })); };
   return (
     <div style={card}>
       <Panelhead text="Standard periods  -  each standard has its own subjects & weekly periods" />
       <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "repeat(auto-fill, minmax(230px, 1fr))", gap: 12, padding: 14 }}>
         {stds.map((s) => {
-          const subs = cfg.subjects.filter((su) => Number(cfg.stdPeriods?.[s]?.[su]) > 0);
+          const subs = Object.keys(cfg.stdPeriods?.[s] || {}).filter((su) => cfg.subjects.includes(su) && Number(cfg.stdPeriods[s][su]) > 0);
           const missing = cfg.subjects.filter((su) => !(Number(cfg.stdPeriods?.[s]?.[su]) > 0));
           const total = subs.reduce((a, su) => a + Number(cfg.stdPeriods[s][su] || 0), 0);
           return (
             <div key={s} style={{ border: `1px solid ${s === highlightStd ? C.primary : C.line}`, borderRadius: 12, overflow: "hidden", background: "#fff" }}>
               <div style={{ padding: "9px 12px", background: s === highlightStd ? C.primarySoft : "#f7f9fb", fontWeight: 800, color: C.primary, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span>Standard {s}</span>
-                <span style={{ fontSize: 11.5, fontWeight: 700, color: total > cap ? C.clash : C.sub }}>{total}/{cap}</span>
+                <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <select className="tt-sel" title="Copy these subjects to another standard" value="" onChange={(e) => copyStd(s, e.target.value)} style={{ width: 78, fontSize: 10.5, padding: "2px 4px" }}>
+                    <option value="">copy to…</option>{stds.filter((x) => x !== s).map((x) => <option key={x} value={x}>Std {x}</option>)}
+                  </select>
+                  <span style={{ fontSize: 11.5, fontWeight: 700, color: total > cap ? C.clash : C.sub }}>{total}/{cap}</span>
+                </span>
               </div>
               <div style={{ padding: 10, display: "grid", gap: 6 }}>
                 {subs.length === 0 && <div style={{ fontSize: 12, color: C.sub, padding: "4px 2px" }}>No subjects yet  -  add below.</div>}
@@ -914,6 +960,8 @@ function StandardPeriods({ cfg, update, highlightStd, mobile }) {
                     <span style={{ width: 10, height: 10, borderRadius: 3, background: SUBJECT_BAR[su] || C.sub, flexShrink: 0 }} />
                     <span style={{ fontFamily: mono, fontWeight: 700, flex: 1 }}>{su}</span>
                     <NumInput value={cfg.stdPeriods[s][su]} onCommit={(v) => setP(s, su, v)} />
+                    <button className="tt-btn" onClick={() => moveSub(s, su, -1)} title="Move up" style={{ border: "none", background: "transparent", color: C.sub, cursor: "pointer", fontSize: 12, lineHeight: 1, padding: 0 }}>▲</button>
+                    <button className="tt-btn" onClick={() => moveSub(s, su, 1)} title="Move down" style={{ border: "none", background: "transparent", color: C.sub, cursor: "pointer", fontSize: 12, lineHeight: 1, padding: 0 }}>▼</button>
                     <button className="tt-btn" onClick={() => removeSub(s, su)} title="Remove from this standard" style={{ border: "none", background: "transparent", color: C.clash, cursor: "pointer", fontSize: 15, lineHeight: 1 }}>×</button>
                   </div>
                 ))}
@@ -974,7 +1022,7 @@ function TeacherLoad({ cfg, teacherLoad }) {
   );
 }
 
-/* ---------------- Assign timetable (B-Key constrained) ---------------- */
+/* ---------------- Assign timetable (mapping constrained) ---------------- */
 function EditView({ cfg, cls, update, expand, clashTokens, occupancy, ask }) {
   const keys = cfg.bkey[cls] || [];
   const [report, setReport] = useState("");
@@ -998,7 +1046,7 @@ function EditView({ cfg, cls, update, expand, clashTokens, occupancy, ask }) {
   const clearSlotAll = () => update((n) => { const pi = fzPer - 1; for (const c of n.classes) { n.grid[c][fzDay][pi] = [null, null]; delete n.locked[`${c}|${fzDay}|${pi}`]; } });
   const optKey = (r) => `${r.teacher}||${r.sub}`;
 
-  const genAll = () => ask("Auto-generate a fresh, clash-free timetable for the whole school from the B-Key? This replaces every current assignment.", () => {
+  const genAll = () => ask("Auto-generate a fresh, clash-free timetable for the whole school from the mapping? This replaces every current assignment.", () => {
     setReport("Generating… this can take a few seconds.");
     setTimeout(() => {
       try {
@@ -1306,6 +1354,8 @@ function AssistantView({ cfg, update, teacherLoad }) {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [renFrom, setRenFrom] = useState("");
+  const [renTo, setRenTo] = useState("");
 
   const apply = (actions) => {
     if (!actions?.length) return 0;
@@ -1536,6 +1586,29 @@ function ExportView({ cfg }) {
 }
 
 /* ---------------- Analysis & pre-generation checks ---------------- */
+function TeacherAssignments({ cfg }) {
+  const [t, setT] = useState(cfg.singles[0] || "");
+  const rows = [];
+  for (const c of cfg.classes) for (const r of (cfg.bkey[c] || [])) if (r.teacher === t) rows.push({ c: c, sub: r.sub, per: periodsFor(cfg, c, r.sub) });
+  for (const se of (cfg.combined || [])) if (se.teachers.includes(t)) for (const c of se.divisions) rows.push({ c: c, sub: se.sub + " (combined)", per: periodsFor(cfg, c, se.sub) });
+  const tot = rows.reduce((a, r) => a + r.per, 0);
+  return (
+    <div style={{ ...card, marginTop: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", borderBottom: `1px solid ${C.line}` }}>
+        <span style={{ fontSize: 13, fontWeight: 700 }}>Teacher assignments — subjects & classes</span>
+        <select className="tt-sel" style={{ width: 130, marginLeft: "auto" }} value={t} onChange={(e) => setT(e.target.value)}>{cfg.singles.map((x) => <option key={x}>{x}</option>)}</select>
+      </div>
+      <div className="tt-scroll" style={{ overflowX: "auto", maxHeight: 320, overflowY: "auto" }}>
+        <table style={tbl}>
+          <thead><tr><th style={{ ...th, textAlign: "left", paddingLeft: 12 }}>Class</th><th style={{ ...th, textAlign: "left" }}>Subject</th><th style={th}>Periods</th></tr></thead>
+          <tbody>{rows.length ? rows.map((r, i) => (<tr key={i}><td style={{ ...cellTd, textAlign: "left", paddingLeft: 12, fontFamily: mono, fontWeight: 700, height: 32 }}>{r.c}</td><td style={{ ...cellTd, textAlign: "left", height: 32 }}>{r.sub}</td><td style={{ ...cellTd, height: 32, fontFamily: mono }}>{r.per}</td></tr>)) : <tr><td colSpan={3} style={{ ...cellTd, color: C.sub, height: 40 }}>Not assigned to any class.</td></tr>}</tbody>
+        </table>
+      </div>
+      <div style={{ padding: "8px 14px", fontSize: 12.5, color: C.sub }}>{t}: {rows.length} class assignment(s), {tot} periods/week.</div>
+    </div>
+  );
+}
+
 function AnalysisView({ cfg, teacherLoad, mobile }) {
   const cap = cfg.days.length * cfg.periods.length;
   const R = (sub) => cfg.rules?.[sub] || {};
@@ -1651,6 +1724,7 @@ function AnalysisView({ cfg, teacherLoad, mobile }) {
         </div>
       </div>
 
+      <TeacherAssignments cfg={cfg} />
       <TeacherFreeReport cfg={cfg} teacherLoad={teacherLoad} />
     </div>
   );
@@ -1749,16 +1823,21 @@ function SetupView({ cfg, update, ask, mobile }) {
     });
     setName(""); setCt("");
   };
-  const delClass = (c) => ask(`Remove class ${c}, along with its timetable and B-Key?`, () => update((n) => {
+  const delClass = (c) => ask(`Remove class ${c}, along with its timetable and mapping?`, () => update((n) => {
     n.classes = n.classes.filter((x) => x !== c); delete n.grid[c]; delete n.bkey[c]; delete n.classTeacher[c];
   }));
   const addSubject = () => { const s = newSub.trim().toUpperCase(); if (!s || cfg.subjects.includes(s)) return; update((n) => n.subjects.push(s)); setNewSub(""); };
-  const delSubject = (s) => ask(`Remove subject ${s} from the list? Existing B-Key rows using it stay until you change them.`, () => update((n) => { n.subjects = n.subjects.filter((x) => x !== s); }));
+  const delSubject = (s) => ask(`Remove subject ${s} from the list? Existing mapping rows using it stay until you change them.`, () => update((n) => { n.subjects = n.subjects.filter((x) => x !== s); }));
   const addTeacher = () => { const t = newTch.trim().toUpperCase(); if (!t || cfg.singles.includes(t)) return; update((n) => { n.singles.push(t); n.singles.sort(); }); setNewTch(""); };
-  const delTeacher = (t) => ask(`Remove teacher ${t}? They’ll be cleared as class teacher where set; B-Key/timetable entries using them stay until you change them.`, () => update((n) => {
+  const delTeacher = (t) => ask(`Remove teacher ${t}? They’ll be cleared as class teacher where set; mapping/timetable entries using them stay until you change them.`, () => update((n) => {
     n.singles = n.singles.filter((x) => x !== t);
     for (const c of n.classes) if (n.classTeacher[c] === t) n.classTeacher[c] = null;
   }));
+  const doRename = () => { const oldN = renFrom, newN = renTo.trim().toUpperCase(); if (!oldN || !newN || oldN === newN) return; update((n) => {
+    n.singles = [...new Set(n.singles.map((t) => t === oldN ? newN : t))];
+    for (const c of n.classes) { if (n.classTeacher[c] === oldN) n.classTeacher[c] = newN; (n.bkey[c] || []).forEach((r) => { if (r.teacher === oldN) r.teacher = newN; }); for (const d of n.days) (n.grid[c][d] || []).forEach((sl) => { if (sl[0] === oldN) sl[0] = newN; }); }
+    (n.combined || []).forEach((se) => { se.teachers = se.teachers.map((t) => t === oldN ? newN : t); });
+  }); setRenFrom(""); setRenTo(""); };
 
   return (
     <div>
@@ -1809,7 +1888,7 @@ function SetupView({ cfg, update, ask, mobile }) {
                 <option value="">class teacher…</option>{cfg.singles.filter((t) => !Object.values(cfg.classTeacher).includes(t)).map((t) => <option key={t}>{t}</option>)}
               </select>
               <select className="tt-sel" style={{ width: 150 }} value={clonefrom} onChange={(e) => setClonefrom(e.target.value)}>
-                <option value="">blank B-Key</option>{cfg.classes.map((c) => <option key={c} value={c}>copy B-Key from {c}</option>)}
+                <option value="">blank mapping</option>{cfg.classes.map((c) => <option key={c} value={c}>copy mapping from {c}</option>)}
               </select>
               <button className="tt-btn" onClick={addClass} style={solidBtn}>Add class</button>
             </div>
@@ -1830,6 +1909,12 @@ function SetupView({ cfg, update, ask, mobile }) {
           </div>
           <div style={card}>
             <Panelhead text="Teachers" count={cfg.singles.length} />
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", padding: "10px 14px", borderBottom: `1px solid ${C.line}` }}>
+              <span style={{ fontSize: 12, color: C.sub, fontWeight: 700 }}>Rename teacher:</span>
+              <select className="tt-sel" style={{ width: 110 }} value={renFrom} onChange={(e) => setRenFrom(e.target.value)}><option value="">pick…</option>{cfg.singles.map((t) => <option key={t}>{t}</option>)}</select>
+              <input className="tt-in" style={{ width: 120 }} placeholder="new name" value={renTo} onChange={(e) => setRenTo(e.target.value)} />
+              <button className="tt-btn" onClick={doRename} style={ghostBtn}>Rename everywhere</button>
+            </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: 14, maxHeight: 180, overflowY: "auto" }}>
               {cfg.singles.map((t) => <span key={t} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontFamily: mono, fontSize: 12, padding: "4px 5px 4px 9px", background: "#eef0f2", borderRadius: 7 }}>{t}<button className="tt-btn" onClick={() => delTeacher(t)} style={{ border: "none", background: "transparent", color: C.clash, fontSize: 14, cursor: "pointer", lineHeight: 1 }}>×</button></span>)}
             </div>
