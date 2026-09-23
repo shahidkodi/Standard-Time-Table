@@ -743,6 +743,30 @@ function parseBKeyRows(arr) {
   return out;
 }
 
+function SearchSelect({ value, options, onChange, placeholder, allowEmpty }) {
+  const [txt, setTxt] = useState(value || "");
+  const idRef = useRef("ss" + Math.random().toString(36).slice(2));
+  useEffect(() => { setTxt(value || ""); }, [value]);
+  const find = (v) => options.find((o) => o.toLowerCase() === String(v || "").trim().toLowerCase());
+  const commit = (v) => {
+    const m = find(v);
+    if (m) { if (m !== value) onChange(m); setTxt(m); }
+    else if (allowEmpty && String(v || "").trim() === "") { if (value) onChange(""); setTxt(""); }
+    else setTxt(value || "");
+  };
+  return (
+    <>
+      <input className="tt-in" list={idRef.current} value={txt} placeholder={placeholder || "Type to search…"}
+        onFocus={(e) => e.target.select()}
+        onChange={(e) => { setTxt(e.target.value); const m = options.find((o) => o === e.target.value); if (m && m !== value) onChange(m); }}
+        onBlur={(e) => commit(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") { commit(e.currentTarget.value); e.currentTarget.blur(); } }}
+        style={{ width: "100%", fontFamily: mono, fontWeight: 700 }} />
+      <datalist id={idRef.current}>{options.map((o) => <option key={o} value={o} />)}</datalist>
+    </>
+  );
+}
+
 function BKeyView({ cfg, cls, update, expand, teacherLoad, mobile, ask }) {
   const rows = cfg.bkey[cls] || [];
   const fileRef = useRef(null);
@@ -797,6 +821,7 @@ function BKeyView({ cfg, cls, update, expand, teacherLoad, mobile, ask }) {
   const clearAllMapping = () => ask("Clear the mapping (subjects + teachers) AND combined subjects for EVERY class? Standard periods, classes and the teacher list are kept.", () => update((n) => { for (const c of n.classes) n.bkey[c] = []; n.combined = []; }));
   const [copyTargets, setCopyTargets] = useState([]);
   const [showPaste, setShowPaste] = useState(false);
+  const [search, setSearch] = useState("");
   const [pasteSub, setPasteSub] = useState("");
   const [pasteTea, setPasteTea] = useState("");
   const splitCol = (txt) => txt.split(/\r?\n/).map((l) => l.replace(/\t.*$/, "").trim());
@@ -843,19 +868,22 @@ function BKeyView({ cfg, cls, update, expand, teacherLoad, mobile, ask }) {
             </label>
             <button className="tt-btn" onClick={() => setShowPaste((v) => !v)} style={{ ...ghostBtn, padding: "5px 11px" }}>{showPaste ? "Hide paste" : "Paste from Excel"}</button>
           </div>
+          <div style={{ padding: "8px 14px", borderBottom: `1px solid ${C.line}` }}>
+            <input className="tt-in" style={{ width: "100%", maxWidth: 340, fontSize: 13, padding: "8px 10px" }} placeholder="Search subject or teacher in this class…" value={search} onChange={(e) => setSearch(e.target.value)} />
+          </div>
           <table style={tbl}>
             <thead><tr><th style={{ ...th, textAlign: "left", paddingLeft: 12 }}>Subject</th><th style={{ ...th, textAlign: "left" }}>Teacher</th><th style={{ ...th, width: 62 }}>Periods</th><th style={{ ...th, width: 40 }}></th></tr></thead>
             <tbody>
-              {rows.map((r, i) => (
+              {rows.map((r, i) => {
+                const q = search.trim().toLowerCase();
+                if (q && !(((r.sub || "") + " " + (r.teacher || "")).toLowerCase().includes(q))) return null;
+                return (
                 <tr key={i}>
                   <td style={{ ...cellTd, height: 40, padding: 5 }}>
-                    <select className="tt-sel" value={r.sub} onChange={(e) => setRow(i, "sub", e.target.value)}>{cfg.subjects.map((s) => <option key={s}>{s}</option>)}</select>
+                    <SearchSelect value={r.sub} options={cfg.subjects} onChange={(v) => setRow(i, "sub", v)} placeholder="Search subject…" />
                   </td>
                   <td style={{ ...cellTd, height: 40, padding: 5 }}>
-                    <select className="tt-sel" value={r.teacher} onChange={(e) => setRow(i, "teacher", e.target.value)}>
-                      <optgroup label="Teachers">{cfg.singles.map((t) => <option key={t}>{t}</option>)}</optgroup>
-                      {combinedNames.length > 0 && <optgroup label="Combined subjects">{combinedNames.map((t) => <option key={t}>{t}</option>)}</optgroup>}
-                    </select>
+                    <SearchSelect value={r.teacher} options={[...cfg.singles, ...combinedNames]} allowEmpty onChange={(v) => setRow(i, "teacher", v)} placeholder="Search teacher…" />
                   </td>
                   <td style={{ ...cellTd, height: 40 }}>
                     <span style={{ fontFamily: mono, fontWeight: 700, fontSize: 13, color: periodsFor(cfg, cls, r.sub) ? C.primary : C.clash }} title="Set in the Standard periods table above">{periodsFor(cfg, cls, r.sub)}</span>
@@ -864,7 +892,8 @@ function BKeyView({ cfg, cls, update, expand, teacherLoad, mobile, ask }) {
                     <button className="tt-btn" onClick={() => delRow(i)} title="Remove" style={{ border: "none", background: "transparent", color: C.clash, fontSize: 16, cursor: "pointer" }}>×</button>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
           <div style={{ display: "flex", alignItems: "center", padding: "10px 14px", gap: 12 }}>
