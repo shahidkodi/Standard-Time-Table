@@ -1383,8 +1383,6 @@ function AssistantView({ cfg, update, teacherLoad }) {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [renFrom, setRenFrom] = useState("");
-  const [renTo, setRenTo] = useState("");
 
   const apply = (actions) => {
     if (!actions?.length) return 0;
@@ -1823,6 +1821,8 @@ function SetupView({ cfg, update, ask, mobile }) {
   const [newSub, setNewSub] = useState("");
   const [newTch, setNewTch] = useState("");
   const [err, setErr] = useState("");
+  const [renFrom, setRenFrom] = useState("");
+  const [renTo, setRenTo] = useState("");
 
   const setPeriods = (val) => update((n) => { const N = Math.max(1, Math.min(12, parseInt(val, 10) || 8)); n.periods = Array.from({ length: N }, (_, i) => i + 1); for (const c of n.classes) for (const d of n.days) { const a = n.grid[c][d] || []; while (a.length < N) a.push([null, null]); a.length = N; n.grid[c][d] = a; } });
   const toggleDay = (d) => update((n) => {
