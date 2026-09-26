@@ -223,11 +223,41 @@ function autoSchedule(cfg, mode = "all", onlyClass = null) {
   return best;
 }
 
+function cmpClass(a, b) { return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" }); }
+function lsGet(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : v; } catch { return d; } }
+function lsSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
+
+function SaveReport({ r, onClose }) {
+  const items = [
+    [r.noStdSubs, "Standards with no subjects/periods"],
+    [r.noMap, "Classes with no mapping"],
+    [r.noTeacher, "Subjects without a teacher"],
+    [r.noPer, "Mapped subjects with 0 periods in their standard"],
+    [r.noCT, "Classes without a class teacher"],
+  ].filter(([a]) => a.length);
+  const ok = !items.length;
+  const col = ok ? C.primary : C.warn;
+  return (
+    <div style={{ background: ok ? C.primarySoft : C.warnSoft, color: col, border: `1px solid ${col}33`, borderRadius: 10, padding: "10px 14px", fontSize: 13, marginBottom: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <b>{ok ? "Saved. The mapping is complete." : "Saved — but some of the mapping is still incomplete:"}</b>
+        <button className="tt-btn" onClick={onClose} style={{ marginLeft: "auto", border: "none", background: "transparent", cursor: "pointer", color: "inherit", fontSize: 17, lineHeight: 1 }}>×</button>
+      </div>
+      {items.map(([a, lbl]) => (
+        <div key={lbl} style={{ marginTop: 6, lineHeight: 1.55 }}><b>{lbl} ({a.length}):</b> <span style={{ fontFamily: mono, fontSize: 12 }}>{a.slice(0, 40).join(", ")}{a.length > 40 ? ` … +${a.length - 40} more` : ""}</span></div>
+      ))}
+    </div>
+  );
+}
+
 export default function App() {
   const [cfg, setCfg] = useState(null);
-  const [view, setView] = useState("classes");
-  const [cls, setCls] = useState(SEED.classes[0]);
-  const [tch, setTch] = useState(SEED.singles[0]);
+  const [view, setView] = useState(() => lsGet("tt_view", "classes"));
+  const [cls, setCls] = useState(() => lsGet("tt_cls", SEED.classes[0]));
+  const [tch, setTch] = useState(() => lsGet("tt_tch", SEED.singles[0]));
+  useEffect(() => { lsSet("tt_view", view); }, [view]);
+  useEffect(() => { lsSet("tt_cls", cls); }, [cls]);
+  useEffect(() => { lsSet("tt_tch", tch); }, [tch]);
   const [fday, setFday] = useState(SEED.days[0]);
   const [fper, setFper] = useState(1);
   const [saved, setSaved] = useState("loaded");
@@ -267,11 +297,12 @@ export default function App() {
       if (!next.locked) next.locked = {};
       if (!next.twice) next.twice = {};
       if (!alive) return;
+      if (Array.isArray(next.classes)) next.classes.sort(cmpClass);
       setCfg(next);
       lastSaved.current = JSON.stringify(next);
       if (wasEmpty) { try { await saveConfig(next); } catch {} }
     })();
-    const ch = subscribeConfig((remote) => { if (!remote) return; const js = JSON.stringify(remote); if (js === lastSaved.current) return; lastSaved.current = js; setCfg(remote); setSaved("synced"); });
+    const ch = subscribeConfig((remote) => { if (!remote) return; const js = JSON.stringify(remote); if (js === lastSaved.current) return; lastSaved.current = js; if (Array.isArray(remote.classes)) remote.classes.sort(cmpClass); setCfg(remote); setSaved("synced"); });
     return () => { alive = false; if (ch) { try { supabase.removeChannel(ch); } catch {} } };
   }, []);
 
@@ -283,7 +314,7 @@ export default function App() {
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => { try { await saveConfig(next); setSaved("saved"); } catch { setSaved("offline · saved on device"); } }, 600);
   };
-  const update = (fn) => setCfg((prev) => { const next = clone(prev); fn(next); persist(next); return next; });
+  const update = (fn) => setCfg((prev) => { const next = clone(prev); fn(next); if (Array.isArray(next.classes)) next.classes.sort(cmpClass); persist(next); return next; });
 
   const singlesSet = useMemo(() => new Set(cfg?.singles || []), [cfg]);
   const combinedByBase = useMemo(() => {
@@ -427,7 +458,7 @@ export default function App() {
           {view === "classes" && (cfg.classes.length ? <ClassView {...ctx} cls={safeCls} /> : <EmptyState msg="No classes yet. Add classes in Classes & setup, then set up your Mapping." onGo={() => setView("setup")} />)}
           {view === "teachers" && (cfg.singles.length ? <TeacherView {...ctx} tch={safeTch} /> : <EmptyState msg="No teachers yet. Add teachers in Classes & setup (or import them with a mapping CSV)." onGo={() => setView("setup")} />)}
           {view === "free" && <FreeView {...ctx} fday={safeFday} setFday={setFday} fper={fper} setFper={setFper} />}
-          {view === "bkey" && (cfg.classes.length ? <BKeyView {...ctx} cls={safeCls} /> : <EmptyState msg="No classes yet. Add classes in Classes & setup first, then map subjects and teachers here." onGo={() => setView("setup")} />)}
+          {view === "bkey" && (cfg.classes.length ? <BKeyView {...ctx} cls={safeCls} setCls={setCls} /> : <EmptyState msg="No classes yet. Add classes in Classes & setup first, then map subjects and teachers here." onGo={() => setView("setup")} />)}
           {view === "edit" && (cfg.classes.length ? <EditView {...ctx} cls={safeCls} /> : <EmptyState msg="No classes yet. Add classes and set up the Mapping before generating a timetable." onGo={() => setView("setup")} />)}
           {view === "rules" && <RulesView {...ctx} />}
           {view === "combined" && <CombinedView {...ctx} />}
@@ -481,10 +512,14 @@ function ClashBadge({ n }) {
   );
 }
 function Sidebar({ title, items, sel, onSel, sub }) {
+  const [q, setQ] = useState("");
+  const shown = items.filter((x) => !q.trim() || x.toLowerCase().includes(q.trim().toLowerCase()));
   return (
     <aside className="tt-noprint tt-list" style={{ width: 188, flexShrink: 0, borderRight: `1px solid ${C.line}`, background: C.surface, height: "calc(100vh - 110px)", overflowY: "auto", position: "sticky", top: 110 }}>
       <div style={{ padding: "12px 16px 8px", fontSize: 11, letterSpacing: 0.6, textTransform: "uppercase", color: C.sub, fontWeight: 700 }}>{title}</div>
-      {items.map((x) => (
+      <div style={{ padding: "0 10px 8px" }}><input className="tt-in" style={{ width: "100%", fontSize: 12.5, padding: "6px 8px" }} placeholder={`Search ${title.toLowerCase()}…`} value={q} onChange={(e) => setQ(e.target.value)} /></div>
+      {shown.length === 0 && <div style={{ padding: "6px 16px", fontSize: 12, color: C.sub }}>No match.</div>}
+      {shown.map((x) => (
         <div key={x} onClick={() => onSel(x)} style={{
           padding: "8px 16px", cursor: "pointer", fontSize: 13.5, display: "flex", justifyContent: "space-between", alignItems: "center",
           background: sel === x ? C.primarySoft : "transparent", color: sel === x ? C.primary : C.ink, fontWeight: sel === x ? 700 : 500,
@@ -596,11 +631,14 @@ function TeacherView({ cfg, tch, occupancy, teacherLoad, combinedByBase }) {
 
 /* generic weekly grid renderer */
 function MobilePicker({ label, items, value, onChange }) {
+  const [q, setQ] = useState("");
+  const list = items.filter((x) => !q.trim() || x === value || x.toLowerCase().includes(q.trim().toLowerCase()));
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, background: "#fff", border: `1px solid ${C.line}`, borderRadius: 10, padding: "8px 10px" }}>
       <span style={{ fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5 }}>{label}</span>
+      <input className="tt-in" style={{ width: 84, fontSize: 13, padding: "8px 8px" }} placeholder="Search" value={q} onChange={(e) => { const v = e.target.value; setQ(v); const m = items.filter((x) => x.toLowerCase().includes(v.trim().toLowerCase())); if (v.trim() && m.length === 1) onChange(m[0]); }} />
       <select className="tt-sel" style={{ flex: 1, fontSize: 14, padding: "9px 10px", fontFamily: mono, fontWeight: 700 }} value={value} onChange={(e) => onChange(e.target.value)}>
-        {items.map((x) => <option key={x} value={x}>{x}</option>)}
+        {list.map((x) => <option key={x} value={x}>{x}</option>)}
       </select>
     </div>
   );
@@ -747,7 +785,8 @@ function SearchSelect({ value, options, onChange, placeholder, allowEmpty }) {
   const [txt, setTxt] = useState(value || "");
   const idRef = useRef("ss" + Math.random().toString(36).slice(2));
   useEffect(() => { setTxt(value || ""); }, [value]);
-  const find = (v) => options.find((o) => o.toLowerCase() === String(v || "").trim().toLowerCase());
+  const norm = (x) => String(x || "").toLowerCase().replace(/\s+/g, "");
+  const find = (v) => options.find((o) => norm(o) === norm(v));
   const commit = (v) => {
     const m = find(v);
     if (m) { if (m !== value) onChange(m); setTxt(m); }
@@ -767,8 +806,42 @@ function SearchSelect({ value, options, onChange, placeholder, allowEmpty }) {
   );
 }
 
-function BKeyView({ cfg, cls, update, expand, teacherLoad, mobile, ask }) {
+function BKeyView({ cfg, cls, setCls, update, expand, teacherLoad, mobile, ask }) {
   const rows = cfg.bkey[cls] || [];
+  const [section, setSection] = useState(() => lsGet("tt_mapsec", "class"));
+  useEffect(() => { lsSet("tt_mapsec", section); }, [section]);
+  const [saveMsg, setSaveMsg] = useState(null);
+  const [classMsg, setClassMsg] = useState(null);
+  useEffect(() => { setClassMsg(null); }, [cls]);
+  const saveClass = () => {
+    const r = cfg.bkey[cls] || [];
+    const st = stdOf(cls);
+    const noT = r.filter((x) => !x.teacher).map((x) => x.sub);
+    const noP = r.filter((x) => x.sub && !periodsFor(cfg, cls, x.sub)).map((x) => x.sub);
+    const have = new Set(r.map((x) => x.sub));
+    const missing = Object.keys(cfg.stdPeriods?.[st] || {}).filter((su) => Number(cfg.stdPeriods[st][su]) > 0 && !have.has(su));
+    update((n) => { n.savedAt = new Date().toISOString(); });
+    const warn = [];
+    if (!r.length) warn.push("no subjects mapped yet");
+    if (noT.length) warn.push("no teacher for " + noT.join(", "));
+    if (noP.length) warn.push("0 periods for " + noP.join(", ") + " in Standard " + st);
+    if (missing.length) warn.push("Standard " + st + " subjects not added: " + missing.join(", "));
+    if (!cfg.classTeacher[cls]) warn.push("no class teacher set");
+    const others = cfg.classes.filter((c) => c !== cls && (!(cfg.bkey[c] || []).length || (cfg.bkey[c] || []).some((x) => !x.teacher))).length;
+    const tail = others ? ` (${others} other class${others > 1 ? "es are" : " is"} still incomplete.)` : "";
+    setClassMsg(warn.length
+      ? { tone: "warn", text: `Saved ${cls} — not complete yet: ${warn.join("; ")}. You can finish it later.${tail}` }
+      : { tone: "primary", text: `Saved ${cls}. This class is fully mapped.${tail}` });
+  };
+  const saveMapping = () => {
+    const noMap = cfg.classes.filter((c) => !(cfg.bkey[c] || []).length);
+    const noTeacher = [], noPer = [];
+    for (const c of cfg.classes) for (const r of (cfg.bkey[c] || [])) { if (!r.teacher) noTeacher.push(c + " " + r.sub); if (!periodsFor(cfg, c, r.sub)) noPer.push(c + " " + r.sub); }
+    const noStdSubs = standardsOf(cfg).filter((st) => !Object.values(cfg.stdPeriods?.[st] || {}).some((v) => Number(v) > 0)).map((st) => "Std " + st);
+    const noCT = cfg.classes.filter((c) => !cfg.classTeacher[c]);
+    update((n) => { n.savedAt = new Date().toISOString(); });
+    setSaveMsg({ noMap, noTeacher, noPer, noStdSubs, noCT });
+  };
   const fileRef = useRef(null);
   const [imp, setImp] = useState("");
   const onImport = async (file) => {
@@ -784,7 +857,7 @@ function BKeyView({ cfg, cls, update, expand, teacherLoad, mobile, ask }) {
         for (const r of parsed) {
           const teacher = r.teacher || (n.singles[0] || "");
           (byClass[r.cls] ||= []).push({ sub: r.sub, teacher });
-          if (!n.classes.includes(r.cls)) { n.classes.push(r.cls); n.classTeacher[r.cls] = null; n.grid[r.cls] = {}; n.days.forEach((d) => (n.grid[r.cls][d] = emptyDay())); }
+          if (!n.classes.includes(r.cls)) { n.classes.push(r.cls); n.classTeacher[r.cls] = null; n.grid[r.cls] = {}; n.days.forEach((d) => (n.grid[r.cls][d] = emptyDay(n.periods.length))); }
           const st = stdOf(r.cls); if (!n.stdPeriods[st]) n.stdPeriods[st] = {};
           if (r.sub && !n.subjects.includes(r.sub)) n.subjects.push(r.sub);
           if (teacher && teacher.indexOf(" ") < 0 && !n.singles.includes(teacher)) n.singles.push(teacher);
@@ -847,17 +920,29 @@ function BKeyView({ cfg, cls, update, expand, teacherLoad, mobile, ask }) {
 
   return (
     <div>
-      <ViewHeader title={`Mapping · Class ${cls}`} note={`Periods come from Standard ${std}. Here you just assign the teacher for each subject.`} right={<>
-        <button className="tt-btn" onClick={autofillAll} style={solidBtn}>Auto-fill subjects · all classes</button>
+      <ViewHeader title={section === "std" ? "Mapping · Standard periods" : section === "load" ? "Mapping · Teacher load" : `Mapping · Class ${cls}`} note={section === "std" ? "Step 1 — give each standard its own subjects and weekly periods." : section === "load" ? "Step 3 — check every teacher’s weekly load from the mapping before generating." : `Step 2 — assign a teacher to each subject of ${cls}. Periods come from Standard ${std}.`} right={<>
+        <button className="tt-btn" onClick={saveMapping} style={solidBtn}>Save mapping</button>
+        <button className="tt-btn" onClick={autofillAll} style={ghostBtn}>Auto-fill subjects · all classes</button>
         <button className="tt-btn" onClick={clearAllMapping} style={{ ...ghostBtn, color: C.clash }}>Clear all mapping</button>
         <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" onChange={(e) => onImport(e.target.files && e.target.files[0])} style={{ display: "none" }} />
         <button className="tt-btn" onClick={() => fileRef.current && fileRef.current.click()} style={ghostBtn}>Import CSV / Excel</button>
       </>} />
       {imp && <Banner tone="primary">{imp}</Banner>}
+      {saveMsg && <SaveReport r={saveMsg} onClose={() => setSaveMsg(null)} />}
+      <div style={{ marginBottom: 16 }}>
+        <Seg label="Section" options={[["std", "1 · Standard periods"], ["class", "2 · Class mapping"], ["load", "3 · Teacher load"]]} val={section} onChange={setSection} />
+      </div>
 
-      <StandardPeriods cfg={cfg} update={update} highlightStd={std} mobile={mobile} ask={ask} />
+      {section === "std" && <StandardPeriods cfg={cfg} update={update} highlightStd={std} mobile={mobile} ask={ask} />}
+      {section === "load" && <TeacherLoadSection cfg={cfg} teacherLoad={teacherLoad} />}
 
-      <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "minmax(0,1.3fr) minmax(0,1fr)", gap: 16, alignItems: "start", marginTop: 16 }}>
+      {section === "class" && <>
+      <div style={{ ...card, padding: "10px 14px", marginBottom: 14, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", overflow: "visible" }}>
+        <span style={{ fontSize: 12.5, fontWeight: 700, color: C.sub }}>Find class:</span>
+        <div style={{ width: 160 }}><SearchSelect value={cls} options={cfg.classes} onChange={(v) => setCls && setCls(v)} placeholder="Type a class, e.g. 6 B" /></div>
+        <span style={{ fontSize: 12, color: C.sub }}>Editing <b style={{ fontFamily: mono, color: C.primary }}>{cls}</b> · Standard {std}</span>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr)", gap: 16, alignItems: "start", maxWidth: 900 }}>
         <div style={card}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", borderBottom: `1px solid ${C.line}`, flexWrap: "wrap" }}>
             <span style={{ fontSize: 13, fontWeight: 700 }}>Subject → teacher · {cls}</span>
@@ -896,7 +981,8 @@ function BKeyView({ cfg, cls, update, expand, teacherLoad, mobile, ask }) {
               })}
             </tbody>
           </table>
-          <div style={{ display: "flex", alignItems: "center", padding: "10px 14px", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", padding: "10px 14px", gap: 12, flexWrap: "wrap" }}>
+            <button className="tt-btn" onClick={saveClass} style={solidBtn}>Save {cls}</button>
             <button className="tt-btn" onClick={addRow} style={ghostBtn}>+ Add subject</button>
             <button className="tt-btn" onClick={fillClassSubs} style={ghostBtn}>Fill from standard subjects</button>
             <button className="tt-btn" onClick={clearThisClass} style={{ ...ghostBtn, color: C.clash }}>Clear this class</button>
@@ -904,6 +990,10 @@ function BKeyView({ cfg, cls, update, expand, teacherLoad, mobile, ask }) {
               {totalKeyed} periods keyed of {weekSlots} weekly slots{totalKeyed > weekSlots ? " · over capacity" : ""}
             </span>
           </div>
+          {classMsg && <div style={{ margin: "0 14px 12px", padding: "9px 12px", borderRadius: 9, fontSize: 12.5, lineHeight: 1.55, fontWeight: 500, background: classMsg.tone === "warn" ? C.warnSoft : C.primarySoft, color: classMsg.tone === "warn" ? C.warn : C.primary, border: `1px solid ${classMsg.tone === "warn" ? C.warn : C.primary}33`, display: "flex", gap: 8 }}>
+            <span style={{ flex: 1 }}>{classMsg.tone === "warn" ? "⚠ " : "✓ "}{classMsg.text}</span>
+            <button className="tt-btn" onClick={() => setClassMsg(null)} style={{ border: "none", background: "transparent", color: "inherit", cursor: "pointer", fontSize: 16, lineHeight: 1 }}>×</button>
+          </div>}
           {showPaste && <div style={{ borderTop: `1px solid ${C.line}`, padding: 12 }}>
             <div style={{ fontSize: 11.5, color: C.sub, fontWeight: 700, marginBottom: 6 }}>Paste from Excel / Sheets for {cls} — copy the Subjects column into the left box and the Teachers column into the right box (rows line up top to bottom). This replaces the rows for the class.</div>
             <div style={{ display: "flex", gap: 8 }}>
@@ -922,8 +1012,6 @@ function BKeyView({ cfg, cls, update, expand, teacherLoad, mobile, ask }) {
             </div>
           </div>}
         </div>
-
-        <TeacherLoad cfg={cfg} teacherLoad={teacherLoad} />
       </div>
 
       <div style={{ ...card, marginTop: 16 }}>
@@ -937,6 +1025,7 @@ function BKeyView({ cfg, cls, update, expand, teacherLoad, mobile, ask }) {
           <div style={{ fontSize: 12, color: C.sub, marginTop: 8, lineHeight: 1.6 }}>Set one class fully (subjects + teachers), then copy it to the classes that share the same setup and tweak only what differs. Copying replaces the target classes' mapping.</div>
         </div>
       </div>
+      </>}
     </div>
   );
 }
@@ -1010,6 +1099,117 @@ function StandardPeriods({ cfg, update, highlightStd, mobile, ask }) {
   );
 }
 
+function TeacherLoadSection({ cfg, teacherLoad }) {
+  const [q, setQ] = useState("");
+  const [sort, setSort] = useState("code");
+  const [filt, setFilt] = useState("all");
+  const [open, setOpen] = useState(null);
+  const cap = cfg.days.length * cfg.periods.length;
+  const combNames = new Set((cfg.combined || []).map((x) => x.name));
+  const detail = {};
+  cfg.singles.forEach((t) => (detail[t] = []));
+  for (const c of cfg.classes) for (const r of (cfg.bkey[c] || [])) {
+    if (!r.teacher || combNames.has(r.teacher)) continue;
+    for (const tk of String(r.teacher).split(" ")) if (detail[tk]) detail[tk].push({ c, sub: r.sub, per: periodsFor(cfg, c, r.sub) });
+  }
+  for (const se of (cfg.combined || [])) {
+    const p = periodsFor(cfg, se.divisions[0] || cfg.classes[0], se.sub);
+    for (const tk of se.teachers) if (detail[tk]) detail[tk].push({ c: se.divisions.join(", "), sub: se.sub + " (combined: " + se.name + ")", per: p });
+  }
+  let list = cfg.singles.map((t) => {
+    const L = teacherLoad[t] || { target: 0, placed: 0 };
+    const classes = new Set(detail[t].map((d) => d.c)).size;
+    return { t, target: L.target || 0, placed: L.placed || 0, free: cap - (L.target || 0), classes };
+  });
+  const qq = q.trim().toLowerCase();
+  if (qq) list = list.filter((x) => x.t.toLowerCase().includes(qq) || detail[x.t].some((d) => (d.c + " " + d.sub).toLowerCase().includes(qq)));
+  if (filt === "over") list = list.filter((x) => x.target > cap);
+  else if (filt === "none") list = list.filter((x) => x.target === 0);
+  else if (filt === "incomplete") list = list.filter((x) => x.placed !== x.target);
+  if (sort === "target") list.sort((a, b) => b.target - a.target);
+  else if (sort === "free") list.sort((a, b) => a.free - b.free);
+  else if (sort === "remaining") list.sort((a, b) => (b.target - b.placed) - (a.target - a.placed));
+  const all = cfg.singles.map((t) => (teacherLoad[t] || { target: 0 }).target || 0);
+  const totalTarget = all.reduce((a, b) => a + b, 0);
+  const overN = all.filter((v) => v > cap).length;
+  const zeroN = all.filter((v) => v === 0).length;
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 16 }}>
+        <Stat label="Teachers" value={cfg.singles.length} />
+        <Stat label="Periods mapped (total)" value={totalTarget} />
+        <Stat label="Max per teacher / week" value={cap} />
+        <Stat label="Over capacity" value={overN} tone={overN ? "bad" : "good"} />
+        <Stat label="No periods mapped" value={zeroN} tone={zeroN ? "warn" : "good"} />
+      </div>
+      <div style={card}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "11px 14px", borderBottom: `1px solid ${C.line}`, flexWrap: "wrap" }}>
+          <input className="tt-in" style={{ width: 220, fontSize: 13, padding: "7px 9px" }} placeholder="Search teacher, class or subject…" value={q} onChange={(e) => setQ(e.target.value)} />
+          <select className="tt-sel" style={{ width: 170 }} value={filt} onChange={(e) => setFilt(e.target.value)}>
+            <option value="all">Show: all teachers</option><option value="over">Show: over capacity</option><option value="none">Show: no periods mapped</option><option value="incomplete">Show: not fully placed</option>
+          </select>
+          <select className="tt-sel" style={{ width: 150, marginLeft: "auto" }} value={sort} onChange={(e) => setSort(e.target.value)}>
+            <option value="code">Sort: name</option><option value="target">Sort: most periods</option><option value="free">Sort: least free</option><option value="remaining">Sort: most left to place</option>
+          </select>
+        </div>
+        <div className="tt-scroll" style={{ overflowX: "auto" }}>
+          <table style={{ ...tbl, minWidth: 640 }}>
+            <thead><tr>
+              <th style={{ ...th, textAlign: "left", paddingLeft: 12, width: 110 }}>Teacher</th>
+              <th style={{ ...th, width: 66 }}>Classes</th>
+              <th style={{ ...th, width: 76 }}>Mapped</th>
+              <th style={{ ...th, width: 66 }}>Free</th>
+              <th style={th}>Load (of {cap})</th>
+              <th style={{ ...th, width: 66 }}>Placed</th>
+              <th style={{ ...th, width: 100 }}>Status</th>
+            </tr></thead>
+            <tbody>
+              {list.length === 0 && <tr><td colSpan={7} style={{ ...cellTd, color: C.sub, height: 44 }}>No teachers match.</td></tr>}
+              {list.map((x) => {
+                const over = x.target > cap;
+                const pct = cap ? Math.min(100, Math.round((x.target / cap) * 100)) : 0;
+                const barCol = over ? C.clash : pct >= 85 ? C.warn : C.primary;
+                const rem = x.target - x.placed;
+                const st = x.target === 0 ? ["not mapped", C.sub, "#f1f3f6"] : over ? [`over by ${x.target - cap}`, C.clash, C.clashSoft] : x.placed > x.target ? [`placed +${x.placed - x.target}`, C.clash, C.clashSoft] : rem === 0 ? ["complete", C.free, C.freeSoft] : [`${rem} to place`, C.warn, C.warnSoft];
+                const isOpen = open === x.t;
+                return (
+                  <React.Fragment key={x.t}>
+                    <tr onClick={() => setOpen(isOpen ? null : x.t)} style={{ cursor: "pointer", background: isOpen ? C.primarySoft : "transparent" }}>
+                      <td style={{ ...cellTd, textAlign: "left", paddingLeft: 12, fontFamily: mono, fontWeight: 800, height: 38 }}>{isOpen ? "▾ " : "▸ "}{x.t}</td>
+                      <td style={{ ...cellTd, height: 38, fontFamily: mono }}>{x.classes}</td>
+                      <td style={{ ...cellTd, height: 38, fontFamily: mono, fontWeight: 700 }}>{x.target}</td>
+                      <td style={{ ...cellTd, height: 38, fontFamily: mono, color: x.free < 0 ? C.clash : C.ink }}>{x.free}</td>
+                      <td style={{ ...cellTd, height: 38 }}>
+                        <div style={{ height: 9, background: "#edf0f4", borderRadius: 6, overflow: "hidden" }}><div style={{ width: pct + "%", height: "100%", background: barCol }} /></div>
+                      </td>
+                      <td style={{ ...cellTd, height: 38, fontFamily: mono }}>{x.placed}</td>
+                      <td style={{ ...cellTd, height: 38 }}><span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: st[2], color: st[1], whiteSpace: "nowrap" }}>{st[0]}</span></td>
+                    </tr>
+                    {isOpen && (
+                      <tr><td colSpan={7} style={{ ...cellTd, textAlign: "left", padding: "10px 14px", background: "#fafbfc" }}>
+                        {detail[x.t].length === 0 ? <span style={{ color: C.sub, fontSize: 12.5 }}>Not mapped to any class yet.</span> : (
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                            {detail[x.t].map((d, k) => (
+                              <span key={k} style={{ fontSize: 12, padding: "4px 9px", borderRadius: 8, background: "#fff", border: `1px solid ${C.line}`, borderLeft: `4px solid ${SUBJECT_BAR[d.sub] || C.primary}` }}>
+                                <b style={{ fontFamily: mono }}>{d.c}</b> · {d.sub} · <b>{d.per}</b>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </td></tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ padding: "8px 14px", fontSize: 12, color: C.sub, lineHeight: 1.6 }}>Mapped = weekly periods this teacher is given in the mapping (combined subjects counted once). Free = periods left in the week ({cap}) after that. Placed = periods actually in the generated timetable. Tap a teacher to see their classes.</div>
+      </div>
+    </div>
+  );
+}
+
 function TeacherLoad({ cfg, teacherLoad }) {
   const [sort, setSort] = useState("code");
   let list = cfg.singles.map((t) => ({ t, ...teacherLoad[t] }));
@@ -1056,6 +1256,35 @@ function EditView({ cfg, cls, update, expand, clashTokens, occupancy, ask }) {
   const keys = cfg.bkey[cls] || [];
   const [report, setReport] = useState("");
   const [fzDay, setFzDay] = useState(cfg.days[0]);
+  const [rpMode, setRpMode] = useState("replace");
+  const [rpFrom, setRpFrom] = useState("");
+  const [rpTo, setRpTo] = useState("");
+  const [rpScope, setRpScope] = useState("all");
+  const [rpMap, setRpMap] = useState(true);
+  const doReplace = () => {
+    const A = rpFrom, B = rpTo.trim().toUpperCase();
+    if (!A || !B || A === B) { setReport("Pick the teacher to change and a different teacher (or type a new name)."); return; }
+    const swap = rpMode === "swap";
+    const where = rpScope === "all" ? "ALL classes" : cls;
+    const verb = swap ? `Swap ${A} ↔ ${B}` : `Replace ${A} with ${B}`;
+    ask(`${verb} in ${where}${rpMap ? " (timetable + mapping)" : " (timetable only)"}?`, () => {
+      update((n) => {
+        if (!n.singles.includes(B)) { n.singles.push(B); n.singles.sort(); }
+        const combNames = new Set((n.combined || []).map((x) => x.name));
+        const sw = (v) => (v === A ? B : swap && v === B ? A : v);
+        const swCode = (v) => (!v || combNames.has(v) ? v : String(v).indexOf(" ") < 0 ? sw(v) : String(v).split(" ").map(sw).join(" "));
+        const scope = rpScope === "all" ? n.classes : [cls];
+        for (const c of scope) {
+          for (const d of n.days) (n.grid[c]?.[d] || []).forEach((sl) => { sl[0] = swCode(sl[0]); });
+          if (rpMap) (n.bkey[c] || []).forEach((r) => { r.teacher = swCode(r.teacher); });
+          if (n.classTeacher[c] === A) n.classTeacher[c] = B; else if (swap && n.classTeacher[c] === B) n.classTeacher[c] = A;
+        }
+        if (rpScope === "all") (n.combined || []).forEach((se) => { se.teachers = [...new Set(se.teachers.map(sw))]; });
+      });
+      setReport(`${verb} in ${where}: done. If ${swap ? "either teacher" : B} was already teaching at some of those times, the clash counter will show it — fix those slots or run Fill remaining.`);
+      setRpFrom(""); setRpTo("");
+    });
+  };
   const [fzPer, setFzPer] = useState(1);
   const freezeAll = (on) => update((n) => { const pi = fzPer - 1; for (const c of n.classes) { const k = `${c}|${fzDay}|${pi}`; if (on) n.locked[k] = true; else delete n.locked[k]; } });
   const [caSub, setCaSub] = useState(cfg.subjects[0]);
@@ -1124,6 +1353,18 @@ function EditView({ cfg, cls, update, expand, clashTokens, occupancy, ask }) {
         <button className="tt-btn" onClick={genAll} style={ghostBtn}>Regenerate (replace all)</button>
       </>} />
       {report && <Banner tone="primary">{report}</Banner>}
+      <div style={{ ...card, marginBottom: 14, padding: 12, display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+        <span style={{ fontSize: 12.5, fontWeight: 700, color: C.sub }}>Change a teacher after assigning:</span>
+        <select className="tt-sel" style={{ width: 150 }} value={rpMode} onChange={(e) => setRpMode(e.target.value)}><option value="replace">Replace teacher</option><option value="swap">Swap (interchange)</option></select>
+        <select className="tt-sel" style={{ width: 110 }} value={rpFrom} onChange={(e) => setRpFrom(e.target.value)}><option value="">teacher…</option>{cfg.singles.map((t) => <option key={t}>{t}</option>)}</select>
+        <span style={{ fontWeight: 800, color: C.primary }}>{rpMode === "swap" ? "↔" : "→"}</span>
+        <input className="tt-in" list="tt-rp-teachers" style={{ width: 130 }} placeholder={rpMode === "swap" ? "other teacher" : "new teacher"} value={rpTo} onChange={(e) => setRpTo(e.target.value)} />
+        <datalist id="tt-rp-teachers">{cfg.singles.map((t) => <option key={t} value={t} />)}</datalist>
+        <select className="tt-sel" style={{ width: 130 }} value={rpScope} onChange={(e) => setRpScope(e.target.value)}><option value="all">All classes</option><option value="class">Only {cls}</option></select>
+        <label style={{ fontSize: 12.5, color: C.sub, display: "inline-flex", alignItems: "center", gap: 5 }}><input type="checkbox" checked={rpMap} onChange={(e) => setRpMap(e.target.checked)} /> also update mapping</label>
+        <button className="tt-btn" onClick={doReplace} style={solidBtn}>Apply</button>
+        <div style={{ width: "100%", fontSize: 11.5, color: C.sub, lineHeight: 1.5 }}>Replace: a temporary name, or a teacher who left, hands every period to the new teacher (type a new name to add one). Swap: two teachers exchange their periods — across the school, or only in {cls}.</div>
+      </div>
       <Banner tone="warn">Tap the 🔓 on any slot to lock it. Locked slots (filled or empty) are kept exactly as they are when you Auto-generate — an empty locked slot stays blank (frozen for assembly, activities, etc.). Use “Clear all” to start blank.</Banner>
       <div style={{ ...card, marginBottom: 14, padding: 12, display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
         <span style={{ fontSize: 12.5, fontWeight: 700, color: C.sub }}>Freeze a slot for ALL classes:</span>
@@ -1465,6 +1706,7 @@ function CombinedView({ cfg, update, ask, mobile, occupancy }) {
     for (const c of n.classes) (n.bkey[c] || []).forEach((r) => { if (r.teacher === oldName) r.teacher = newName; });
   });
   const toggleArr = (field, val) => editS((x) => { const a = x[field]; const k = a.indexOf(val); k < 0 ? a.push(val) : a.splice(k, 1); });
+  const [cMsg, setCMsg] = useState(null);
   const setArr = (field, arr) => editS((x) => { x[field] = arr.slice(); });
 
   // scheduling: a session is "at" (d,p) if every member division has it there
@@ -1481,16 +1723,30 @@ function CombinedView({ cfg, update, ask, mobile, occupancy }) {
   };
   // a member division already has a different subject in this slot (would be overwritten)
   const overwriteAt = (d, p) => s ? s.divisions.filter((c) => { const cell = cfg.grid[c]?.[d]?.[p]; return cell && cell[0] && cell[0] !== s.name; }) : [];
+  const saveSession = () => {
+    if (!s) return;
+    const todo = [];
+    if (!s.name.trim()) todo.push("give it a name");
+    if (!s.sub) todo.push("choose a subject");
+    if (!s.teachers.length) todo.push("pick at least one teacher");
+    if (s.divisions.length < 2) todo.push("pick the divisions that merge (at least 2)");
+    let placed = 0; for (const d of cfg.days) cfg.periods.forEach((_, pi) => { if (scheduledAt(d, pi)) placed++; });
+    update((n) => { n.savedAt = new Date().toISOString(); });
+    setCMsg(todo.length
+      ? { tone: "warn", text: `Saved “${s.name}” — still to do: ${todo.join("; ")}.` }
+      : { tone: "primary", text: `Saved “${s.name}”: ${s.sub}, ${s.teachers.length} teacher(s), ${s.divisions.length} divisions, placed in ${placed} slot(s)${placed ? "." : " — not placed yet (use the grid below, or Fill remaining in Assign)."}` });
+  };
 
   return (
     <div>
       <ViewHeader title="Combined subjects" note="Define a combined/parallel subject once (language, PET, etc.) — its teachers and the divisions that merge for it. Placing it fills every division at once, and those teachers never clash with each other during it. Member divisions get this subject from the block, so you don’t also key it normally." />
+      {cMsg && <Banner tone={cMsg.tone}>{cMsg.text}</Banner>}
       <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "210px minmax(0,1fr)", gap: 16, alignItems: "start" }}>
         <div style={card}>
           <Panelhead text="Sessions" count={sessions.length} />
           <div style={{ maxHeight: 360, overflowY: "auto" }}>
             {sessions.map((x, k) => (
-              <div key={k} onClick={() => setSel(k)} style={{ padding: "9px 14px", cursor: "pointer", fontFamily: mono, fontSize: 12.5, fontWeight: k === i ? 700 : 500, color: k === i ? C.primary : C.ink, background: k === i ? C.primarySoft : "transparent", borderLeft: k === i ? `3px solid ${C.primary}` : "3px solid transparent" }}>
+              <div key={k} onClick={() => { setSel(k); setCMsg(null); }} style={{ padding: "9px 14px", cursor: "pointer", fontFamily: mono, fontSize: 12.5, fontWeight: k === i ? 700 : 500, color: k === i ? C.primary : C.ink, background: k === i ? C.primarySoft : "transparent", borderLeft: k === i ? `3px solid ${C.primary}` : "3px solid transparent" }}>
                 {x.name}<div style={{ fontSize: 10.5, color: C.sub, fontWeight: 500 }}>{x.sub} · {x.teachers.length} teachers · {x.divisions.length} div</div>
               </div>
             ))}
@@ -1506,7 +1762,8 @@ function CombinedView({ cfg, update, ask, mobile, occupancy }) {
                 <label style={{ fontSize: 12, color: C.sub }}>Subject&nbsp;
                   <select className="tt-sel" style={{ width: 90, display: "inline-block" }} value={s.sub} onChange={(e) => editS((x) => (x.sub = e.target.value))}>{cfg.subjects.map((su) => <option key={su}>{su}</option>)}</select>
                 </label>
-                <button className="tt-btn" onClick={delSession} style={{ ...ghostBtn, marginLeft: "auto", color: C.clash }}>Remove session</button>
+                <button className="tt-btn" onClick={saveSession} style={{ ...solidBtn, marginLeft: "auto" }}>Save</button>
+                <button className="tt-btn" onClick={delSession} style={{ ...ghostBtn, color: C.clash }}>Remove session</button>
               </div>
               <div style={{ padding: 14, display: "grid", gap: 14 }}>
                 <ChipPicker label="Teachers in this session" all={cfg.singles} selected={s.teachers} onToggle={(v) => toggleArr("teachers", v)} onSetAll={(a) => setArr("teachers", a)} />
@@ -1602,7 +1859,7 @@ function ExportView({ cfg }) {
             <button className="tt-btn" onClick={() => exportClassesOverviewPDF(cfg)} style={solidBtn}>All classes (A3, ~40/sheet)</button>
             <button className="tt-btn" onClick={() => exportTeachersOverviewPDF(cfg)} style={solidBtn}>All teachers (A3, ~24/sheet)</button>
           </>} />
-        <Card title="Leisure / free periods" desc="Either a grid marking exactly which periods each teacher is free (green dot) \u2014 all teachers on one A3 page \u2014 or a simple count per day."
+        <Card title="Leisure / free periods" desc="Either a grid marking exactly which periods each teacher is free (green dot) — all teachers on one A3 page — or a simple count per day."
           actions={<>
             <button className="tt-btn" onClick={() => exportFreeSlotsPDF(cfg, paper)} style={solidBtn}>Free periods by period (A3 PDF)</button>
             <button className="tt-btn" onClick={() => exportFreeReportPDF(cfg, paper)} style={ghostBtn}>Free-period counts per day ({paper})</button>
@@ -1760,7 +2017,7 @@ function AnalysisView({ cfg, teacherLoad, mobile }) {
 function Stat({ label, value, tone }) {
   return (
     <div style={{ ...card, padding: "14px 16px" }}>
-      <div style={{ fontSize: 26, fontWeight: 800, color: tone === "accent" ? C.accent : C.primary, letterSpacing: -0.5 }}>{value}</div>
+      <div style={{ fontSize: 26, fontWeight: 800, color: tone === "bad" ? C.clash : tone === "warn" ? C.warn : tone === "good" ? C.free : tone === "accent" ? C.accent : C.primary, letterSpacing: -0.5 }}>{value}</div>
       <div style={{ fontSize: 11.5, color: C.sub, fontWeight: 600, marginTop: 2 }}>{label}</div>
     </div>
   );
@@ -2064,7 +2321,7 @@ function exportFreeSlotsPDF(cfg, paper) {
     }
     rows += "<tr><td class=tname>" + esc(t) + "</td>" + cells + "<td><b>" + freeTot + "</b></td></tr>";
   }
-  openPrint(esc(cfg.school) + " - Teacher free periods (by period)", css, "<h2>" + esc(cfg.school) + " - Teacher free (leisure) periods \u2014 green dot = free</h2><table><thead>" + head1 + head2 + "</thead><tbody>" + rows + "</tbody></table>");
+  openPrint(esc(cfg.school) + " - Teacher free periods (by period)", css, "<h2>" + esc(cfg.school) + " - Teacher free (leisure) periods — green dot = free</h2><table><thead>" + head1 + head2 + "</thead><tbody>" + rows + "</tbody></table>");
 }
 
 function miniGridPages(cfg, items, per, cols, title, cellFor) {
