@@ -88,7 +88,7 @@ function combGroups(cfg) {
 function teacherWorkDays(cfg, t) { const a = (cfg.teacherDays || {})[t]; return a && a.length ? cfg.days.filter((d) => a.includes(d)) : cfg.days; }
 function teacherCap(cfg, t) { return teacherWorkDays(cfg, t).length * cfg.periods.length; }
 
-function autoSchedule(cfg, mode = "all", onlyClass = null) {
+function autoSchedule(cfg, mode = "all", onlyClass = null, opts = {}) {
   const singles = new Set(cfg.singles);
   const combined = (cfg.combined || []).filter((s) => s && s.name);
   const cByBase = {}; combined.forEach((s) => (cByBase[s.name] = s));
@@ -129,7 +129,8 @@ function autoSchedule(cfg, mode = "all", onlyClass = null) {
     const key = (c, d, p) => c + "|" + d + "|" + p;
     const extraUsed = {};
     const mark = (c, sub, d, p, k) => { const kd = `${c}|${sub}|${d}`, before = subDay[kd] || 0; if (k > 0 && before >= 1) extraUsed[c + "|" + sub] = (extraUsed[c + "|" + sub] || 0) + 1; if (k < 0 && before >= 2) extraUsed[c + "|" + sub] = (extraUsed[c + "|" + sub] || 0) - 1; subDay[kd] = before + k; subPer[`${c}|${sub}|${p}`] = (subPer[`${c}|${sub}|${p}`] || 0) + k; };
-    const put = (c, d, p, code, sub) => { grid[c][d][p] = [code, sub]; tOf(code).forEach((t) => tbusy[d][p].add(t)); mark(c, sub, d, p, 1); };
+    const tcls = Array.from({ length: D }, () => Array.from({ length: P }, () => new Map()));
+    const put = (c, d, p, code, sub) => { grid[c][d][p] = [code, sub]; const comb = isC(code); tOf(code).forEach((t) => { tbusy[d][p].add(t); if (!comb) tcls[d][p].set(t, c); }); mark(c, sub, d, p, 1); };
 
     // 1. keep what must stay: locked cells always; in fill modes, everything already placed
     const frozen = new Set();
@@ -148,7 +149,7 @@ function autoSchedule(cfg, mode = "all", onlyClass = null) {
     const free = (c, d, p) => writable.has(c) && !!grid[c] && !grid[c][d][p][0] && !frozen.has(key(c, d, p));
     const tOK = (toks, d, p) => toks.every((t) => !tbusy[d][p].has(t) && availT(t, d));
     const book = (c, d, p, code, sub, isFixed) => { put(c, d, p, code, sub); if (isFixed) fixed.add(key(c, d, p)); };
-    const unbook = (c, d, p) => { const [code, sub] = grid[c][d][p]; if (!code) return; tOf(code).forEach((t) => tbusy[d][p].delete(t)); mark(c, sub, d, p, -1); grid[c][d][p] = [null, null]; };
+    const unbook = (c, d, p) => { const [code, sub] = grid[c][d][p]; if (!code) return; tOf(code).forEach((t) => { tbusy[d][p].delete(t); if (tcls[d][p].get(t) === c) tcls[d][p].delete(t); }); mark(c, sub, d, p, -1); grid[c][d][p] = [null, null]; };
     const okSoft = (c, sub, d, p) => { if (!dayOK(c, sub, d)) return false; if (R(sub).distinct && subPer[`${c}|${sub}|${p}`]) return false; return true; };
     const extraLeft = (c, sub) => twiceOK(c, sub) || extraOK[c + "|" + sub] === undefined || (extraUsed[c + "|" + sub] || 0) < extraOK[c + "|" + sub];
     const dayOK = (c, sub, d) => { const n = subDay[`${c}|${sub}|${d}`] || 0; if (n >= limOf(c, sub)) return false; if (n >= 1 && !twiceOK(c, sub) && !extraLeft(c, sub)) return false; return true; };
@@ -316,7 +317,7 @@ function autoSchedule(cfg, mode = "all", onlyClass = null) {
     const U = (c, d, p) => { const [code, sub] = grid[c][d][p]; unbook(c, d, p); log.push(["u", c, d, p, code, sub]); };
     const rollback = (mark) => { while (log.length > mark) { const e = log.pop(); if (e[0] === "b") unbook(e[1], e[2], e[3]); else put(e[1], e[2], e[3], e[4], e[5]); } };
     const movable = (c, d, p) => writable.has(c) && !frozen.has(key(c, d, p)) && !fixed.has(key(c, d, p)) && !!grid[c][d][p][0] && !isC(grid[c][d][p][0]);
-    const holderOf = (t, d, p) => { for (const c of cfg.classes) { const code = grid[c][d][p][0]; if (code && tOf(code).includes(t)) return c; } return null; };
+    const holderOf = (t, d, p) => tcls[d][p].get(t) || null;
     let budget = 0;
     const place = (l, depth, tabu) => {
       if (--budget < 0) return false;
@@ -348,7 +349,8 @@ function autoSchedule(cfg, mode = "all", onlyClass = null) {
       return false;
     };
     const still2 = [];
-    for (const l of remaining) { budget = 2500; const mark = log.length; if (!place(l, 3, new Set())) { rollback(mark); still2.push(l); } }
+    let chainLeft = 25000;
+    for (const l of remaining) { if (chainLeft <= 0 || Date.now() > deadline) { still2.push(l); continue; } budget = Math.min(2500, chainLeft); const b0 = budget; const mark = log.length; const okP = place(l, 3, new Set()); chainLeft -= b0 - Math.max(0, budget); if (!okP) { rollback(mark); still2.push(l); } }
     remaining = still2;
     const notesOut = Object.values(autoNotes).map((x) => `${x.sub} in Std ${x.st} needs ${x.per} periods but has ${x.days} day(s) — placed twice on a day where needed (${x.classes.length} class${x.classes.length > 1 ? "es" : ""})`);
 
@@ -362,17 +364,38 @@ function autoSchedule(cfg, mode = "all", onlyClass = null) {
     };
     for (const l of remaining) { const k = `${l.c} ${l.sub} (${l.teacher}: ${why(l)})`; missing[k] = (missing[k] || 0) + 1; }
     const out = {}; for (const c of cfg.classes) { out[c] = {}; DAYS.forEach((day, d) => (out[c][day] = grid[c][d])); }
-    return { grid: out, unplaced: remaining.length, issues: [...notesOut, ...issues], notes: notesOut.length, missing: Object.entries(missing).map(([k, n]) => n > 1 ? `${k} ×${n}` : k) };
+    return { grid: out, unplacedList: remaining.map((l) => ({ c: l.c, sub: l.sub, teacher: l.teacher })), unplaced: remaining.length, issues: [...notesOut, ...issues], notes: notesOut.length, missing: Object.entries(missing).map(([k, n]) => n > 1 ? `${k} ×${n}` : k) };
   };
 
   let best = null;
+  const maxMs = opts.maxMs || 4500;
+  const t0 = Date.now(), deadline = t0 + maxMs + 2500;
   for (let s = 1; s <= 30; s++) {
+    if (best && Date.now() - t0 > maxMs) break;
     const res = gen(s * 7 + 1);
     const score = res.unplaced * 10 + res.issues.length - (res.notes || 0);
     if (!best || score < best.score) { best = res; best.score = score; }
     if (best.score === 0) break;
   }
   return best;
+}
+
+// One auto-balance step: generate with the given class-teacher P1 days, then lower the days
+// only in the classes whose lessons didn't fit (or, failing that, where those teachers teach).
+function ctBalanceStep(cfg, counts, minD) {
+  const trial = clone(cfg);
+  for (const c of Object.keys(counts)) { trial.classRules[c] = { ...(trial.classRules[c] || {}) }; const prev = trial.classRules[c][1] || {}; trial.classRules[c][1] = { ...prev, kind: prev.kind || "ct", count: counts[c] }; delete trial.classRules[c][1].days; }
+  const res = autoSchedule(trial, "all", null, { maxMs: 1500 });
+  // only lessons that could use P1 are helped by giving P1 back
+  const canP1 = (sub) => { const r = cfg.rules?.[sub] || {}; return !(r.pin && r.pin !== 1) && !(r.forbid || []).includes(1); };
+  const stuck = res.unplacedList.filter((l) => canP1(l.sub));
+  const next = { ...counts }; let changed = false;
+  for (const c of new Set(stuck.map((l) => l.c))) if (next[c] !== undefined && next[c] > minD) { next[c]--; changed = true; }
+  if (!changed && stuck.length) {
+    const ts = new Set(stuck.map((l) => l.teacher));
+    for (const c of Object.keys(next)) if (next[c] > minD && (cfg.bkey[c] || []).some((r) => ts.has(r.teacher))) { next[c]--; changed = true; }
+  }
+  return { res, next, changed, notP1: res.unplaced - stuck.length };
 }
 
 function cmpClass(a, b) { return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" }); }
@@ -1672,6 +1695,7 @@ function RulesView({ cfg, update }) {
           </tbody>
         </table>
       </div>
+      <CTDaysPanel cfg={cfg} update={update} />
       <CommonPeriodsPanel cfg={cfg} update={update} />
       <ClassRulesPanel cfg={cfg} update={update} />
       <TwicePanel cfg={cfg} update={update} />
@@ -1707,6 +1731,121 @@ function TwicePanel({ cfg, update }) {
       <div style={{ padding: "9px 14px", fontSize: 12, color: C.sub, lineHeight: 1.6 }}>
         Turn on for a subject in a standard when it has more weekly periods than working days (e.g. English 6 periods across 5 days). The generator may then place it twice on one weekday for classes in that standard, spread as evenly as possible. Off means at most once per day.
       </div>
+    </div>
+  );
+}
+
+function CTDaysPanel({ cfg, update }) {
+  const D = cfg.days.length;
+  const stds = standardsOf(cfg);
+  const [q, setQ] = useState("");
+  const [allN, setAllN] = useState(String(D));
+  const [stdSel, setStdSel] = useState(stds[0] || "");
+  const [stdN, setStdN] = useState(String(D));
+  const [target, setTarget] = useState(String(D));
+  const [minD, setMinD] = useState("2");
+  const [busy, setBusy] = useState(false);
+  const [prog, setProg] = useState("");
+  const [result, setResult] = useState(null);
+  const ruleOf = (c) => cfg.classRules?.[c]?.[1];
+  const valOf = (c) => { const r = ruleOf(c); if (!r || r.kind !== "ct") return "off"; if (r.days && r.days.length) return "fixed"; return r.count ? String(r.count) : String(D); };
+  const setVal = (n, c, v) => {
+    n.classRules = n.classRules || {};
+    if (v === "off") { if (n.classRules[c]) { delete n.classRules[c][1]; if (!Object.keys(n.classRules[c]).length) delete n.classRules[c]; } return; }
+    (n.classRules[c] ||= {}); n.classRules[c][1] = { kind: "ct", count: +v };
+  };
+  const setOne = (c, v) => update((n) => setVal(n, c, v));
+  const setMany = (list, v) => update((n) => { for (const c of list) if (n.classTeacher[c]) setVal(n, c, v); });
+  const ctSubs = (c) => { const ct = cfg.classTeacher[c]; return (cfg.bkey[c] || []).filter((r) => r.teacher === ct && r.sub).map((r) => `${r.sub} ${periodsFor(cfg, c, r.sub)}`).join(", "); };
+  const list = cfg.classes.filter((c) => !q.trim() || (c + " " + (cfg.classTeacher[c] || "")).toLowerCase().includes(q.trim().toLowerCase()));
+  const opts = [["off", "Off"], ...Array.from({ length: D }, (_, i) => [String(i + 1), i + 1 === D ? `${D} (every day)` : `${i + 1} day${i ? "s" : ""}`])];
+
+  const runBalance = () => {
+    const minN = +minD, tgt = +target;
+    let counts = {};
+    for (const c of cfg.classes) { if (!cfg.classTeacher[c]) continue; const v = valOf(c); if (v === "fixed") continue; counts[c] = tgt; }
+    if (!Object.keys(counts).length) { setProg("No classes with a class teacher to balance."); return; }
+    setBusy(true); setResult(null); setProg("Test run 1…");
+    let it = 0, best = null, prevU = 1e9;
+    const step = () => {
+      it++;
+      let st;
+      try { st = ctBalanceStep(cfg, counts, minN); } catch (e) { setBusy(false); setProg("Couldn't test: " + ((e && e.message) || e)); return; }
+      if (!best || st.res.unplaced < best.res.unplaced) best = { counts: { ...counts }, res: st.res, notP1: st.notP1 };
+      const worse = it > 1 && st.res.unplaced >= prevU;
+      if (st.res.unplaced === 0 || !st.changed || worse || it >= 10) {
+        setBusy(false); setProg("");
+        const changed = Object.entries(best.counts).filter(([c, v]) => v !== tgt).sort((a, b) => cmpClass(a[0], b[0]));
+        setResult({ ...best, tgt, changed });
+        return;
+      }
+      prevU = st.res.unplaced; counts = st.next;
+      setProg(`Test run ${it + 1}… (${st.res.unplaced} period(s) still not fitting — giving P1 back in the classes that need it)`);
+      setTimeout(step, 40);
+    };
+    setTimeout(step, 40);
+  };
+  const applyResult = (withGrid) => update((n) => {
+    for (const [c, v] of Object.entries(result.counts)) setVal(n, c, String(v));
+    if (withGrid) n.grid = result.res.grid;
+  });
+
+  return (
+    <div style={{ ...card, marginTop: 16 }}>
+      <Panelhead text="Class teacher in the first period — days per week, per class" />
+      <div style={{ padding: "12px 14px", borderBottom: `1px solid ${C.line}`, display: "grid", gap: 10 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+          <span style={{ fontSize: 12.5, color: C.sub, fontWeight: 700, minWidth: 92 }}>All classes:</span>
+          <select className="tt-sel" style={{ width: 130 }} value={allN} onChange={(e) => setAllN(e.target.value)}>{opts.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+          <button className="tt-btn" onClick={() => setMany(cfg.classes, allN)} style={ghostBtn}>Set all</button>
+          <span style={{ fontSize: 12.5, color: C.sub, fontWeight: 700, marginLeft: 12 }}>Standard</span>
+          <select className="tt-sel" style={{ width: 70 }} value={stdSel} onChange={(e) => setStdSel(e.target.value)}>{stds.map((s) => <option key={s} value={s}>{s}</option>)}</select>
+          <select className="tt-sel" style={{ width: 130 }} value={stdN} onChange={(e) => setStdN(e.target.value)}>{opts.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+          <button className="tt-btn" onClick={() => setMany(cfg.classes.filter((c) => stdOf(c) === stdSel), stdN)} style={ghostBtn}>Set Std {stdSel}</button>
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", background: C.primarySoft, borderRadius: 10, padding: "9px 11px" }}>
+          <span style={{ fontSize: 12.5, color: C.primary, fontWeight: 800 }}>Auto-balance:</span>
+          <span style={{ fontSize: 12.5, color: C.sub }}>aim for</span>
+          <select className="tt-sel" style={{ width: 120 }} value={target} onChange={(e) => setTarget(e.target.value)}>{opts.filter(([v]) => v !== "off").map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
+          <span style={{ fontSize: 12.5, color: C.sub }}>but never fewer than</span>
+          <select className="tt-sel" style={{ width: 90 }} value={minD} onChange={(e) => setMinD(e.target.value)}>{Array.from({ length: D }, (_, i) => String(i + 1)).map((v) => <option key={v} value={v}>{v} day{+v > 1 ? "s" : ""}</option>)}</select>
+          <button className="tt-btn" onClick={runBalance} disabled={busy} style={{ ...solidBtn, opacity: busy ? 0.6 : 1 }}>{busy ? "Testing…" : "Find the best days"}</button>
+          <span style={{ fontSize: 11.5, color: C.sub, width: "100%" }}>Test-generates the timetable and lowers the class-teacher days only in the classes where IT, PET, LB or other periods can't fit — one day at a time. Nothing changes until you apply. Classes with exact days ticked are left as they are.</span>
+        </div>
+        {prog && <div style={{ fontSize: 12.5, color: C.primary, fontWeight: 600 }}>{prog}</div>}
+        {result && (
+          <div style={{ border: `1px solid ${result.res.unplaced ? C.warn : C.free}55`, background: result.res.unplaced ? C.warnSoft : C.freeSoft, borderRadius: 10, padding: "10px 12px", fontSize: 12.5, lineHeight: 1.6 }}>
+            <div style={{ fontWeight: 800, color: result.res.unplaced ? C.warn : C.free }}>
+              {result.res.unplaced === 0 ? "Everything fits." : `Best found: ${result.res.unplaced} period(s) still don't fit.`}
+              {" "}{result.changed.length ? `Class teacher P1 lowered in ${result.changed.length} class${result.changed.length > 1 ? "es" : ""}; all others keep ${result.tgt} day${result.tgt > 1 ? "s" : ""}.` : `All classes keep ${result.tgt} day${result.tgt > 1 ? "s" : ""}.`}
+            </div>
+            {result.changed.length > 0 && <div style={{ fontFamily: mono, marginTop: 4 }}>{result.changed.map(([c, v]) => `${c}: ${v}`).join(" · ")}</div>}
+            {result.res.unplaced > 0 && <div style={{ marginTop: 4, color: C.ink }}>Still not fitting: {result.res.missing.slice(0, 8).join(", ")}{result.res.missing.length > 8 ? " …" : ""}.{result.notP1 ? ` ${result.notP1} of these can't use P1 anyway (a subject rule keeps them out of P1), so fewer class-teacher days won't help them — check their subject rules or teacher load.` : ""}</div>}
+            <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+              <button className="tt-btn" onClick={() => applyResult(false)} style={solidBtn}>Apply these days</button>
+              <button className="tt-btn" onClick={() => applyResult(true)} style={ghostBtn}>Apply days + use this timetable</button>
+              <button className="tt-btn" onClick={() => setResult(null)} style={ghostBtn}>Discard</button>
+            </div>
+          </div>
+        )}
+      </div>
+      <div style={{ padding: "8px 14px", borderBottom: `1px solid ${C.line}` }}><input className="tt-in" style={{ width: 220 }} placeholder="Search class or teacher…" value={q} onChange={(e) => setQ(e.target.value)} /></div>
+      <div className="tt-scroll" style={{ maxHeight: 420, overflow: "auto" }}>
+        <table style={{ ...tbl, minWidth: 560 }}>
+          <thead><tr><th style={{ ...th, textAlign: "left", paddingLeft: 12, width: 80 }}>Class</th><th style={{ ...th, width: 100 }}>Class teacher</th><th style={{ ...th, textAlign: "left" }}>Their subjects here (periods)</th><th style={{ ...th, width: 170 }}>P1 days / week</th></tr></thead>
+          <tbody>{list.map((c) => { const v = valOf(c); const ct = cfg.classTeacher[c]; const r = ruleOf(c); return (
+            <tr key={c}>
+              <td style={{ ...cellTd, textAlign: "left", paddingLeft: 12, fontFamily: mono, fontWeight: 800, height: 38 }}>{c}</td>
+              <td style={{ ...cellTd, height: 38, fontFamily: mono }}>{ct || <span style={{ color: C.clash, fontSize: 11 }}>none set</span>}</td>
+              <td style={{ ...cellTd, height: 38, textAlign: "left", fontSize: 11.5, color: C.sub }}>{ct ? ctSubs(c) || "—" : ""}</td>
+              <td style={{ ...cellTd, height: 38 }}>
+                {v === "fixed" ? <span style={{ fontSize: 11.5, color: C.primary, fontWeight: 700 }} title="Edit in Class-specific period rules below">exact: {r.days.join(", ")}</span>
+                  : <select className="tt-sel" disabled={!ct} style={{ width: 140, margin: "0 auto", fontWeight: 700, color: v === "off" ? C.sub : C.primary }} value={v} onChange={(e) => setOne(c, e.target.value)}>{opts.map(([o, l]) => <option key={o} value={o}>{l}</option>)}</select>}
+              </td>
+            </tr>); })}</tbody>
+        </table>
+      </div>
+      <div style={{ padding: "8px 14px", fontSize: 12, color: C.sub, lineHeight: 1.6 }}>On the other days, the class teacher is kept out of P1 in that class, so P1 is free for IT, PET, LB and others. The generator picks which days; to fix exact days for a class, use Class-specific period rules below.</div>
     </div>
   );
 }
@@ -1840,7 +1979,7 @@ function buildContext(cfg, teacherLoad) {
   const rl = Object.entries(cfg.rules || {}).filter(([, v]) => v && Object.keys(v).length);
   if (rl.length) L.push(`Scheduling rules: ` + rl.map(([s, v]) => `${s}{${[v.pin ? "pin P" + v.pin : "", v.forbid?.length ? "never P" + v.forbid.join("/P") : "", v.band ? v.band : "", v.distinct ? "distinct-periods" : ""].filter(Boolean).join(",")}}`).join("; "));
   const crl = Object.entries(cfg.classRules || {}).filter(([, v]) => v && Object.keys(v).length);
-  if (crl.length) L.push(`Class period rules: ` + crl.map(([c, m]) => `${c}{` + Object.entries(m).map(([p, r]) => `P${+p + 1}=${r.kind === "ct" ? "classteacher(" + (cfg.classTeacher[c] || "?") + ")" : r.sub + "/" + r.teacher}`).join(",") + `}`).join("; "));
+  if (crl.length) L.push(`Class period rules: ` + crl.map(([c, m]) => `${c}{` + Object.entries(m).map(([p, r]) => `P${p}=${r.kind === "ct" ? "classteacher(" + (cfg.classTeacher[c] || "?") + ")" : r.sub + "/" + r.teacher}`).join(",") + `}`).join("; "));
   L.push(`Teacher load placed/target: ` + cfg.singles.map((t) => `${t} ${teacherLoad[t]?.placed || 0}/${teacherLoad[t]?.target || 0}`).join(", "));
   L.push(`Class teachers: ` + cfg.classes.map((c) => `${c}:${cfg.classTeacher[c] || "-"}`).join(", "));
   L.push(`TIMETABLE (class | DAY: p1..p${cfg.periods.length} as subject/teacher, '-' empty):`);
