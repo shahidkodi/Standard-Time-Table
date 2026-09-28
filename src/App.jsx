@@ -73,6 +73,18 @@ const standardsOf = (cfg) => [...new Set(cfg.classes.map(stdOf))].sort((a, b) =>
 function makeRng(seed) { return () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }; }
 function shuf(a, r) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
 
+function combGroupOf(s) { return ((s && s.group) || "").trim() || (s && s.sub) || ""; }
+function combGroups(cfg) {
+  const g = {};
+  for (const s of (cfg.combined || [])) {
+    if (!s || !s.name) continue;
+    const k = combGroupOf(s);
+    const e = g[k] || (g[k] = { name: k, sub: s.sub, sessions: [], teachers: new Set(), divisions: new Set(), need: 0 });
+    e.sessions.push(s); (s.teachers || []).forEach((t) => e.teachers.add(t)); (s.divisions || []).forEach((c) => e.divisions.add(c));
+    e.need = Math.max(e.need, Number(s.perWeek) || periodsFor(cfg, s.divisions[0] || cfg.classes[0], s.sub));
+  }
+  return g;
+}
 function teacherWorkDays(cfg, t) { const a = (cfg.teacherDays || {})[t]; return a && a.length ? cfg.days.filter((d) => a.includes(d)) : cfg.days; }
 function teacherCap(cfg, t) { return teacherWorkDays(cfg, t).length * cfg.periods.length; }
 
@@ -415,14 +427,14 @@ export default function App() {
   // clash rule: a teacher in >1 regular class, or in a regular class AND a language session at once.
   const clashTokens = (day, p) => {
     const s = new Set(); const m = occupancy[day]?.[p]?.tok;
-    if (m) for (const [t, e] of m) if (e.norm.size > 1 || (e.norm.size >= 1 && e.comb.size >= 1)) s.add(t);
+    if (m) for (const [t, e] of m) if (e.norm.size > 1 || (e.norm.size >= 1 && e.comb.size >= 1) || new Set([...e.comb].map((b) => combGroupOf(combinedByBase[b]))).size > 1) s.add(t);
     return s;
   };
   const totalClashes = useMemo(() => {
     let n = 0;
     for (const day of cfg?.days || []) for (let p = 0; p < cfg.periods.length; p++) {
       const m = occupancy[day]?.[p]?.tok;
-      if (m) for (const [, e] of m) if (e.norm.size > 1 || (e.norm.size >= 1 && e.comb.size >= 1)) n++;
+      if (m) for (const [, e] of m) if (e.norm.size > 1 || (e.norm.size >= 1 && e.comb.size >= 1) || new Set([...e.comb].map((b) => combGroupOf(combinedByBase[b]))).size > 1) n++;
     }
     return n;
   }, [occupancy, cfg]);
@@ -435,17 +447,15 @@ export default function App() {
       if (isCombined(row.teacher)) continue;
       for (const tk of teachersOf(row.teacher)) if (t[tk]) t[tk].target += periodsFor(cfg, cn, row.sub);
     }
-    for (const s of cfg.combined || []) {
-      const rep = s.divisions[0] || cfg.classes[0]; const p = periodsFor(cfg, rep, s.sub);
-      for (const tk of s.teachers) if (t[tk]) t[tk].target += p;
-    }
+    for (const g of Object.values(combGroups(cfg))) for (const tk of g.teachers) if (t[tk]) t[tk].target += g.need;
     for (const day of cfg.days) for (let p = 0; p < cfg.periods.length; p++) {
-      const seen = new Set();
+      const reg = {}, grp = {};
       for (const cn of cfg.classes) {
         const code = cfg.grid[cn]?.[day]?.[p]?.[0]; if (!code) continue;
-        if (isCombined(code)) { const b = baseName(code); if (seen.has(b)) continue; seen.add(b); for (const tk of teachersOf(code)) if (t[tk]) t[tk].placed += 1; }
-        else for (const tk of teachersOf(code)) if (t[tk]) t[tk].placed += 1;
+        if (isCombined(code)) { const gk = combGroupOf(combinedByBase[baseName(code)]); for (const tk of teachersOf(code)) (grp[tk] || (grp[tk] = new Set())).add(gk); }
+        else for (const tk of teachersOf(code)) reg[tk] = (reg[tk] || 0) + 1;
       }
+      for (const tk of new Set([...Object.keys(reg), ...Object.keys(grp)])) if (t[tk]) t[tk].placed += (reg[tk] || 0) + (grp[tk] ? grp[tk].size : 0);
     }
     return t;
   }, [cfg, combinedByBase]);
@@ -668,12 +678,13 @@ function TeacherView({ cfg, tch, occupancy, teacherLoad, combinedByBase }) {
   const lookup = (d, pi) => {
     const e = occupancy[d]?.[pi]?.tok?.get(tch); if (!e) return null;
     if (e.norm.size) { const cn = [...e.norm][0]; const slot = cfg.grid[cn][d][pi]; return { cn, subj: slot[1], code: slot[0] }; }
-    const base = [...e.comb][0]; const divs = [...(occupancy[d][pi].sessions.get(base) || [])];
+    const bases = [...e.comb]; const base = bases[0];
+    const divs = [...new Set(bases.flatMap((b) => [...(occupancy[d][pi].sessions.get(b) || [])]))].sort(cmpClass);
     const sess = combinedByBase[base];
-    return { cn: divs.join(" "), subj: sess?.sub, code: base, combined: true };
+    return { cn: divs.join(" "), subj: sess?.sub, code: bases.length > 1 ? combGroupOf(sess) + " (combined)" : base, combined: true };
   };
   let placed = 0; cfg.days.forEach((d) => cfg.periods.forEach((p, pi) => { if (lookup(d, pi)) placed++; }));
-  const freeCount = cfg.days.length * cfg.periods.length - placed;
+  const freeCount = teacherCap(cfg, tch) - placed;
   return (
     <div>
       <ViewHeader title={`Teacher ${tch}`} note={`${placed} periods placed · ${freeCount} free · mapping target ${ld.target}`} right={<button className="tt-btn" onClick={printNow} style={ghostBtn}>Print / PDF</button>} />
@@ -1172,9 +1183,9 @@ function TeacherLoadSection({ cfg, teacherLoad }) {
     if (!r.teacher || combNames.has(r.teacher)) continue;
     for (const tk of String(r.teacher).split(" ")) if (detail[tk]) detail[tk].push({ c, sub: r.sub, per: periodsFor(cfg, c, r.sub) });
   }
-  for (const se of (cfg.combined || [])) {
-    const p = periodsFor(cfg, se.divisions[0] || cfg.classes[0], se.sub);
-    for (const tk of se.teachers) if (detail[tk]) detail[tk].push({ c: se.divisions.join(", "), sub: se.sub + " (combined: " + se.name + ")", per: p });
+  for (const g of Object.values(combGroups(cfg))) {
+    const divs = [...g.divisions].sort(cmpClass).join(", ");
+    for (const tk of g.teachers) if (detail[tk]) detail[tk].push({ c: divs, sub: `${g.sub} (combined “${g.name}”, ${g.sessions.length} session${g.sessions.length > 1 ? "s" : ""})`, per: g.need });
   }
   let list = cfg.singles.map((t) => {
     const L = teacherLoad[t] || { target: 0, placed: 0 };
@@ -1862,7 +1873,8 @@ function CombinedView({ cfg, update, ask, mobile, occupancy }) {
   // detection: a member teacher already teaching a REGULAR class in this slot = real clash
   const teacherClashAt = (d, p) => {
     if (!s) return null;
-    for (const t of s.teachers) { const e = occupancy?.[d]?.[p]?.tok?.get(t); if (e && e.norm && e.norm.size > 0) return t; }
+    const myG = combGroupOf(s); const byName = {}; (cfg.combined || []).forEach((x) => (byName[x.name] = x));
+    for (const t of s.teachers) { const e = occupancy?.[d]?.[p]?.tok?.get(t); if (!e) continue; if (e.norm && e.norm.size > 0) return t; if ([...e.comb].some((b) => b !== s.name && combGroupOf(byName[b]) !== myG)) return t; }
     return null;
   };
   // a member division already has a different subject in this slot (would be overwritten)
@@ -1881,17 +1893,125 @@ function CombinedView({ cfg, update, ask, mobile, occupancy }) {
       : { tone: "primary", text: `Saved “${s.name}”: ${s.sub}, ${s.teachers.length} teacher(s), ${s.divisions.length} divisions, placed in ${placed} slot(s)${placed ? "." : " — not placed yet (use the grid below, or Fill remaining in Assign)."}` });
   };
 
+  // ---- fast block mapping: act on the whole group (sessions that run together) ----
+  const [wholeGroup, setWholeGroup] = useState(true);
+  const byName = {}; sessions.forEach((x) => (byName[x.name] = x));
+  const myG = s ? combGroupOf(s) : "";
+  const groupAll = s ? sessions.filter((x) => combGroupOf(x) === myG) : [];
+  const gSes = s ? (wholeGroup ? groupAll : [s]) : [];
+  const gDivs = [...new Set(gSes.flatMap((x) => x.divisions))].filter((c) => cfg.grid[c]).sort(cmpClass);
+  const gTeach = [...new Set(gSes.flatMap((x) => x.teachers))];
+  const gNeed = gSes.length ? Math.max(...gSes.map((x) => Number(x.perWeek) || periodsFor(cfg, x.divisions[0] || cfg.classes[0], x.sub))) : 0;
+  const runningAt = (d, pi) => gDivs.length > 0 && gDivs.every((c) => gSes.some((x) => x.divisions.includes(c) && cfg.grid[c]?.[d]?.[pi]?.[0] === x.name));
+  const slotInfo = (d, pi) => {
+    const TD = cfg.teacherDays || {};
+    const off = gTeach.filter((t) => TD[t] && TD[t].length && !TD[t].includes(d));
+    const clash = gTeach.filter((t) => { const e = occupancy?.[d]?.[pi]?.tok?.get(t); if (!e) return false; if (e.norm && e.norm.size) return true; return [...e.comb].some((b) => { const x = byName[b]; return x && !gSes.includes(x) && combGroupOf(x) !== myG; }); });
+    const busy = gDivs.filter((c) => { const cell = cfg.grid[c]?.[d]?.[pi]; return cell && cell[0] && !gSes.some((x) => x.name === cell[0]); });
+    const locked = gDivs.filter((c) => cfg.locked?.[`${c}|${d}|${pi}`]);
+    const r = cfg.rules?.[s?.sub] || {};
+    const ruleNo = (r.pin && r.pin !== pi + 1) || (r.forbid && r.forbid.includes(pi + 1));
+    return { off, clash, busy, locked, ruleNo, clean: !off.length && !clash.length && !busy.length && !locked.length && !ruleNo };
+  };
+  let gPlaced = 0; const gDaysUsed = new Set();
+  cfg.days.forEach((d) => cfg.periods.forEach((_, pi) => { if (runningAt(d, pi)) { gPlaced++; gDaysUsed.add(d); } }));
+  const placeAt = (list) => update((n) => {
+    for (const [d, pi] of list) for (const x of gSes) {
+      const ses = n.combined.find((y) => y.name === x.name); if (!ses) continue;
+      for (const c of ses.divisions) { if (!n.grid[c] || n.locked?.[`${c}|${d}|${pi}`]) continue; n.grid[c][d][pi] = [ses.name, ses.sub]; }
+      ses.slots = (ses.slots || []).filter(([dd, pp]) => !(dd === d && pp === pi + 1)); ses.slots.push([d, pi + 1]);
+    }
+  });
+  const removeAt = (list) => update((n) => {
+    for (const [d, pi] of list) for (const x of gSes) {
+      const ses = n.combined.find((y) => y.name === x.name); if (!ses) continue;
+      for (const c of ses.divisions) { const cell = n.grid[c]?.[d]?.[pi]; if (cell && cell[0] === ses.name) n.grid[c][d][pi] = [null, null]; }
+      ses.slots = (ses.slots || []).filter(([dd, pp]) => !(dd === d && pp === pi + 1)); if (!ses.slots.length) delete ses.slots;
+    }
+  });
+  const clickSlot = (d, pi) => {
+    if (runningAt(d, pi)) { removeAt([[d, pi]]); return; }
+    const info = slotInfo(d, pi);
+    const probs = [];
+    if (info.clash.length) probs.push(`${info.clash.join(", ")} already teaching at this time`);
+    if (info.off.length) probs.push(`${info.off.join(", ")} not working on ${d}`);
+    if (info.busy.length) probs.push(`${info.busy.join(", ")} already ha${info.busy.length > 1 ? "ve" : "s"} a lesson here (it will be replaced)`);
+    if (info.locked.length) probs.push(`${info.locked.join(", ")} locked (skipped)`);
+    if (info.ruleNo) probs.push(`a scheduling rule keeps ${s.sub} out of P${pi + 1}`);
+    if (probs.length) ask(`Place ${wholeGroup && groupAll.length > 1 ? `the whole "${myG}" block` : `"${s.name}"`} on ${d} P${pi + 1}? — ${probs.join("; ")}.`, () => placeAt([[d, pi]]));
+    else placeAt([[d, pi]]);
+  };
+  const autoPlace = () => {
+    const want = gNeed - gPlaced; if (want <= 0) { setCMsg({ tone: "primary", text: `"${myG}" already has all ${gNeed} period(s).` }); return; }
+    const pick = []; const used = new Set(gDaysUsed);
+    for (const pass of [0, 1]) for (const d of cfg.days) {
+      if (pick.length >= want) break;
+      if (pass === 0 && used.has(d)) continue;
+      const ruled = (pi) => gDivs.some((c) => cfg.classRules?.[c]?.[pi + 1]);
+      const order = cfg.periods.map((_, pi) => pi).sort((a, b) => (ruled(a) ? 100 : 0) + a - ((ruled(b) ? 100 : 0) + b));
+      for (const pi of order) {
+        if (pick.length >= want) break;
+        if (runningAt(d, pi) || pick.some(([a, b]) => a === d && b === pi)) continue;
+        if (slotInfo(d, pi).clean) { pick.push([d, pi]); used.add(d); break; }
+      }
+    }
+    if (pick.length) placeAt(pick);
+    setCMsg(pick.length === want ? { tone: "primary", text: `Placed ${pick.length} more slot(s) for "${wholeGroup ? myG : s.name}" with no clashes: ${pick.map(([d, pi]) => `${d} P${pi + 1}`).join(", ")}.` }
+      : { tone: "warn", text: `Placed ${pick.length} of ${want} — no more clash-free slots where all ${gDivs.length} divisions and ${gTeach.length} teachers are free. Clear some lessons in those classes, or place manually (you'll be warned).` });
+  };
+  const clearBlock = () => ask(`Remove every placed slot of ${wholeGroup && groupAll.length > 1 ? `the "${myG}" block` : `"${s.name}"`}?`, () => {
+    const list = []; cfg.days.forEach((d) => cfg.periods.forEach((_, pi) => list.push([d, pi]))); removeAt(list);
+  });
+
+  // ---- clash & overlap check across all combined sessions ----
+  const overlap = useMemo(() => {
+    const tIn = {}, dIn = {};
+    for (const x of sessions) { x.teachers.forEach((t) => (tIn[t] ||= []).push(x)); x.divisions.forEach((c) => (dIn[c] ||= []).push(x)); }
+    const cross = (m) => Object.entries(m).filter(([, xs]) => new Set(xs.map(combGroupOf)).size > 1).map(([k, xs]) => ({ k, groups: [...new Set(xs.map(combGroupOf))], names: xs.map((x) => x.name) }));
+    const live = []; const bad = new Set();
+    for (const d of cfg.days) for (let pi = 0; pi < cfg.periods.length; pi++) {
+      const m = occupancy?.[d]?.[pi]?.tok; if (!m) continue;
+      for (const [t, e] of m) {
+        if (!e.comb || !e.comb.size) continue;
+        const gs = new Set([...e.comb].map((b) => combGroupOf(byName[b])));
+        if ((e.norm && e.norm.size) || gs.size > 1) {
+          live.push({ t, d, pi, what: [...[...e.comb].map((b) => `${b}`), ...(e.norm ? [...e.norm] : [])] });
+          e.comb.forEach((b) => bad.add(b));
+        }
+      }
+    }
+    return { tCross: cross(tIn), dCross: cross(dIn), live, bad };
+  }, [cfg, occupancy]);
+  const sharedNote = s ? s.teachers.map((t) => ({ t, others: sessions.filter((x) => x !== s && x.teachers.includes(t)) })).filter((x) => x.others.length) : [];
+
   return (
     <div>
       <ViewHeader title="Combined subjects" note="Define a combined/parallel subject once (language, PET, etc.) — its teachers and the divisions that merge for it. Placing it fills every division at once, and those teachers never clash with each other during it. Member divisions get this subject from the block, so you don’t also key it normally." />
       {cMsg && <Banner tone={cMsg.tone}>{cMsg.text}</Banner>}
+      {sessions.length > 0 && (overlap.live.length > 0 || overlap.tCross.length > 0 || overlap.dCross.length > 0) && (
+        <div style={{ ...card, marginBottom: 16 }}>
+          <Panelhead text="Clash check — combined sessions" count={overlap.live.length ? `${overlap.live.length} clash${overlap.live.length > 1 ? "es" : ""}` : "no live clashes"} tone={overlap.live.length ? undefined : "free"} />
+          <div style={{ padding: "10px 14px", display: "grid", gap: 8, fontSize: 12.5, lineHeight: 1.55 }}>
+            {overlap.live.slice(0, 12).map((x, k) => (
+              <div key={k} style={{ color: C.clash }}>⚠ <b style={{ fontFamily: mono }}>{x.t}</b> on {x.d} P{x.pi + 1} is in {x.what.join(" + ")} at the same time.</div>
+            ))}
+            {overlap.live.length > 12 && <div style={{ color: C.clash }}>… +{overlap.live.length - 12} more clashes</div>}
+            {overlap.tCross.map((x) => (
+              <div key={"t" + x.k} style={{ color: C.warn }}>Shared teacher <b style={{ fontFamily: mono }}>{x.k}</b> is in different groups ({x.groups.join(", ")}: {x.names.join(", ")}) — those groups must never run at the same time. The generator keeps them apart; watch this when placing by hand.</div>
+            ))}
+            {overlap.dCross.map((x) => (
+              <div key={"d" + x.k} style={{ color: C.warn }}>Division <b style={{ fontFamily: mono }}>{x.k}</b> is in different groups ({x.groups.join(", ")}) — they can't run at the same time.</div>
+            ))}
+          </div>
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "210px minmax(0,1fr)", gap: 16, alignItems: "start" }}>
         <div style={card}>
           <Panelhead text="Sessions" count={sessions.length} />
           <div style={{ maxHeight: 360, overflowY: "auto" }}>
             {sessions.map((x, k) => (
               <div key={k} onClick={() => { setSel(k); setCMsg(null); }} style={{ padding: "9px 14px", cursor: "pointer", fontFamily: mono, fontSize: 12.5, fontWeight: k === i ? 700 : 500, color: k === i ? C.primary : C.ink, background: k === i ? C.primarySoft : "transparent", borderLeft: k === i ? `3px solid ${C.primary}` : "3px solid transparent" }}>
-                {x.name}<div style={{ fontSize: 10.5, color: C.sub, fontWeight: 500 }}>{x.sub} · {x.teachers.length} teachers · {x.divisions.length} div</div>
+                {x.name}{overlap.bad.has(x.name) && <span title="In a live clash" style={{ color: C.clash, marginLeft: 6 }}>⚠</span>}<div style={{ fontSize: 10.5, color: C.sub, fontWeight: 500 }}>{x.sub} · group {combGroupOf(x)} · {x.teachers.length} teachers · {x.divisions.length} div</div>
               </div>
             ))}
           </div>
@@ -1911,6 +2031,14 @@ function CombinedView({ cfg, update, ask, mobile, occupancy }) {
               </div>
               <div style={{ padding: 14, display: "grid", gap: 14 }}>
                 <ChipPicker label="Teachers in this session" all={cfg.singles} selected={s.teachers} onToggle={(v) => toggleArr("teachers", v)} onSetAll={(a) => setArr("teachers", a)} />
+                {sharedNote.length > 0 && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: -6 }}>
+                    {sharedNote.map(({ t, others }) => { const diff = others.filter((x) => combGroupOf(x) !== myG); return (
+                      <span key={t} title={others.map((x) => `${x.name} (group ${combGroupOf(x)})`).join("\n")} style={{ fontSize: 11.5, padding: "3px 8px", borderRadius: 8, background: diff.length ? C.warnSoft : C.freeSoft, color: diff.length ? C.warn : C.free, fontWeight: 600 }}>
+                        <b style={{ fontFamily: mono }}>{t}</b> {diff.length ? `⚠ also in ${diff.map((x) => x.name).join(", ")} (other group)` : `✓ also in ${others.length} session${others.length > 1 ? "s" : ""} of this block`}
+                      </span>); })}
+                  </div>
+                )}
                 <ChipPicker label="Divisions that merge for it" all={cfg.classes} selected={s.divisions} onToggle={(v) => toggleArr("divisions", v)} onSetAll={(a) => setArr("divisions", a)} />
                 <div style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap", paddingTop: 4 }}>
                   <label style={{ fontSize: 12.5, color: C.sub }}>Periods / week&nbsp;
@@ -1927,33 +2055,46 @@ function CombinedView({ cfg, update, ask, mobile, occupancy }) {
             </div>
 
             <div style={card}>
-              <Panelhead text="When does it run? Click a slot to place it in every division at once" />
+              <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", borderBottom: `1px solid ${C.line}`, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 13, fontWeight: 700 }}>When does it run?</span>
+                {groupAll.length > 1 && (
+                  <label style={{ fontSize: 12.5, color: C.sub, display: "inline-flex", alignItems: "center", gap: 6 }}>
+                    <input type="checkbox" checked={wholeGroup} onChange={(e) => setWholeGroup(e.target.checked)} /> place the whole “{myG}” block ({groupAll.length} sessions) together
+                  </label>
+                )}
+                <span style={{ marginLeft: "auto", fontSize: 12.5, fontWeight: 700, color: gPlaced >= gNeed ? C.free : C.warn }}>{gPlaced} / {gNeed} placed</span>
+                <button className="tt-btn" onClick={autoPlace} style={solidBtn}>Auto-place remaining</button>
+                <button className="tt-btn" onClick={clearBlock} style={{ ...ghostBtn, color: C.clash }}>Clear</button>
+              </div>
+              <div style={{ padding: "8px 14px 0", fontSize: 11.5, color: C.sub }}>
+                {gDivs.length} divisions · teachers {gTeach.join(", ") || "—"} · days used: {cfg.days.filter((d) => gDaysUsed.has(d)).join(", ") || "none yet"}
+              </div>
               <div style={{ overflowX: "auto", padding: 12 }}>
-                <table style={{ ...tbl, minWidth: 520 }}>
-                  <thead><tr><th style={{ ...th, width: 50 }}>P</th>{cfg.days.map((d) => <th key={d} style={th}>{DAY_FULL[d].slice(0, 3)}</th>)}</tr></thead>
+                <table style={{ ...tbl, minWidth: 560 }}>
+                  <thead><tr><th style={{ ...th, width: 44 }}>P</th>{cfg.days.map((d) => <th key={d} style={{ ...th, background: gDaysUsed.has(d) ? C.accentSoft : undefined }}>{DAY_FULL[d].slice(0, 3)}</th>)}</tr></thead>
                   <tbody>
                     {cfg.periods.map((p, pi) => (
                       <tr key={p}><td style={perTd}>{p}</td>
                         {cfg.days.map((d) => {
-                          const on = scheduledAt(d, pi);
-                          const clashT = teacherClashAt(d, pi);
-                          const ow = overwriteAt(d, pi);
-                          const border = clashT ? C.clash : on ? C.accent : ow.length ? C.warn : null;
-                          const bg = clashT ? C.clashSoft : on ? C.accentSoft : ow.length ? C.warnSoft : "#fff";
-                          const title = clashT ? `Clash: ${clashT} is already teaching a class this period` : ow.length ? `Would overwrite ${ow.join(", ")}` : on ? "Running — click to remove" : "Click to place the block here";
-                          return <td key={d} onClick={() => toggleSlot(d, pi)} title={title} style={{ ...cellTd, height: 40, cursor: "pointer", background: bg, boxShadow: border ? `inset 0 0 0 2px ${border}` : "none" }}>
-                            {clashT ? <span style={{ color: C.clash, fontWeight: 700, fontSize: 11 }}>⚠ {clashT}</span>
-                              : on ? <span style={{ color: C.accent, fontWeight: 700, fontSize: 11 }}>running</span>
-                              : ow.length ? <span style={{ color: C.warn, fontWeight: 700, fontSize: 13 }}>+</span>
-                              : <span style={{ color: "#cfcdc6", fontSize: 16 }}>+</span>}
-                          </td>;
+                          const on = runningAt(d, pi);
+                          const f = on ? null : slotInfo(d, pi);
+                          let bg = "#fff", bd = null, label = <span style={{ color: C.free, fontWeight: 800, fontSize: 13 }}>+</span>, tip = "Free for every division and teacher — click to place";
+                          if (on) { bg = C.accentSoft; bd = C.accent; label = <span style={{ color: C.accent, fontWeight: 800, fontSize: 11 }}>✓ running</span>; tip = "Running — click to remove"; }
+                          else if (f.clash.length) { bg = C.clashSoft; bd = C.clash; label = <span style={{ color: C.clash, fontWeight: 800, fontSize: 10.5 }}>⚠ {f.clash.slice(0, 2).join(" ")}{f.clash.length > 2 ? "…" : ""}</span>; tip = `Clash: ${f.clash.join(", ")} already teaching`; }
+                          else if (f.off.length) { bg = C.clashSoft; bd = C.clash; label = <span style={{ color: C.clash, fontWeight: 700, fontSize: 10.5 }}>off: {f.off.slice(0, 2).join(" ")}</span>; tip = `${f.off.join(", ")} not working this day`; }
+                          else if (f.locked.length) { bg = "#f1f3f6"; label = <span style={{ color: C.sub, fontSize: 11 }}>🔒 {f.locked.length}</span>; tip = `Locked in ${f.locked.join(", ")}`; }
+                          else if (f.busy.length) { bg = C.warnSoft; bd = C.warn; label = <span style={{ color: C.warn, fontWeight: 700, fontSize: 10.5 }}>{f.busy.length} busy</span>; tip = `Already has a lesson: ${f.busy.join(", ")}`; }
+                          else if (f.ruleNo) { bg = "#f6f6f6"; label = <span style={{ color: C.sub, fontSize: 11 }}>rule</span>; tip = `A scheduling rule keeps ${s.sub} out of this period`; }
+                          return <td key={d} onClick={() => clickSlot(d, pi)} title={tip} style={{ ...cellTd, height: 40, cursor: "pointer", background: bg, boxShadow: bd ? `inset 0 0 0 2px ${bd}` : "none" }}>{label}</td>;
                         })}
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-              <div style={{ padding: "0 14px 12px", fontSize: 12, color: C.sub, lineHeight: 1.6 }}>“running” = placed for all {s.divisions.length} member division{s.divisions.length === 1 ? "" : "s"}. A <b style={{ color: C.clash }}>⚠ red</b> slot means one of this session’s teachers is already taking a regular class that period (a real clash) — avoid it. An <b style={{ color: C.warn }}>amber +</b> means placing will overwrite another subject in some division.</div>
+              <div style={{ padding: "0 14px 12px", fontSize: 11.5, color: C.sub, lineHeight: 1.7 }}>
+                <b style={{ color: C.free }}>+</b> ready · <b style={{ color: C.accent }}>✓</b> running · <b style={{ color: C.clash }}>⚠ name</b> that teacher is already teaching · <b style={{ color: C.clash }}>off</b> teacher's day off · <b style={{ color: C.warn }}>N busy</b> divisions already have a lesson (will be replaced) · 🔒 locked · <b>rule</b> blocked by a scheduling rule. Clicking a warning slot asks before placing. Placed slots are kept when you regenerate.
+              </div>
             </div>
           </div>
         ) : <div style={{ ...card, padding: 24, color: C.sub }}>No combined subjects yet. Create one to merge divisions for a parallel period (language, PET, etc.).</div>}
@@ -2029,7 +2170,7 @@ function TeacherAssignments({ cfg }) {
   const [t, setT] = useState(cfg.singles[0] || "");
   const rows = [];
   for (const c of cfg.classes) for (const r of (cfg.bkey[c] || [])) if (r.teacher === t) rows.push({ c: c, sub: r.sub, per: periodsFor(cfg, c, r.sub) });
-  for (const se of (cfg.combined || [])) if (se.teachers.includes(t)) for (const c of se.divisions) rows.push({ c: c, sub: se.sub + " (combined)", per: periodsFor(cfg, c, se.sub) });
+  for (const g of Object.values(combGroups(cfg))) if (g.teachers.has(t)) rows.push({ c: [...g.divisions].sort(cmpClass).join(", "), sub: `${g.sub} (combined “${g.name}”)`, per: g.need });
   const tot = rows.reduce((a, r) => a + r.per, 0);
   return (
     <div style={{ ...card, marginTop: 16 }}>
