@@ -105,6 +105,18 @@ function autoSchedule(cfg, mode = "all", onlyClass = null) {
   const writable = new Set(mode === "class" ? [onlyClass] : cfg.classes);
   const coveredBySession = new Set();
   for (const sx of combined) for (const c of sx.divisions) coveredBySession.add(c + "|" + sx.sub);
+  const autoLim = {}; const autoNotes = {}; const autoNotesDays = {};
+  for (const c of cfg.classes) for (const row of (cfg.bkey[c] || [])) {
+    if (!row.sub) continue;
+    const toks = row.teacher && !isC(row.teacher) ? tOf(row.teacher) : [];
+    const days = toks.length ? Math.min(...toks.map((t) => DAYS.filter((_, d) => availT(t, d)).length)) : D;
+    const need = Math.ceil(pf(c, row.sub) / Math.max(1, days));
+    autoNotesDays[c + "|" + row.sub] = days;
+    if (need > (twiceOK(c, row.sub) ? 2 : 1)) { autoLim[c + "|" + row.sub] = need; const k = row.sub + "|" + stdOf(c); (autoNotes[k] || (autoNotes[k] = { sub: row.sub, st: stdOf(c), per: pf(c, row.sub), days, classes: [] })).classes.push(c); }
+  }
+  const limOf = (c, sub) => Math.max(twiceOK(c, sub) ? 2 : 1, autoLim[c + "|" + sub] || 0);
+  const extraOK = {};  // c|sub -> how many extra same-day periods are unavoidable (periods - days)
+  for (const k in autoLim) { const [c, sub] = k.split("|"); const n = autoNotesDays[k]; extraOK[k] = Math.max(0, pf(c, sub) - n); }
   const mappedTeacher = (c, sub) => { const row = (cfg.bkey[c] || []).find((r) => r.sub === sub && r.teacher && !isC(r.teacher)); return row ? row.teacher : null; };
 
   const gen = (seed) => {
@@ -115,7 +127,8 @@ function autoSchedule(cfg, mode = "all", onlyClass = null) {
     const subDay = {}, subPer = {};
     const fixed = new Set();           // cells placed by a rule or kept from before - never moved by repair
     const key = (c, d, p) => c + "|" + d + "|" + p;
-    const mark = (c, sub, d, p, k) => { subDay[`${c}|${sub}|${d}`] = (subDay[`${c}|${sub}|${d}`] || 0) + k; subPer[`${c}|${sub}|${p}`] = (subPer[`${c}|${sub}|${p}`] || 0) + k; };
+    const extraUsed = {};
+    const mark = (c, sub, d, p, k) => { const kd = `${c}|${sub}|${d}`, before = subDay[kd] || 0; if (k > 0 && before >= 1) extraUsed[c + "|" + sub] = (extraUsed[c + "|" + sub] || 0) + 1; if (k < 0 && before >= 2) extraUsed[c + "|" + sub] = (extraUsed[c + "|" + sub] || 0) - 1; subDay[kd] = before + k; subPer[`${c}|${sub}|${p}`] = (subPer[`${c}|${sub}|${p}`] || 0) + k; };
     const put = (c, d, p, code, sub) => { grid[c][d][p] = [code, sub]; tOf(code).forEach((t) => tbusy[d][p].add(t)); mark(c, sub, d, p, 1); };
 
     // 1. keep what must stay: locked cells always; in fill modes, everything already placed
@@ -136,8 +149,9 @@ function autoSchedule(cfg, mode = "all", onlyClass = null) {
     const tOK = (toks, d, p) => toks.every((t) => !tbusy[d][p].has(t) && availT(t, d));
     const book = (c, d, p, code, sub, isFixed) => { put(c, d, p, code, sub); if (isFixed) fixed.add(key(c, d, p)); };
     const unbook = (c, d, p) => { const [code, sub] = grid[c][d][p]; if (!code) return; tOf(code).forEach((t) => tbusy[d][p].delete(t)); mark(c, sub, d, p, -1); grid[c][d][p] = [null, null]; };
-    const okSoft = (c, sub, d, p) => { const lim = twiceOK(c, sub) ? 2 : 1; if ((subDay[`${c}|${sub}|${d}`] || 0) >= lim) return false; if (R(sub).distinct && subPer[`${c}|${sub}|${p}`]) return false; return true; };
-    const dayOK = (c, sub, d) => (subDay[`${c}|${sub}|${d}`] || 0) < (twiceOK(c, sub) ? 2 : 1);
+    const okSoft = (c, sub, d, p) => { if (!dayOK(c, sub, d)) return false; if (R(sub).distinct && subPer[`${c}|${sub}|${p}`]) return false; return true; };
+    const extraLeft = (c, sub) => twiceOK(c, sub) || extraOK[c + "|" + sub] === undefined || (extraUsed[c + "|" + sub] || 0) < extraOK[c + "|" + sub];
+    const dayOK = (c, sub, d) => { const n = subDay[`${c}|${sub}|${d}`] || 0; if (n >= limOf(c, sub)) return false; if (n >= 1 && !twiceOK(c, sub) && !extraLeft(c, sub)) return false; return true; };
     const countOf = (c, code, sub) => { let n = 0; for (let d = 0; d < D; d++) for (let p = 0; p < P; p++) if (grid[c][d][p][0] === code && grid[c][d][p][1] === sub) n++; return n; };
     const slots = () => { const s = []; for (let d = 0; d < D; d++) for (let p = 0; p < P; p++) s.push([d, p]); return s; };
 
@@ -159,34 +173,50 @@ function autoSchedule(cfg, mode = "all", onlyClass = null) {
 
     // 3. class-specific period rules (e.g. class teacher in P1) on a chosen number of days
     const CR = cfg.classRules || {};
-    const avoid = new Set();                 // c|sub|p : keep this subject out of the ruled period on other days
-    const resolveRule = (c, rule) => {
-      if (!rule) return null;
-      if (rule.kind === "ct") { const ct = cfg.classTeacher[c]; const row = (cfg.bkey[c] || []).find((x) => x.teacher === ct && !isC(x.teacher)); return row ? { sub: row.sub, teacher: ct } : null; }
-      if (rule.kind === "pair") return isC(rule.teacher) ? null : { sub: rule.sub, teacher: rule.teacher };
-      return null;
+    const avoid = new Set();
+    const av = (c, sub, teacher, p) => avoid.has(`${c}|${sub}|${p}`) || avoid.has(`${c}|T:${teacher}|${p}`);                 // c|sub|p : keep this subject out of the ruled period on other days
+    // options for a rule: for "class teacher" every subject that teacher has in the class that is allowed in the period (biggest first)
+    const ruleOptions = (c, rule, p) => {
+      if (!rule) return [];
+      if (rule.kind === "ct") {
+        const ct = cfg.classTeacher[c]; if (!ct) return [];
+        const rows = (cfg.bkey[c] || []).filter((x) => x.teacher === ct && !isC(x.teacher) && x.sub);
+        const ok = rows.filter((x) => allowed(x.sub, p)).sort((x, y) => pf(c, y.sub) - pf(c, x.sub));
+        if (!ok.length && rows.length) issues.push(`${c}: class teacher ${ct} has no subject allowed in P${p + 1} (${rows.map((x) => x.sub).join("/")} blocked by a subject rule)`);
+        return ok.map((x) => ({ sub: x.sub, teacher: ct }));
+      }
+      if (rule.kind === "pair") {
+        if (isC(rule.teacher)) return [];
+        if (!allowed(rule.sub, p)) { issues.push(`${c}: P${p + 1} rule (${rule.sub}) is blocked by the ${rule.sub} subject rule`); return []; }
+        return [{ sub: rule.sub, teacher: rule.teacher }];
+      }
+      return [];
     };
     for (const c of cfg.classes) {
       if (!writable.has(c)) continue;
       const cr = CR[c]; if (!cr) continue;
       for (const pStr of Object.keys(cr)) {
         const rule = cr[pStr]; const p = (+pStr) - 1; if (p < 0 || p >= P) continue;
-        const res = resolveRule(c, rule); if (!res) continue;
-        const toks = tOf(res.teacher);
+        const opts = ruleOptions(c, rule, p); if (!opts.length) continue;
+        const teacher = opts[0].teacher; const toks = tOf(teacher);
         const fixedDays = (rule.days || []).map((x) => DAYS.indexOf(x)).filter((x) => x >= 0);
         const want = fixedDays.length ? fixedDays.length : Math.min(D, rule.count ? +rule.count : D);
-        avoid.add(`${c}|${res.sub}|${p}`);
-        let have = 0; for (let d = 0; d < D; d++) if (grid[c][d][p][0] === res.teacher && grid[c][d][p][1] === res.sub) have++;
-        const budget = () => pf(c, res.sub) - countOf(c, res.teacher, res.sub);
+        for (const o of opts) avoid.add(`${c}|${o.sub}|${p}`);
+        avoid.add(`${c}|T:${teacher}|${p}`);
+        let have = 0; for (let d = 0; d < D; d++) if (grid[c][d][p][0] === teacher && opts.some((o) => o.sub === grid[c][d][p][1])) have++;
+        const budget = (o) => pf(c, o.sub) - countOf(c, o.teacher, o.sub);
         let order;
         if (fixedDays.length) order = fixedDays;
-        else { order = shuf([...Array(D).keys()], r); order.sort((a, b) => (availT(res.teacher, a) ? 0 : 1) - (availT(res.teacher, b) ? 0 : 1)); }
+        else { order = shuf([...Array(D).keys()], r); order.sort((x, y) => (availT(teacher, x) ? 0 : 1) - (availT(teacher, y) ? 0 : 1)); }
         for (const d of order) {
-          if (have >= want || budget() <= 0) break;
-          if (grid[c][d][p][0] === res.teacher && grid[c][d][p][1] === res.sub) continue;
-          if (free(c, d, p) && tOK(toks, d, p) && dayOK(c, res.sub, d)) { book(c, d, p, res.teacher, res.sub, true); have++; }
+          if (have >= want) break;
+          if (grid[c][d][p][0] === teacher) continue;
+          if (!free(c, d, p) || !tOK(toks, d, p)) continue;
+          const o = opts.find((x) => budget(x) > 0 && dayOK(c, x.sub, d));
+          if (o) { book(c, d, p, o.teacher, o.sub, true); have++; }
         }
-        if (have < want && budget() > 0) issues.push(`${c}: P${pStr} rule (${res.sub}/${res.teacher}) placed on ${have} of ${want} day(s)`);
+        const left = opts.reduce((a2, o) => a2 + Math.max(0, budget(o)), 0);
+        if (have < want) issues.push(`${c}: P${pStr} rule (class teacher ${teacher}) placed on ${have} of ${want} day(s)${left ? "" : " — the class teacher has only " + have + " period(s) in this class that may go in P" + pStr}`);
       }
     }
 
@@ -242,8 +272,8 @@ function autoSchedule(cfg, mode = "all", onlyClass = null) {
       const cand = shuf(slots(), r).filter(([d, p]) => allowed(l.sub, p));
       if (band === "early") cand.sort((a, b) => a[1] - b[1]); else if (band === "late") cand.sort((a, b) => b[1] - a[1]);
       const tries = [
-        ([d, p]) => !avoid.has(`${l.c}|${l.sub}|${p}`) && okSoft(l.c, l.sub, d, p),
-        ([d, p]) => !avoid.has(`${l.c}|${l.sub}|${p}`) && dayOK(l.c, l.sub, d),
+        ([d, p]) => !av(l.c, l.sub, l.teacher, p) && okSoft(l.c, l.sub, d, p),
+        ([d, p]) => !av(l.c, l.sub, l.teacher, p) && dayOK(l.c, l.sub, d),
       ];
       let done = false;
       for (const ok of tries) { for (const s of cand) { const [d, p] = s; if (free(l.c, d, p) && tOK(toks, d, p) && ok(s)) { book(l.c, d, p, l.teacher, l.sub, false); done = true; break; } } if (done) break; }
@@ -256,7 +286,7 @@ function autoSchedule(cfg, mode = "all", onlyClass = null) {
       const still = [];
       for (const l of remaining) {
         const toks = tOf(l.teacher); let fixedIt = false;
-        const cand = shuf(slots(), r).filter(([d, p]) => allowed(l.sub, p) && tOK(toks, d, p) && dayOK(l.c, l.sub, d) && !avoid.has(`${l.c}|${l.sub}|${p}`));
+        const cand = shuf(slots(), r).filter(([d, p]) => allowed(l.sub, p) && tOK(toks, d, p) && dayOK(l.c, l.sub, d) && !av(l.c, l.sub, l.teacher, p));
         cand.sort((a, b) => a[1] - b[1]);
         for (const [d, p] of cand) {
           if (free(l.c, d, p)) { book(l.c, d, p, l.teacher, l.sub, false); fixedIt = true; break; }
@@ -269,7 +299,7 @@ function autoSchedule(cfg, mode = "all", onlyClass = null) {
           for (let pp = p + 1; pp < P; pp++) rel.push([d, pp]);
           for (let pp = 0; pp < p; pp++) rel.push([d, pp]);
           for (const dd of shuf([...Array(D).keys()], r)) if (dd !== d) for (let pp = 0; pp < P; pp++) rel.push([dd, pp]);
-          for (const [d2, p2] of rel) if (allowed(os, p2) && free(l.c, d2, p2) && tOK(otoks, d2, p2) && dayOK(l.c, os, d2) && !avoid.has(`${l.c}|${os}|${p2}`)) { book(l.c, d2, p2, oc, os, false); moved = [d2, p2]; break; }
+          for (const [d2, p2] of rel) if (allowed(os, p2) && free(l.c, d2, p2) && tOK(otoks, d2, p2) && dayOK(l.c, os, d2) && !av(l.c, os, oc, p2)) { book(l.c, d2, p2, oc, os, false); moved = [d2, p2]; break; }
           if (moved && tOK(toks, d, p) && dayOK(l.c, l.sub, d)) { book(l.c, d, p, l.teacher, l.sub, false); fixedIt = true; break; }
           if (moved) unbook(l.c, moved[0], moved[1]);
           book(l.c, d, p, oc, os, false);
@@ -279,16 +309,66 @@ function autoSchedule(cfg, mode = "all", onlyClass = null) {
       remaining = still;
     }
 
+    // 7. move chains: to place a stuck lesson, move the lessons in its way (in this class and in the
+    //    teacher's other class) to other slots, up to 3 moves deep. Rule-placed, locked and combined cells never move.
+    const log = [];
+    const B = (c, d, p, code, sub) => { put(c, d, p, code, sub); log.push(["b", c, d, p]); };
+    const U = (c, d, p) => { const [code, sub] = grid[c][d][p]; unbook(c, d, p); log.push(["u", c, d, p, code, sub]); };
+    const rollback = (mark) => { while (log.length > mark) { const e = log.pop(); if (e[0] === "b") unbook(e[1], e[2], e[3]); else put(e[1], e[2], e[3], e[4], e[5]); } };
+    const movable = (c, d, p) => writable.has(c) && !frozen.has(key(c, d, p)) && !fixed.has(key(c, d, p)) && !!grid[c][d][p][0] && !isC(grid[c][d][p][0]);
+    const holderOf = (t, d, p) => { for (const c of cfg.classes) { const code = grid[c][d][p][0]; if (code && tOf(code).includes(t)) return c; } return null; };
+    let budget = 0;
+    const place = (l, depth, tabu) => {
+      if (--budget < 0) return false;
+      const toks = tOf(l.teacher);
+      const cand = [];
+      for (let d = 0; d < D; d++) {
+        if (!toks.every((t) => availT(t, d))) continue;
+        for (let p = 0; p < P; p++) {
+          if (!allowed(l.sub, p) || av(l.c, l.sub, l.teacher, p) || tabu.has(key(l.c, d, p)) || frozen.has(key(l.c, d, p))) continue;
+          const bl = []; let ok = true;
+          if (grid[l.c][d][p][0]) { if (!movable(l.c, d, p)) continue; bl.push([l.c, d, p]); }
+          for (const t of toks) if (tbusy[d][p].has(t)) { const hc = holderOf(t, d, p); if (!hc || !movable(hc, d, p)) { ok = false; break; } if (!bl.some(([c]) => c === hc)) bl.push([hc, d, p]); }
+          if (!ok || bl.length > 2) continue;
+          if (bl.length && depth <= 0) continue;
+          cand.push({ d, p, bl, score: bl.length * 10 + r() });
+        }
+      }
+      cand.sort((a, b) => a.score - b.score);
+      for (const { d, p, bl } of cand.slice(0, depth >= 2 ? 14 : 8)) {
+        const mark = log.length;
+        const moved = bl.map(([c, dd, pp]) => { const [code, sub] = grid[c][dd][pp]; U(c, dd, pp); return { c, sub, teacher: code }; });
+        if (!free(l.c, d, p) || !tOK(toks, d, p) || !dayOK(l.c, l.sub, d)) { rollback(mark); continue; }
+        B(l.c, d, p, l.teacher, l.sub);
+        const t2 = new Set(tabu); t2.add(key(l.c, d, p)); for (const [c, dd, pp] of bl) t2.add(key(c, dd, pp));
+        let all = true; for (const m of moved) if (!place(m, depth - 1, t2)) { all = false; break; }
+        if (all) return true;
+        rollback(mark);
+      }
+      return false;
+    };
+    const still2 = [];
+    for (const l of remaining) { budget = 2500; const mark = log.length; if (!place(l, 3, new Set())) { rollback(mark); still2.push(l); } }
+    remaining = still2;
+    const notesOut = Object.values(autoNotes).map((x) => `${x.sub} in Std ${x.st} needs ${x.per} periods but has ${x.days} day(s) — placed twice on a day where needed (${x.classes.length} class${x.classes.length > 1 ? "es" : ""})`);
+
     const missing = {};
-    for (const l of remaining) { const k = `${l.c} ${l.sub} (${l.teacher})`; missing[k] = (missing[k] || 0) + 1; }
+    const why = (l) => {
+      const toks = tOf(l.teacher); let tFree = 0, both = 0;
+      for (let d = 0; d < D; d++) for (let p = 0; p < P; p++) { if (!allowed(l.sub, p) || !toks.every((t) => availT(t, d))) continue; if (toks.every((t) => !tbusy[d][p].has(t))) { tFree++; if (!grid[l.c][d][p][0]) both++; } }
+      if (!tFree) return "teacher has no free allowed slot";
+      if (!both) return "class and teacher are never free together";
+      return "only free together on days it already has";
+    };
+    for (const l of remaining) { const k = `${l.c} ${l.sub} (${l.teacher}: ${why(l)})`; missing[k] = (missing[k] || 0) + 1; }
     const out = {}; for (const c of cfg.classes) { out[c] = {}; DAYS.forEach((day, d) => (out[c][day] = grid[c][d])); }
-    return { grid: out, unplaced: remaining.length, issues, missing: Object.entries(missing).map(([k, n]) => n > 1 ? `${k} ×${n}` : k) };
+    return { grid: out, unplaced: remaining.length, issues: [...notesOut, ...issues], notes: notesOut.length, missing: Object.entries(missing).map(([k, n]) => n > 1 ? `${k} ×${n}` : k) };
   };
 
   let best = null;
   for (let s = 1; s <= 30; s++) {
     const res = gen(s * 7 + 1);
-    const score = res.unplaced * 10 + res.issues.length;
+    const score = res.unplaced * 10 + res.issues.length - (res.notes || 0);
     if (!best || score < best.score) { best = res; best.score = score; }
     if (best.score === 0) break;
   }
@@ -2155,6 +2235,8 @@ function ExportView({ cfg }) {
             <button className="tt-btn" onClick={() => exportClassesOverviewPDF(cfg)} style={solidBtn}>All classes (A3, ~40/sheet)</button>
             <button className="tt-btn" onClick={() => exportTeachersOverviewPDF(cfg)} style={solidBtn}>All teachers (A3, ~24/sheet)</button>
           </>} />
+        <Card title="Data backup" desc="Download all your setup and timetable (classes, teachers, mapping, rules, combined subjects, timetable) as one file. Keep it as a backup, or share it when asking for help."
+          actions={<button className="tt-btn" onClick={() => exportJSON(cfg)} style={ghostBtn}>Download data backup (.json)</button>} />
         <Card title="Leisure / free periods" desc="Either a grid marking exactly which periods each teacher is free (green dot) — all teachers on one A3 page — or a simple count per day."
           actions={<>
             <button className="tt-btn" onClick={() => exportFreeSlotsPDF(cfg, paper)} style={solidBtn}>Free periods by period (A3 PDF)</button>
@@ -2216,6 +2298,8 @@ function AnalysisView({ cfg, teacherLoad, mobile }) {
   }).sort((a, b) => a.diff - b.diff);
 
   const shortages = tRows.filter((r) => r.diff < 0);
+  const tooMany = [];
+  for (const st of standardsOf(cfg)) for (const [sub, v] of Object.entries(cfg.stdPeriods?.[st] || {})) if (+v > cfg.days.length && !cfg.twice?.[st]?.[sub]) tooMany.push(`${sub} in Std ${st} (${v} periods, ${cfg.days.length} days)`);
 
   const classRows = cfg.classes.map((c) => {
     const req = (cfg.bkey[c] || []).reduce((a, r) => a + periodsFor(cfg, c, r.sub), 0);
@@ -2274,6 +2358,7 @@ function AnalysisView({ cfg, teacherLoad, mobile }) {
         </div>
       </div>
 
+      {tooMany.length > 0 && <Banner tone="warn">More periods than working days: {tooMany.join("; ")}. The generator will put these twice on as few days as possible. To choose that yourself, switch on “twice a day” for them in Scheduling rules.</Banner>}
       {shortages.length > 0 && (
         <Banner tone="warn">
           {shortages.map((r) => `${r.t} is short ${-r.diff} period(s) — roughly ${Math.ceil(-r.diff)} class(es) would need combining for their subject(s).`).join("  ")}
