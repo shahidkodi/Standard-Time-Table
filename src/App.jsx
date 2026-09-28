@@ -66,6 +66,7 @@ const emptyDay = (p) => Array.from({ length: p || 8 }, () => [null, null]);
 const clone = (o) => JSON.parse(JSON.stringify(o));
 const stdOf = (cls) => String(cls).split(" ")[0];
 const baseName = (code) => (code ? code.replace(/ \d+$/, "") : code);
+const combName = (map, code) => (!code ? code : map[code] ? code : baseName(code));
 const periodsFor = (cfg, cls, sub) => Number(cfg.stdPeriods?.[stdOf(cls)]?.[sub]) || 0;
 const standardsOf = (cfg) => [...new Set(cfg.classes.map(stdOf))].sort((a, b) => (isNaN(a) || isNaN(b) ? String(a).localeCompare(b) : a - b));
 
@@ -92,8 +93,8 @@ function autoSchedule(cfg, mode = "all", onlyClass = null, opts = {}) {
   const singles = new Set(cfg.singles);
   const combined = (cfg.combined || []).filter((s) => s && s.name);
   const cByBase = {}; combined.forEach((s) => (cByBase[s.name] = s));
-  const isC = (code) => !!(code && cByBase[baseName(code)]);
-  const tOf = (code) => { if (!code) return []; const s = cByBase[baseName(code)]; if (s) return s.teachers.filter((t) => singles.has(t)); if (singles.has(code)) return [code]; return String(code).split(" ").filter((t) => singles.has(t)); };
+  const isC = (code) => !!(code && cByBase[combName(cByBase, code)]);
+  const tOf = (code) => { if (!code) return []; const s = cByBase[combName(cByBase, code)]; if (s) return s.teachers.filter((t) => singles.has(t)); if (singles.has(code)) return [code]; return String(code).split(" ").filter((t) => singles.has(t)); };
   const pf = (c, sub) => Number(cfg.stdPeriods?.[stdOf(c)]?.[sub]) || 0;
   const DAYS = cfg.days, D = DAYS.length, P = cfg.periods.length;
   const RULES = cfg.rules || {};
@@ -495,10 +496,10 @@ export default function App() {
   const combinedByBase = useMemo(() => {
     const m = {}; (cfg?.combined || []).forEach((s) => (m[s.name] = s)); return m;
   }, [cfg]);
-  const isCombined = (code) => !!combinedByBase[baseName(code)];
+  const isCombined = (code) => !!combinedByBase[combName(combinedByBase, code)];
   const teachersOf = (code) => {
     if (!code) return [];
-    const s = combinedByBase[baseName(code)];
+    const s = combinedByBase[combName(combinedByBase, code)];
     if (s) return s.teachers.filter((t) => singlesSet.has(t));
     if (singlesSet.has(code)) return [code];
     return code.split(" ").filter((t) => singlesSet.has(t));
@@ -514,7 +515,7 @@ export default function App() {
       for (const cn of cfg.classes) {
         (cfg.grid[cn]?.[day] || emptyDay(cfg.periods.length)).forEach((slot, p) => {
           const code = slot[0]; if (!code) return;
-          const comb = isCombined(code); const base = baseName(code);
+          const comb = isCombined(code); const base = combName(combinedByBase, code);
           if (comb) { if (!occ[day][p].sessions.has(base)) occ[day][p].sessions.set(base, new Set()); occ[day][p].sessions.get(base).add(cn); }
           for (const t of teachersOf(code)) {
             if (!occ[day][p].tok.has(t)) occ[day][p].tok.set(t, { norm: new Set(), comb: new Set() });
@@ -555,7 +556,7 @@ export default function App() {
       const reg = {}, grp = {};
       for (const cn of cfg.classes) {
         const code = cfg.grid[cn]?.[day]?.[p]?.[0]; if (!code) continue;
-        if (isCombined(code)) { const gk = combGroupOf(combinedByBase[baseName(code)]); for (const tk of teachersOf(code)) (grp[tk] || (grp[tk] = new Set())).add(gk); }
+        if (isCombined(code)) { const gk = combGroupOf(combinedByBase[combName(combinedByBase, code)]); for (const tk of teachersOf(code)) (grp[tk] || (grp[tk] = new Set())).add(gk); }
         else for (const tk of teachersOf(code)) reg[tk] = (reg[tk] || 0) + 1;
       }
       for (const tk of new Set([...Object.keys(reg), ...Object.keys(grp)])) if (t[tk]) t[tk].placed += (reg[tk] || 0) + (grp[tk] ? grp[tk].size : 0);
@@ -2544,8 +2545,7 @@ function Stat({ label, value, tone }) {
   );
 }
 
-function TeacherFreeReport({ cfg, teacherLoad }) {
-  const cap = cfg.days.length * cfg.periods.length;
+function TeacherFreeReport({ cfg }) {
   return (
     <div className="tt-printarea" style={{ ...card, marginTop: 16 }}>
       <Panelhead text="Teacher free-period report — free periods per day" />
@@ -2558,27 +2558,12 @@ function TeacherFreeReport({ cfg, teacherLoad }) {
           </tr></thead>
           <tbody>
             {cfg.singles.map((t) => {
-              const placed = teacherLoad[t]?.placed || 0;
-              const perDay = cfg.days.map((d) => {
-                let busy = 0;
-                for (const c of cfg.classes) { const slot = cfg.grid[c]?.[d]; if (!slot) continue; for (let p = 0; p < cfg.periods.length; p++) { const code = slot[p]?.[0]; if (code && (code === t || (code.includes(" ") && code.split(" ").includes(t)))) { busy++; break; } } }
-                return cfg.periods.length; // placeholder replaced below
-              });
-              // compute free per day precisely
-              const freeDay = cfg.days.map((d) => {
-                let busy = 0;
-                for (let p = 0; p < cfg.periods.length; p++) {
-                  let on = false;
-                  for (const c of cfg.classes) { const code = cfg.grid[c]?.[d]?.[p]?.[0]; if (code && (code === t || (code.includes(" ") && code.split(" ").includes(t)))) { on = true; break; } }
-                  if (!on) busy++;
-                }
-                return busy;
-              });
-              const totalFree = cap - placed;
+              const freeDay = cfg.days.map((d) => { if (isOffDay(cfg, t, d)) return null; let f = 0; for (let p = 0; p < cfg.periods.length; p++) if (!teacherAt(cfg, t, d, p)) f++; return f; });
+              const totalFree = freeDay.reduce((a, f) => a + (f || 0), 0);
               return (
                 <tr key={t}>
                   <td style={{ ...cellTd, height: 32, textAlign: "left", paddingLeft: 12, fontFamily: mono, fontWeight: 700 }}>{t}</td>
-                  {freeDay.map((f, i) => <td key={i} style={{ ...cellTd, height: 32, fontFamily: mono, color: f === 0 ? C.clash : C.ink }}>{f}</td>)}
+                  {freeDay.map((f, i) => <td key={i} style={{ ...cellTd, height: 32, fontFamily: mono, color: f === null ? C.sub : f === 0 ? C.clash : C.ink, background: f === null ? "#f4f5f7" : undefined }}>{f === null ? "off" : f}</td>)}
                   <td style={{ ...cellTd, height: 32, fontFamily: mono, fontWeight: 700, color: C.free }}>{totalFree}</td>
                 </tr>
               );
@@ -2586,7 +2571,7 @@ function TeacherFreeReport({ cfg, teacherLoad }) {
           </tbody>
         </table>
       </div>
-      <div style={{ padding: "8px 14px", fontSize: 12, color: C.sub }}>Numbers are free (leisure) periods available that day. Use Print / PDF above to export this report.</div>
+      <div style={{ padding: "8px 14px", fontSize: 12, color: C.sub }}>Numbers are free (leisure) periods that day, counting combined subjects too. "off" = the teacher doesn't work that day. Use Print / PDF above to export this report.</div>
     </div>
   );
 }
@@ -2819,14 +2804,21 @@ function gridHead(cfg) {
 }
 
 function teacherAt(cfg, t, d, p) {
+  var cm = {}; (cfg.combined || []).forEach(function (s) { cm[s.name] = s; });
+  var hit = null, divs = [];
   for (var ci = 0; ci < cfg.classes.length; ci++) {
     var c = cfg.classes[ci];
     var slot = cfg.grid[c] && cfg.grid[c][d] && cfg.grid[c][d][p];
     var code = slot && slot[0];
-    if (code && (code === t || (code.indexOf(" ") >= 0 && code.split(" ").indexOf(t) >= 0))) return { c: c, sub: slot[1] };
+    if (!code) continue;
+    var s = cm[code] || cm[baseName(code)];
+    if (s) { if (s.teachers.indexOf(t) >= 0) { divs.push(c); if (!hit) hit = { sub: s.sub, combined: true }; } continue; }
+    if (code === t || (code.indexOf(" ") >= 0 && code.split(" ").indexOf(t) >= 0)) return { c: c, sub: slot[1] };
   }
+  if (hit) { hit.c = divs.length > 3 ? divs.slice(0, 3).join(", ") + " +" + (divs.length - 3) : divs.join(", "); return hit; }
   return null;
 }
+function isOffDay(cfg, t, d) { var a = (cfg.teacherDays || {})[t]; return !!(a && a.length && a.indexOf(d) < 0); }
 
 function exportClassesPDF(cfg, paper) {
   var head = gridHead(cfg), pages = "";
@@ -2864,7 +2856,7 @@ function exportTeachersPDF(cfg, paper) {
 
 
 function exportFreeSlotsPDF(cfg, paper) {
-  var css = "@page{size:A3 landscape;margin:8mm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#111} h2{font-size:16px;margin:0 0 8px;text-align:center;color:#0a4f55} table{border-collapse:collapse;width:100%;border:2px solid #0e6b73;table-layout:fixed} th,td{border:1px solid #bcd;padding:2px 1px;text-align:center;font-size:9px} thead th{background:#0e6b73;color:#fff;font-weight:700} td.free{background:#c9efd8;color:#0e7a45;font-weight:800} td.busy{color:#bbb} .tname{text-align:left;font-weight:800;background:#e1f0f0} .dsep{border-left:2px solid #0e6b73}";
+  var css = "@page{size:A3 landscape;margin:8mm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#111} h2{font-size:16px;margin:0 0 8px;text-align:center;color:#0a4f55} table{border-collapse:collapse;width:100%;border:2px solid #0e6b73;table-layout:fixed} th,td{border:1px solid #bcd;padding:2px 1px;text-align:center;font-size:9px} thead th{background:#0e6b73;color:#fff;font-weight:700} td.free{background:#c9efd8;color:#0e7a45;font-weight:800} td.busy{color:#bbb} td.off{background:#e4e6ea} .tname{text-align:left;font-weight:800;background:#e1f0f0} .dsep{border-left:2px solid #0e6b73}";
   var head1 = "<tr><th rowspan=2 class=tname>Teacher</th>";
   for (var di = 0; di < cfg.days.length; di++) head1 += "<th colspan=" + cfg.periods.length + " class=dsep>" + esc(DAY_FULL[cfg.days[di]]) + "</th>";
   head1 += "<th rowspan=2>Free</th></tr>";
@@ -2877,9 +2869,9 @@ function exportFreeSlotsPDF(cfg, paper) {
     for (var di3 = 0; di3 < cfg.days.length; di3++) {
       var d = cfg.days[di3];
       for (var p = 0; p < cfg.periods.length; p++) {
-        var busy = teacherAt(cfg, t, d, p);
-        if (!busy) freeTot++;
-        cells += "<td class=\"" + (busy ? "busy" : "free") + (p === 0 ? " dsep" : "") + "\">" + (busy ? "" : "\u25cf") + "</td>";
+        var off = isOffDay(cfg, t, d), busy = off ? null : teacherAt(cfg, t, d, p);
+        if (!busy && !off) freeTot++;
+        cells += "<td class=\"" + (off ? "off" : busy ? "busy" : "free") + (p === 0 ? " dsep" : "") + "\">" + (off ? "" : busy ? "" : "\u25cf") + "</td>";
       }
     }
     rows += "<tr><td class=tname>" + esc(t) + "</td>" + cells + "<td><b>" + freeTot + "</b></td></tr>";
@@ -2933,6 +2925,7 @@ function exportFreeReportPDF(cfg, paper) {
     var t = cfg.singles[ti], total = 0, cells = "";
     for (var di2 = 0; di2 < cfg.days.length; di2++) {
       var d = cfg.days[di2], free = 0;
+      if (isOffDay(cfg, t, d)) { cells += "<td style='color:#888'>off</td>"; continue; }
       for (var p = 0; p < cfg.periods.length; p++) if (!teacherAt(cfg, t, d, p)) free++;
       total += free; cells += "<td>" + free + "</td>";
     }
