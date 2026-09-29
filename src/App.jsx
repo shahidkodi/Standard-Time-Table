@@ -74,7 +74,18 @@ const standardsOf = (cfg) => [...new Set(cfg.classes.map(stdOf))].sort((a, b) =>
 function makeRng(seed) { return () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }; }
 function shuf(a, r) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
 
-function combGroupOf(s) { return ((s && s.group) || "").trim() || (s && s.sub) || ""; }
+// default block for "together with the other X sessions": same subject AND same standard
+function stdBlockName(s) {
+  const stds = [...new Set((s.divisions || []).map(stdOf))];
+  return stds.length === 1 ? `${s.sub} · Std ${stds[0]}` : s.sub;
+}
+function combGroupOf(s) { return ((s && s.group) || "").trim() || (s && s.name) || ""; }
+// periods of a class's subject that come from a combined session (the rest is taught normally)
+function combCover(cfg) {
+  const cov = {};
+  for (const g of Object.values(combGroups(cfg))) for (const x of g.sessions) for (const c of (x.divisions || [])) { const k = c + "|" + x.sub; cov[k] = Math.max(cov[k] || 0, g.need); }
+  return cov;
+}
 function combGroups(cfg) {
   const g = {};
   for (const s of (cfg.combined || [])) {
@@ -104,8 +115,10 @@ function autoSchedule(cfg, mode = "all", onlyClass = null, opts = {}) {
   const TD = cfg.teacherDays || {};
   const availT = (t, d) => { const a = TD[t]; return !a || !a.length || a.includes(DAYS[d]); };
   const writable = new Set(mode === "class" ? [onlyClass] : cfg.classes);
-  const coveredBySession = new Set();
-  for (const sx of combined) for (const c of sx.divisions) coveredBySession.add(c + "|" + sx.sub);
+  const groupOf = (sx) => ((sx.group || "").trim() || sx.name);
+  const covPer = {};
+  { const gs = {}; for (const sx of combined) (gs[groupOf(sx)] || (gs[groupOf(sx)] = [])).push(sx);
+    for (const list of Object.values(gs)) { const need = Math.max(...list.map((sx) => Number(sx.perWeek) || pf(sx.divisions[0] || cfg.classes[0], sx.sub))); for (const sx of list) for (const c of sx.divisions) { const k = c + "|" + sx.sub; covPer[k] = Math.max(covPer[k] || 0, need); } } }
   const autoLim = {}; const autoNotes = {}; const autoNotesDays = {};
   for (const c of cfg.classes) for (const row of (cfg.bkey[c] || [])) {
     if (!row.sub) continue;
@@ -144,10 +157,23 @@ function autoSchedule(cfg, mode = "all", onlyClass = null, opts = {}) {
     for (const c of cfg.classes) for (let d = 0; d < D; d++) for (let p = 0; p < P; p++) {
       const slot = cfg.grid[c]?.[DAYS[d]]?.[p]; if (!slot || !slot[0]) continue;
       const keep = mode !== "all" || frozen.has(key(c, d, p));
-      if (keep) { put(c, d, p, slot[0], slot[1]); fixed.add(key(c, d, p)); }
+      if (keep) { put(c, d, p, slot[0], slot[1]); if (!opts.softKeep || isC(slot[0]) || frozen.has(key(c, d, p))) fixed.add(key(c, d, p)); }
     }
 
     const free = (c, d, p) => writable.has(c) && !!grid[c] && !grid[c][d][p][0] && !frozen.has(key(c, d, p));
+    // repair mode: a class/subject that now comes from a combined session (or has fewer periods) loses its surplus separate periods
+    if (opts.softKeep) for (const c of cfg.classes) {
+      if (!writable.has(c)) continue;
+      for (const row of cfg.bkey[c] || []) {
+        if (!row.teacher || !row.sub || isC(row.teacher)) continue;
+        let extra = -Math.max(0, pf(c, row.sub) - (covPer[c + "|" + row.sub] || 0));
+        for (let d = 0; d < D; d++) for (let p = 0; p < P; p++) if (grid[c][d][p][0] === row.teacher && grid[c][d][p][1] === row.sub) extra++;
+        for (let d = D - 1; d >= 0 && extra > 0; d--) for (let p = P - 1; p >= 0 && extra > 0; p--) {
+          const k = key(c, d, p);
+          if (grid[c][d][p][0] === row.teacher && grid[c][d][p][1] === row.sub && !frozen.has(k)) { const [code, sub] = grid[c][d][p]; tOf(code).forEach((t) => { tbusy[d][p].delete(t); if (tcls[d][p].get(t) === c) tcls[d][p].delete(t); }); mark(c, sub, d, p, -1); grid[c][d][p] = [null, null]; fixed.delete(k); extra--; }
+        }
+      }
+    }
     const tOK = (toks, d, p) => toks.every((t) => !tbusy[d][p].has(t) && availT(t, d));
     const book = (c, d, p, code, sub, isFixed) => { put(c, d, p, code, sub); if (isFixed) fixed.add(key(c, d, p)); };
     const unbook = (c, d, p) => { const [code, sub] = grid[c][d][p]; if (!code) return; tOf(code).forEach((t) => { tbusy[d][p].delete(t); if (tcls[d][p].get(t) === c) tcls[d][p].delete(t); }); mark(c, sub, d, p, -1); grid[c][d][p] = [null, null]; };
@@ -164,7 +190,7 @@ function autoSchedule(cfg, mode = "all", onlyClass = null, opts = {}) {
         const d = DAYS.indexOf(dayCode), p = (+pn) - 1; if (d < 0 || p < 0 || p >= P) continue;
         for (const c of (cp.classes || [])) {
           if (!grid[c] || !writable.has(c)) continue;
-          if (grid[c][d][p][1] === cp.sub) continue;
+          if (grid[c][d][p][1] === cp.sub) { fixed.add(key(c, d, p)); continue; }
           if (!free(c, d, p)) { issues.push(`Common ${cp.sub}: ${c} ${dayCode} P${pn} is already taken`); continue; }
           const t = mappedTeacher(c, cp.sub);
           if (t && !tOK(tOf(t), d, p)) { issues.push(`Common ${cp.sub}: ${t} (${c}) is busy or off on ${dayCode} P${pn}`); continue; }
@@ -205,7 +231,7 @@ function autoSchedule(cfg, mode = "all", onlyClass = null, opts = {}) {
         const want = fixedDays.length ? fixedDays.length : Math.min(D, rule.count ? +rule.count : D);
         for (const o of opts) avoid.add(`${c}|${o.sub}|${p}`);
         avoid.add(`${c}|T:${teacher}|${p}`);
-        let have = 0; for (let d = 0; d < D; d++) if (grid[c][d][p][0] === teacher && opts.some((o) => o.sub === grid[c][d][p][1])) have++;
+        let have = 0; for (let d = 0; d < D; d++) if (grid[c][d][p][0] === teacher && opts.some((o) => o.sub === grid[c][d][p][1])) { have++; fixed.add(key(c, d, p)); }
         const budget = (o) => pf(c, o.sub) - countOf(c, o.teacher, o.sub);
         let order;
         if (fixedDays.length) order = fixedDays;
@@ -224,7 +250,7 @@ function autoSchedule(cfg, mode = "all", onlyClass = null, opts = {}) {
 
     // 4. combined sections: sessions in the same group run at the same slots; different groups never clash
     const groups = {};
-    for (const sx of combined) { const g = (sx.group || "").trim() || sx.sub; (groups[g] || (groups[g] = [])).push(sx); }
+    for (const sx of combined) { const g = groupOf(sx); (groups[g] || (groups[g] = [])).push(sx); }
     for (const g of Object.keys(groups)) {
       const sessions = groups[g].filter((sx) => sx.divisions.some((c) => grid[c]));
       if (!sessions.length) continue;
@@ -250,6 +276,28 @@ function autoSchedule(cfg, mode = "all", onlyClass = null, opts = {}) {
           }
         }
       }
+      // 3rd: move ordinary lessons out of the way (they are placed again in step 5); locked, rule and combined cells never move
+      if (placed < need) {
+        const cands = [];
+        for (let d = 0; d < D; d++) for (let p = 0; p < P; p++) {
+          if (isRunning(d, p) || !sessions.every((sx) => allowed(sx.sub, p)) || !teach.every((t) => availT(t, d))) continue;
+          let ok = true; const bl = [];
+          for (const c of divs) { if (!writable.has(c) || frozen.has(key(c, d, p))) { ok = false; break; } const code = grid[c][d][p][0]; if (code) { if (fixed.has(key(c, d, p)) || isC(code)) { ok = false; break; } bl.push([c, d, p]); } }
+          if (ok) for (const t of teach) if (tbusy[d][p].has(t)) { const hc = tcls[d][p].get(t); if (!hc || !writable.has(hc) || fixed.has(key(hc, d, p)) || frozen.has(key(hc, d, p))) { ok = false; break; } if (!bl.some(([c]) => c === hc)) bl.push([hc, d, p]); }
+          if (!ok) continue;
+          cands.push({ d, p, bl, score: bl.length * 10 + (usedD.has(d) ? 6 : 0) + r() });
+        }
+        cands.sort((a, b) => a.score - b.score);
+        for (const o of cands) {
+          if (placed >= need) break;
+          if (isRunning(o.d, o.p)) continue;
+          if (!o.bl.every(([c, dd, pp]) => !grid[c][dd][pp][0] || (!fixed.has(key(c, dd, pp)) && !isC(grid[c][dd][pp][0])))) continue;
+          const saved = o.bl.map(([c, dd, pp]) => [c, dd, pp, grid[c][dd][pp][0], grid[c][dd][pp][1]]).filter((x) => x[3]);
+          for (const [c, dd, pp] of saved) unbook(c, dd, pp);
+          if (canRun(o.d, o.p) && sessions.every((sx) => sx.divisions.every((c) => !grid[c] || !writable.has(c) || dayOK(c, sx.sub, o.d)))) run(o.d, o.p);
+          else for (const [c, dd, pp, code, sub] of saved) put(c, dd, pp, code, sub);
+        }
+      }
       if (placed < need) issues.push(`Combined "${g}": placed ${placed} of ${need} period(s) - its classes or teachers have no common free slot`);
     }
 
@@ -259,8 +307,7 @@ function autoSchedule(cfg, mode = "all", onlyClass = null, opts = {}) {
       if (!writable.has(c)) continue;
       for (const row of cfg.bkey[c] || []) {
         if (!row.teacher || !row.sub || isC(row.teacher)) continue;
-        if (coveredBySession.has(c + "|" + row.sub)) continue;
-        const left = pf(c, row.sub) - countOf(c, row.teacher, row.sub);
+        const left = Math.max(0, pf(c, row.sub) - (covPer[c + "|" + row.sub] || 0)) - countOf(c, row.teacher, row.sub);
         for (let k = 0; k < left; k++) lessons.push({ c, sub: row.sub, teacher: row.teacher });
       }
     }
@@ -399,6 +446,45 @@ function ctBalanceStep(cfg, counts, minD) {
   return { res, next, changed, notP1: res.unplaced - stuck.length };
 }
 
+// Remove whatever collides at each clashing slot, then put the removed periods back without clashes.
+// Keeps: locked cells, the biggest combined block at a slot, and everything that doesn't clash.
+function fixAllClashes(cfg) {
+  const n = clone(cfg);
+  const cm = {}; (n.combined || []).forEach((x) => (cm[x.name] = x));
+  const key = (code) => (!code ? null : cm[code] ? code : cm[baseName(code)] ? baseName(code) : null);
+  const singles = new Set(n.singles);
+  const toks = (code) => { const k = key(code); if (k) return cm[k].teachers.filter((t) => singles.has(t)); if (singles.has(code)) return [code]; return String(code).split(" ").filter((t) => singles.has(t)); };
+  const locked = (c, d, p) => !!(n.locked && n.locked[`${c}|${d}|${p}`]);
+  const removed = [];
+  const clear = (c, d, p, why) => { const [code, sub] = n.grid[c][d][p]; removed.push(`${c} ${d} P${p + 1} ${sub || ""} (${code}) — ${why}`); n.grid[c][d][p] = [null, null]; };
+  for (const d of n.days) for (let p = 0; p < n.periods.length; p++) {
+    const cells = [];
+    for (const c of n.classes) { const code = n.grid[c]?.[d]?.[p]?.[0]; if (code) cells.push({ c, code, k: key(code), lk: locked(c, d, p) }); }
+    const claimed = new Set();
+    // 1) locked ordinary lessons always stay
+    for (const x of cells) if (!x.k && x.lk) toks(x.code).forEach((t) => claimed.add(t));
+    // 2) combined blocks: keep the biggest first, drop a block if its teachers are already taken
+    const blocks = {};
+    for (const x of cells) if (x.k) { const g = combGroupOf(cm[x.k]); (blocks[g] || (blocks[g] = { cells: [], teachers: new Set() })).cells.push(x); toks(x.code).forEach((t) => blocks[g].teachers.add(t)); }
+    for (const g of Object.keys(blocks).sort((a, b) => blocks[b].cells.length - blocks[a].cells.length)) {
+      const bl = blocks[g];
+      const hit = [...bl.teachers].filter((t) => claimed.has(t));
+      if (hit.length && !bl.cells.some((x) => x.lk)) {
+        for (const x of bl.cells) clear(x.c, d, p, `${hit.join(", ")} busy in another block`);
+        for (const s of Object.values(cm)) if (combGroupOf(s) === g && s.slots) { s.slots = s.slots.filter(([dd, pp]) => !(dd === d && pp === p + 1)); if (!s.slots.length) delete s.slots; }
+      } else bl.teachers.forEach((t) => claimed.add(t));
+    }
+    // 3) ordinary lessons: first one keeps the teacher, later ones that collide are taken out
+    for (const x of cells) if (!x.k && !x.lk) {
+      const ts = toks(x.code);
+      if (ts.some((t) => claimed.has(t))) clear(x.c, d, p, `${ts.filter((t) => claimed.has(t)).join(", ")} already teaching`);
+      else ts.forEach((t) => claimed.add(t));
+    }
+  }
+  const res = autoSchedule(n, "gaps", null, { softKeep: true });
+  return { grid: res.grid, combined: n.combined, removed, res };
+}
+
 function cmpClass(a, b) { return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" }); }
 function lsGet(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : v; } catch { return d; } }
 function lsSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
@@ -472,6 +558,7 @@ export default function App() {
       if (!next.classRules) next.classRules = {};
       if (!next.locked) next.locked = {};
       if (!next.twice) next.twice = {};
+      if (!next.combinedV3) { (next.combined || []).forEach((x) => { if (!x.group || x.group === x.sub) x.group = stdBlockName(x); }); next.combinedV2 = true; next.combinedV3 = true; }
       if (!alive) return;
       if (Array.isArray(next.classes)) next.classes.sort(cmpClass);
       setCfg(next);
@@ -543,13 +630,41 @@ export default function App() {
     return n;
   }, [occupancy, cfg]);
 
+  const clashList = useMemo(() => {
+    const out = [];
+    for (const day of cfg?.days || []) for (let p = 0; p < cfg.periods.length; p++) {
+      const m = occupancy[day]?.[p]?.tok; if (!m) continue;
+      for (const [t, e] of m) {
+        const gs = new Set([...e.comb].map((b) => combGroupOf(combinedByBase[b])));
+        if (!(e.norm.size > 1 || (e.norm.size >= 1 && e.comb.size >= 1) || gs.size > 1)) continue;
+        const where = [...[...e.norm].sort(cmpClass).map((c) => `${c} ${cfg.grid[c]?.[day]?.[p]?.[1] || ""}`.trim()), ...[...e.comb].map((b) => `${b} (${combGroupOf(combinedByBase[b])})`)];
+        out.push({ t, day, p, where, kind: e.norm.size > 1 && !e.comb.size ? "regular" : e.norm.size ? "mixed" : "blocks", cls: [...e.norm][0] || [...(occupancy[day][p].sessions.get([...e.comb][0]) || [])][0] });
+      }
+    }
+    return out;
+  }, [occupancy, cfg]);
+  const [showClashes, setShowClashes] = useState(false);
+  const [fixMsg, setFixMsg] = useState("");
+  const doFixAll = () => ask("Fix all clashes? The periods that collide are taken out and placed again at free times. Locked slots, rules and everything else stay as they are.", () => {
+    setFixMsg("Fixing…");
+    setTimeout(() => {
+      try {
+        const f = fixAllClashes(cfg);
+        update((n) => { n.grid = f.grid; n.combined = f.combined; });
+        setFixMsg(`Took out ${f.removed.length} clashing period(s) and placed them again at free times.` + (f.res.unplaced ? ` ${f.res.unplaced} could not be placed without breaking a rule: ${f.res.missing.slice(0, 6).join(", ")}${f.res.missing.length > 6 ? " …" : ""}.` : " Everything fits."));
+      } catch (e) { setFixMsg("Couldn't fix: " + ((e && e.message) || e)); }
+    }, 50);
+  });
+
   // teacher load: combined sessions count once (not per division)
   const teacherLoad = useMemo(() => {
     if (!cfg) return {};
     const t = {}; cfg.singles.forEach((x) => (t[x] = { target: 0, placed: 0 }));
+    const cov = combCover(cfg);
     for (const cn of cfg.classes) for (const row of cfg.bkey[cn] || []) {
       if (isCombined(row.teacher)) continue;
-      for (const tk of teachersOf(row.teacher)) if (t[tk]) t[tk].target += periodsFor(cfg, cn, row.sub);
+      const own = Math.max(0, periodsFor(cfg, cn, row.sub) - (cov[cn + "|" + row.sub] || 0));
+      for (const tk of teachersOf(row.teacher)) if (t[tk]) t[tk].target += own;
     }
     for (const g of Object.values(combGroups(cfg))) for (const tk of g.teachers) if (t[tk]) t[tk].target += g.need;
     for (const day of cfg.days) for (let p = 0; p < cfg.periods.length; p++) {
@@ -600,7 +715,7 @@ export default function App() {
           <div style={{ fontSize: 16.5, fontWeight: 800, letterSpacing: -0.3 }}>TIME TABLE</div>
           {!mobile && <div style={{ fontSize: 12, color: "rgba(255,255,255,.8)", marginTop: 1, fontWeight: 500 }}>{cfg.school} · {cfg.classes.length} classes · {cfg.singles.length} teachers · {cfg.days.length} days</div>}
         </div>
-        <ClashBadge n={totalClashes} />
+        <ClashBadge n={totalClashes} onClick={() => setShowClashes(true)} />
         <span style={{ fontSize: 12, color: "rgba(255,255,255,.85)", minWidth: 56, textAlign: "right", fontWeight: 500 }}>{saved}</span>
         <button className="tt-btn" onClick={() => ask("Reset — clear ALL class timetables to blank? Your mapping, classes, teachers and rules are kept.", () => update((n) => { for (const c of n.classes) for (const d of n.days) n.grid[c][d] = emptyDay(n.periods.length); n.locked = {}; }))} style={headerBtn}>Reset</button>
         <button className="tt-btn" onClick={() => ask("MASTER RESET  -  permanently delete EVERYTHING (all classes, teachers, subjects, mapping, combined subjects, rules, standard periods, and the whole timetable) and start from a blank app? This cannot be undone.", () => update((n) => { n.classes = []; n.singles = []; n.subjects = []; n.combined = []; n.bkey = {}; n.classTeacher = {}; n.grid = {}; n.stdPeriods = {}; n.rules = {}; n.twice = {}; n.classRules = {}; n.locked = {}; n.commonPeriods = []; n.teacherDays = {}; }))} style={{ ...headerBtn, border: "1px solid rgba(255,255,255,.5)", background: "rgba(214,69,69,.35)" }}>Master reset</button>
@@ -642,6 +757,7 @@ export default function App() {
           {view === "setup" && <SetupView {...ctx} />}
         </section>
       </main>
+      {showClashes && <ClashListModal list={clashList} onFix={doFixAll} fixMsg={fixMsg} onClose={() => { setShowClashes(false); setFixMsg(""); }} onOpen={(x) => { setShowClashes(false); if (x.kind === "blocks") setView("combined"); else { if (x.cls) setCls(x.cls); setView("edit"); } }} />}
       {confirmState && <ConfirmModal msg={confirmState.msg} onYes={() => { confirmState.onYes(); setConfirmState(null); }} onNo={() => setConfirmState(null)} />}
     </div>
   );
@@ -653,6 +769,36 @@ function EmptyState({ title, msg, onGo }) {
       <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6, color: C.ink }}>{title || "Nothing here yet"}</div>
       <div style={{ fontSize: 13.5, color: C.sub, marginBottom: 16, lineHeight: 1.6 }}>{msg}</div>
       {onGo && <button className="tt-btn" onClick={onGo} style={solidBtn}>Go to Classes & setup</button>}
+    </div>
+  );
+}
+
+function ClashListModal({ list, onClose, onOpen, onFix, fixMsg }) {
+  const combOnly = list.length > 0 && list.every((x) => x.kind === "blocks");
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(20,25,33,.45)", display: "grid", placeItems: "center", zIndex: 100, padding: 12 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", borderRadius: 14, width: 640, maxWidth: "96vw", maxHeight: "86vh", display: "flex", flexDirection: "column", boxShadow: "0 12px 40px rgba(0,0,0,.25)" }}>
+        <div style={{ display: "flex", alignItems: "center", padding: "14px 16px", borderBottom: `1px solid ${C.line}` }}>
+          <b style={{ fontSize: 15, color: list.length ? C.clash : C.free }}>{list.length ? `${list.length} clash${list.length > 1 ? "es" : ""}` : "No clashes"}</b>
+          {list.length > 0 && onFix && <button className="tt-btn" onClick={onFix} style={{ ...solidBtn, marginLeft: 12, padding: "6px 12px" }}>Fix all clashes</button>}
+          <button className="tt-btn" onClick={onClose} style={{ marginLeft: "auto", border: "none", background: "transparent", fontSize: 22, cursor: "pointer", lineHeight: 1, color: C.sub }}>×</button>
+        </div>
+        {fixMsg && <div style={{ margin: "12px 16px 0", padding: "9px 12px", borderRadius: 9, background: C.primarySoft, color: C.primary, fontSize: 12.5, lineHeight: 1.55 }}>{fixMsg}</div>}
+        {combOnly && <div style={{ margin: "12px 16px 0", padding: "9px 12px", borderRadius: 9, background: C.warnSoft, color: C.warn, fontSize: 12.5, lineHeight: 1.55 }}>All of these are teachers placed in two combined blocks at the same time (for example two standards' language periods together). Press “Fix all clashes”: one block keeps each slot and the others move to free times.</div>}
+        <div style={{ overflowY: "auto", padding: "8px 16px 14px" }}>
+          {list.length === 0 && <div style={{ color: C.sub, fontSize: 13, padding: 10 }}>Every teacher is in only one place at a time.</div>}
+          {list.map((x, k) => (
+            <div key={k} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 0", borderBottom: `1px solid ${C.line}`, fontSize: 12.5, lineHeight: 1.5 }}>
+              <div style={{ minWidth: 70 }}><b style={{ fontFamily: mono }}>{x.t}</b><div style={{ color: C.sub, fontSize: 11.5 }}>{x.day} P{x.p + 1}</div></div>
+              <div style={{ flex: 1 }}>
+                <div>{x.where.join("  +  ")}</div>
+                <div style={{ color: C.clash, fontSize: 11.5 }}>{x.kind === "regular" ? "in two classes at once" : x.kind === "mixed" ? "in a class and a combined session at once" : "in two combined blocks at once"}</div>
+              </div>
+              <button className="tt-btn" onClick={() => onOpen(x)} style={{ ...ghostBtn, padding: "5px 10px" }}>Open</button>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -676,12 +822,12 @@ const ghostBtn = { border: `1px solid ${C.line}`, background: "#fff", color: "#1
 const headerBtn = { border: "1px solid rgba(255,255,255,.28)", background: "rgba(255,255,255,.12)", color: "#fff", padding: "7px 13px", borderRadius: 9, fontSize: 12.5, fontWeight: 600 };
 const solidBtn = { border: "none", background: C.primary, color: "#fff", padding: "8px 15px", borderRadius: 9, fontSize: 13, fontWeight: 600, cursor: "pointer", boxShadow: "0 2px 8px rgba(14,107,115,.28)" };
 
-function ClashBadge({ n }) {
+function ClashBadge({ n, onClick }) {
   const ok = n === 0;
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "6px 11px", borderRadius: 8, fontSize: 12.5, fontWeight: 600, background: ok ? C.freeSoft : C.clashSoft, color: ok ? C.free : C.clash }}>
+    <div onClick={onClick} title={ok ? "" : "Show the list of clashes"} style={{ cursor: onClick && !ok ? "pointer" : "default", display: "flex", alignItems: "center", gap: 7, padding: "6px 11px", borderRadius: 8, fontSize: 12.5, fontWeight: 600, background: ok ? C.freeSoft : C.clashSoft, color: ok ? C.free : C.clash }}>
       <span style={{ width: 8, height: 8, borderRadius: 9, background: ok ? C.free : C.clash }} />
-      {ok ? "No clashes" : `${n} clash${n > 1 ? "es" : ""}`}
+      {ok ? "No clashes" : `${n} clash${n > 1 ? "es" : ""} — show`}
     </div>
   );
 }
@@ -797,7 +943,7 @@ function TeacherView({ cfg, tch, occupancy, teacherLoad, combinedByBase }) {
         <GridTable cfg={cfg} render={(d, pi) => {
           const r = lookup(d, pi);
           if (!r) return { free: true, bg: C.freeSoft };
-          return { t: r.cn, s: `${r.subj || ""}${r.combined ? " · language" : r.code !== tch ? " · " + r.code : ""}`, bg: r.combined ? C.accentSoft : SUBJECT_TINT[r.subj] || "#fff", sub: r.subj };
+          return { t: r.cn, s: `${r.subj || ""}${r.combined ? " · combined" : r.code !== tch ? " · " + r.code : ""}`, bg: r.combined ? C.accentSoft : SUBJECT_TINT[r.subj] || "#fff", sub: r.subj };
         }} />
       </div>
     </div>
@@ -991,7 +1137,8 @@ function BKeyView({ cfg, cls, setCls, update, expand, teacherLoad, mobile, ask }
   const saveClass = () => {
     const r = cfg.bkey[cls] || [];
     const st = stdOf(cls);
-    const noT = r.filter((x) => !x.teacher).map((x) => x.sub);
+    const covS = combCover(cfg);
+    const noT = r.filter((x) => !x.teacher && (covS[cls + "|" + x.sub] || 0) < periodsFor(cfg, cls, x.sub)).map((x) => x.sub);
     const noP = r.filter((x) => x.sub && !periodsFor(cfg, cls, x.sub)).map((x) => x.sub);
     const have = new Set(r.map((x) => x.sub));
     const missing = Object.keys(cfg.stdPeriods?.[st] || {}).filter((su) => Number(cfg.stdPeriods[st][su]) > 0 && !have.has(su));
@@ -1011,7 +1158,8 @@ function BKeyView({ cfg, cls, setCls, update, expand, teacherLoad, mobile, ask }
   const saveMapping = () => {
     const noMap = cfg.classes.filter((c) => !(cfg.bkey[c] || []).length);
     const noTeacher = [], noPer = [];
-    for (const c of cfg.classes) for (const r of (cfg.bkey[c] || [])) { if (!r.teacher) noTeacher.push(c + " " + r.sub); if (!periodsFor(cfg, c, r.sub)) noPer.push(c + " " + r.sub); }
+    const covA = combCover(cfg);
+    for (const c of cfg.classes) for (const r of (cfg.bkey[c] || [])) { if (!r.teacher && (covA[c + "|" + r.sub] || 0) < periodsFor(cfg, c, r.sub)) noTeacher.push(c + " " + r.sub); if (!periodsFor(cfg, c, r.sub)) noPer.push(c + " " + r.sub); }
     const noStdSubs = standardsOf(cfg).filter((st) => !Object.values(cfg.stdPeriods?.[st] || {}).some((v) => Number(v) > 0)).map((st) => "Std " + st);
     const noCT = cfg.classes.filter((c) => !cfg.classTeacher[c]);
     update((n) => { n.savedAt = new Date().toISOString(); });
@@ -1049,6 +1197,7 @@ function BKeyView({ cfg, cls, setCls, update, expand, teacherLoad, mobile, ask }
   const totalKeyed = rows.reduce((a, r) => a + periodsFor(cfg, cls, r.sub), 0);
   const weekSlots = cfg.days.length * cfg.periods.length;
   const combinedNames = (cfg.combined || []).map((s) => s.name);
+  const covM = combCover(cfg);
   useEffect(() => {
     const existing = cfg.bkey[cls];
     if (existing) return; // only auto-load for brand-new classes; an explicit Clear leaves an empty array
@@ -1147,6 +1296,7 @@ function BKeyView({ cfg, cls, setCls, update, expand, teacherLoad, mobile, ask }
                   </td>
                   <td style={{ ...cellTd, height: 40 }}>
                     <span style={{ fontFamily: mono, fontWeight: 700, fontSize: 13, color: periodsFor(cfg, cls, r.sub) ? C.primary : C.clash }} title="Set in the Standard periods table above">{periodsFor(cfg, cls, r.sub)}</span>
+                    {covM[cls + "|" + r.sub] > 0 && !combinedNames.includes(r.teacher) && <div title="Periods taught in a combined session" style={{ fontSize: 9.5, color: C.accent, fontWeight: 700 }}>{Math.min(covM[cls + "|" + r.sub], periodsFor(cfg, cls, r.sub))} comb.</div>}
                   </td>
                   <td style={{ ...cellTd, height: 40, padding: 5 }}>
                     <button className="tt-btn" onClick={() => delRow(i)} title="Remove" style={{ border: "none", background: "transparent", color: C.clash, fontSize: 16, cursor: "pointer" }}>×</button>
@@ -1283,17 +1433,18 @@ function TeacherLoadSection({ cfg, teacherLoad }) {
   const combNames = new Set((cfg.combined || []).map((x) => x.name));
   const detail = {};
   cfg.singles.forEach((t) => (detail[t] = []));
+  const cov = combCover(cfg);
   for (const c of cfg.classes) for (const r of (cfg.bkey[c] || [])) {
     if (!r.teacher || combNames.has(r.teacher)) continue;
-    for (const tk of String(r.teacher).split(" ")) if (detail[tk]) detail[tk].push({ c, sub: r.sub, per: periodsFor(cfg, c, r.sub) });
+    const own = Math.max(0, periodsFor(cfg, c, r.sub) - (cov[c + "|" + r.sub] || 0)); if (!own) continue;
+    for (const tk of String(r.teacher).split(" ")) if (detail[tk]) detail[tk].push({ c, divs: [c], sub: r.sub, per: own });
   }
   for (const g of Object.values(combGroups(cfg))) {
-    const divs = [...g.divisions].sort(cmpClass).join(", ");
-    for (const tk of g.teachers) if (detail[tk]) detail[tk].push({ c: divs, sub: `${g.sub} (combined “${g.name}”, ${g.sessions.length} session${g.sessions.length > 1 ? "s" : ""})`, per: g.need });
+    for (const tk of g.teachers) if (detail[tk]) { const mine = [...new Set(g.sessions.filter((x) => x.teachers.includes(tk)).flatMap((x) => x.divisions))].sort(cmpClass); const divs = mine.join(", "); detail[tk].push({ c: divs, divs: mine, sub: `${g.sub} (combined “${g.name}”, ${g.sessions.length} session${g.sessions.length > 1 ? "s" : ""})`, per: g.need }); }
   }
   let list = cfg.singles.map((t) => {
     const L = teacherLoad[t] || { target: 0, placed: 0 };
-    const classes = new Set(detail[t].map((d) => d.c)).size;
+    const classes = new Set(detail[t].flatMap((d) => d.divs || [d.c])).size;
     const capT = teacherCap(cfg, t);
     return { t, target: L.target || 0, placed: L.placed || 0, free: capT - (L.target || 0), classes, capT };
   });
@@ -1701,7 +1852,7 @@ function RulesView({ cfg, update }) {
       <ClassRulesPanel cfg={cfg} update={update} />
       <TwicePanel cfg={cfg} update={update} />
       <p style={{ fontSize: 12.5, color: C.sub, marginTop: 12, lineHeight: 1.6 }}>
-        “Once per day” (no subject twice in a day for a class) is always enforced. Language sessions follow the same rules via their subject. After changing rules, go to Assign timetable → Auto-generate all to rebuild.
+        “Once per day” (no subject twice in a day for a class) is always enforced. Combined subjects follow the same rules via their subject. After changing rules, go to Assign timetable → Auto-generate all to rebuild.
       </p>
     </div>
   );
@@ -2056,16 +2207,16 @@ ${buildContext(cfg, teacherLoad)}`;
   );
 }
 
-/* ---------------- Language (combined) sessions ---------------- */
-function CombinedView({ cfg, update, ask, mobile, occupancy }) {
+/* ---------------- Combined subjects (any subject) ---------------- */
+function CombinedView({ cfg, update, ask, mobile, occupancy, teacherLoad }) {
   const sessions = cfg.combined || [];
   const [sel, setSel] = useState(0);
   const i = Math.min(sel, Math.max(0, sessions.length - 1));
   const s = sessions[i];
 
   const editS = (fn) => update((n) => { fn(n.combined[i]); });
-  const addSession = () => { update((n) => { (n.combined ||= []).push({ name: `LANG ${n.combined.length + 1}`, sub: "LAN", teachers: [], divisions: [] }); }); setSel(sessions.length); };
-  const delSession = () => ask(`Remove language session “${s.name}”? It will be cleared from any timetable slots that use it.`, () => update((n) => {
+  const addSession = () => { update((n) => { (n.combined ||= []); let k = n.combined.length + 1; while (n.combined.some((x) => x.name === `COMBINED ${k}`)) k++; n.combined.push({ name: `COMBINED ${k}`, sub: n.subjects[0] || "", teachers: [], divisions: [] }); }); setSel(sessions.length); };
+  const delSession = () => ask(`Remove combined session “${s.name}”? It will be cleared from any timetable slots that use it.`, () => update((n) => {
     const nm = n.combined[i].name;
     for (const c of n.classes) for (const d of n.days) n.grid[c][d].forEach((slot) => { if (slot[0] === nm) { slot[0] = null; slot[1] = null; } });
     for (const c of n.classes) n.bkey[c] = (n.bkey[c] || []).filter((r) => r.teacher !== nm);
@@ -2105,7 +2256,8 @@ function CombinedView({ cfg, update, ask, mobile, occupancy }) {
     if (!s.name.trim()) todo.push("give it a name");
     if (!s.sub) todo.push("choose a subject");
     if (!s.teachers.length) todo.push("pick at least one teacher");
-    if (s.divisions.length < 2) todo.push("pick the divisions that merge (at least 2)");
+    if (!s.divisions.length) todo.push("pick the class(es)");
+    else if (s.divisions.length < 2 && s.teachers.length < 2) todo.push("pick 2 or more classes to merge (or 2 or more teachers for one class)");
     let placed = 0; for (const d of cfg.days) cfg.periods.forEach((_, pi) => { if (scheduledAt(d, pi)) placed++; });
     update((n) => { n.savedAt = new Date().toISOString(); });
     setCMsg(todo.length
@@ -2153,8 +2305,10 @@ function CombinedView({ cfg, update, ask, mobile, occupancy }) {
     if (runningAt(d, pi)) { removeAt([[d, pi]]); return; }
     const info = slotInfo(d, pi);
     const probs = [];
-    if (info.clash.length) probs.push(`${info.clash.join(", ")} already teaching at this time`);
-    if (info.off.length) probs.push(`${info.off.join(", ")} not working on ${d}`);
+    if (info.clash.length || info.off.length) {
+      setCMsg({ tone: "warn", text: `Can't place on ${d} P${pi + 1}: ${[info.clash.length ? `${info.clash.join(", ")} already teaching then` : "", info.off.length ? `${info.off.join(", ")} not working on ${d}` : ""].filter(Boolean).join("; ")}. Pick a “+” slot, or press Auto-place remaining.` });
+      return;
+    }
     if (info.busy.length) probs.push(`${info.busy.join(", ")} already ha${info.busy.length > 1 ? "ve" : "s"} a lesson here (it will be replaced)`);
     if (info.locked.length) probs.push(`${info.locked.join(", ")} locked (skipped)`);
     if (info.ruleNo) probs.push(`a scheduling rule keeps ${s.sub} out of P${pi + 1}`);
@@ -2177,8 +2331,43 @@ function CombinedView({ cfg, update, ask, mobile, occupancy }) {
     }
     if (pick.length) placeAt(pick);
     setCMsg(pick.length === want ? { tone: "primary", text: `Placed ${pick.length} more slot(s) for "${wholeGroup ? myG : s.name}" with no clashes: ${pick.map(([d, pi]) => `${d} P${pi + 1}`).join(", ")}.` }
-      : { tone: "warn", text: `Placed ${pick.length} of ${want} — no more clash-free slots where all ${gDivs.length} divisions and ${gTeach.length} teachers are free. Clear some lessons in those classes, or place manually (you'll be warned).` });
+      : { tone: "warn", text: `Placed ${pick.length} of ${want} in free slots. There's no other time when all ${gDivs.length} classes and ${gTeach.length} teachers are free together — press “Make room” to move ordinary lessons aside (they are placed again automatically).`, room: true });
   };
+  const makeRoom = () => ask("Make room for the combined sessions? Ordinary lessons are moved to other free times where needed. Locked slots, rules and combined sessions already placed stay.", () => {
+    setTimeout(() => {
+      try {
+        const res = autoSchedule(cfg, "gaps", null, { softKeep: true });
+        update((n) => { n.grid = res.grid; });
+        setCMsg(res.unplaced ? { tone: "warn", text: `Made room. ${res.unplaced} period(s) could not be placed again without breaking a rule: ${res.missing.slice(0, 6).join(", ")}.` } : { tone: "primary", text: "Made room: combined sessions placed and all moved lessons placed again with no clashes." });
+      } catch (e) { setCMsg({ tone: "warn", text: "Couldn't make room: " + ((e && e.message) || e) }); }
+    }, 50);
+  });
+  const fixAll = () => ask("Fix all clashes? The periods that collide are taken out and placed again at free times. Locked slots, rules and everything else stay.", () => {
+    setTimeout(() => {
+      try {
+        const f = fixAllClashes(cfg);
+        update((n) => { n.grid = f.grid; n.combined = f.combined; });
+        setCMsg(f.res.unplaced ? { tone: "warn", text: `Fixed ${f.removed.length} clashing period(s). ${f.res.unplaced} could not be placed again: ${f.res.missing.slice(0, 6).join(", ")}.` } : { tone: "primary", text: `Fixed: ${f.removed.length} clashing period(s) moved to free times. No clashes left.` });
+      } catch (e) { setCMsg({ tone: "warn", text: "Couldn't fix: " + ((e && e.message) || e) }); }
+    }, 50);
+  });
+  const setupIssues = useMemo(() => {
+    const out = [];
+    const groups = combGroups(cfg);
+    for (const gr of Object.values(groups)) {
+      const seen = {};
+      for (const x of gr.sessions) for (const c of x.divisions) { if (seen[c] && seen[c] !== x.name) out.push({ bad: true, text: `${c} is in both “${seen[c]}” and “${x.name}”, which run together (block ${gr.name}). A class can be in only one session of a block — remove it from one.` }); else seen[c] = x.name; }
+      const days = cfg.days.filter((d) => [...gr.teachers].every((t) => !(cfg.teacherDays?.[t]?.length) || cfg.teacherDays[t].includes(d)));
+      if (gr.teachers.size && !days.length) out.push({ bad: true, text: `Block ${gr.name}: its teachers have no working day in common, so it can never be placed.` });
+      else if (gr.teachers.size && days.length < Math.min(gr.need, cfg.days.length)) out.push({ bad: false, text: `Block ${gr.name}: its teachers share only ${days.length} working day(s) for ${gr.need} period(s) — some days will have it twice.` });
+    }
+    const subBlocks = {};
+    for (const gr of Object.values(groups)) for (const x of gr.sessions) for (const c of x.divisions) (subBlocks[c + "|" + x.sub] || (subBlocks[c + "|" + x.sub] = new Set())).add(gr.name);
+    for (const [k, set] of Object.entries(subBlocks)) if (set.size > 1) { const [c, sub] = k.split("|"); out.push({ bad: false, text: `${c} has ${sub} in ${set.size} different blocks (${[...set].join(", ")}), so it gets the periods of each. If that's not intended, keep it in one.` }); }
+    for (const x of sessions) { if (!x.teachers.length) out.push({ bad: false, text: `“${x.name}” has no teacher yet.` }); if (!x.divisions.length) out.push({ bad: false, text: `“${x.name}” has no class yet.` }); }
+    for (const t of new Set(sessions.flatMap((x) => x.teachers))) { const L = teacherLoad?.[t]; const cap = teacherCap(cfg, t); if (L && L.target > cap) out.push({ bad: true, text: `${t} needs ${L.target} periods (combined + own classes) but has only ${cap} in the week — take them out of a session or reduce periods.` }); }
+    return out;
+  }, [cfg, teacherLoad]);
   const clearBlock = () => ask(`Remove every placed slot of ${wholeGroup && groupAll.length > 1 ? `the "${myG}" block` : `"${s.name}"`}?`, () => {
     const list = []; cfg.days.forEach((d) => cfg.periods.forEach((_, pi) => list.push([d, pi]))); removeAt(list);
   });
@@ -2206,18 +2395,20 @@ function CombinedView({ cfg, update, ask, mobile, occupancy }) {
 
   return (
     <div>
-      <ViewHeader title="Combined subjects" note="Define a combined/parallel subject once (language, PET, etc.) — its teachers and the divisions that merge for it. Placing it fills every division at once, and those teachers never clash with each other during it. Member divisions get this subject from the block, so you don’t also key it normally." />
-      {cMsg && <Banner tone={cMsg.tone}>{cMsg.text}</Banner>}
-      {sessions.length > 0 && (overlap.live.length > 0 || overlap.tCross.length > 0 || overlap.dCross.length > 0) && (
+      <ViewHeader title="Combined subjects" note="Combine any subject: merge several classes for one teacher (e.g. PET for 5 A + 5 B), put two or more teachers in one class together (e.g. an IT lab), or build a language-style block where several groups run at the same time. Placing a session fills every class in it at once." />
+      {cMsg && <Banner tone={cMsg.tone}>{cMsg.text}{cMsg.room && <button className="tt-btn" onClick={makeRoom} style={{ ...solidBtn, marginLeft: 10, padding: "5px 11px" }}>Make room</button>}</Banner>}
+      {sessions.length > 0 && (overlap.live.length > 0 || overlap.tCross.length > 0 || overlap.dCross.length > 0 || setupIssues.length > 0) && (
         <div style={{ ...card, marginBottom: 16 }}>
-          <Panelhead text="Clash check — combined sessions" count={overlap.live.length ? `${overlap.live.length} clash${overlap.live.length > 1 ? "es" : ""}` : "no live clashes"} tone={overlap.live.length ? undefined : "free"} />
+          <Panelhead text="Setup & clash check" count={overlap.live.length ? `${overlap.live.length} clash${overlap.live.length > 1 ? "es" : ""}` : setupIssues.some((x) => x.bad) ? "setup problems" : "no clashes"} tone={overlap.live.length || setupIssues.some((x) => x.bad) ? undefined : "free"} />
           <div style={{ padding: "10px 14px", display: "grid", gap: 8, fontSize: 12.5, lineHeight: 1.55 }}>
+            {overlap.live.length > 0 && <div><button className="tt-btn" onClick={fixAll} style={solidBtn}>Fix all clashes</button> <span style={{ fontSize: 11.5, color: C.sub }}>moves only what collides; locked slots and rules stay</span></div>}
+            {setupIssues.map((x, k) => <div key={"s" + k} style={{ color: x.bad ? C.clash : C.warn }}>{x.bad ? "✖ " : "• "}{x.text}</div>)}
             {overlap.live.slice(0, 12).map((x, k) => (
               <div key={k} style={{ color: C.clash }}>⚠ <b style={{ fontFamily: mono }}>{x.t}</b> on {x.d} P{x.pi + 1} is in {x.what.join(" + ")} at the same time.</div>
             ))}
             {overlap.live.length > 12 && <div style={{ color: C.clash }}>… +{overlap.live.length - 12} more clashes</div>}
             {overlap.tCross.map((x) => (
-              <div key={"t" + x.k} style={{ color: C.warn }}>Shared teacher <b style={{ fontFamily: mono }}>{x.k}</b> is in different groups ({x.groups.join(", ")}: {x.names.join(", ")}) — those groups must never run at the same time. The generator keeps them apart; watch this when placing by hand.</div>
+              <div key={"t" + x.k} style={{ color: C.sub }}>ⓘ <b style={{ fontFamily: mono }}>{x.k}</b> teaches in {x.groups.length} blocks ({x.groups.join(", ")}) — they will always get different times.</div>
             ))}
             {overlap.dCross.map((x) => (
               <div key={"d" + x.k} style={{ color: C.warn }}>Division <b style={{ fontFamily: mono }}>{x.k}</b> is in different groups ({x.groups.join(", ")}) — they can't run at the same time.</div>
@@ -2259,18 +2450,27 @@ function CombinedView({ cfg, update, ask, mobile, occupancy }) {
                       </span>); })}
                   </div>
                 )}
-                <ChipPicker label="Divisions that merge for it" all={cfg.classes} selected={s.divisions} onToggle={(v) => toggleArr("divisions", v)} onSetAll={(a) => setArr("divisions", a)} />
+                <ChipPicker label="Classes in this session" all={cfg.classes} selected={s.divisions} onToggle={(v) => toggleArr("divisions", v)} onSetAll={(a) => setArr("divisions", a)} />
                 <div style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap", paddingTop: 4 }}>
                   <label style={{ fontSize: 12.5, color: C.sub }}>Periods / week&nbsp;
                     <input className="tt-in" type="number" min={0} max={40} style={{ width: 70, display: "inline-block", textAlign: "center" }} placeholder={String(periodsFor(cfg, s.divisions[0] || cfg.classes[0], s.sub) || "")} value={s.perWeek || ""} onChange={(e) => { const v = e.target.value; editS((x) => { if (v === "" || +v <= 0) delete x.perWeek; else x.perWeek = +v; }); }} />
                   </label>
-                  <label style={{ fontSize: 12.5, color: C.sub }}>Runs at the same time as&nbsp;
-                    <input className="tt-in" list="tt-comb-groups" style={{ width: 120, display: "inline-block" }} placeholder={s.sub} value={s.group || ""} onChange={(e) => { const v = e.target.value; editS((x) => { if (!v.trim()) delete x.group; else x.group = v; }); }} />
-                    <datalist id="tt-comb-groups">{[...new Set((cfg.combined || []).map((x) => (x.group || "").trim() || x.sub))].map((g) => <option key={g} value={g} />)}</datalist>
+                  <label style={{ fontSize: 12.5, color: C.sub }}>Runs&nbsp;
+                    <select className="tt-sel" style={{ width: 230, display: "inline-block" }} value={!s.group ? "__own" : s.group === stdBlockName(s) ? "__sub" : "__custom"} onChange={(e) => { const v = e.target.value; editS((x) => { if (v === "__own") delete x.group; else if (v === "__sub") x.group = stdBlockName(x); else x.group = x.group && x.group !== stdBlockName(x) ? x.group : x.name + " block"; }); }}>
+                      <option value="__own">on its own</option>
+                      <option value="__sub">together with the other {stdBlockName(s)} sessions</option>
+                      <option value="__custom">together with a named block…</option>
+                    </select>
                   </label>
+                  {s.group && s.group !== stdBlockName(s) && (
+                    <label style={{ fontSize: 12.5, color: C.sub }}>Block name&nbsp;
+                      <input className="tt-in" list="tt-comb-groups" style={{ width: 130, display: "inline-block" }} value={s.group} onChange={(e) => { const v = e.target.value; editS((x) => { x.group = v; }); }} />
+                      <datalist id="tt-comb-groups">{[...new Set((cfg.combined || []).map((x) => (x.group || "").trim()).filter(Boolean))].map((g) => <option key={g} value={g} />)}</datalist>
+                    </label>
+                  )}
                   {(s.slots || []).length > 0 && <span style={{ fontSize: 12, color: C.primary, fontWeight: 700 }}>Fixed slots: {s.slots.map(([d, p]) => `${d} P${p}`).join(", ")}</span>}
                 </div>
-                <div style={{ fontSize: 11.5, color: C.sub, lineHeight: 1.55 }}>Blank periods/week = the standard's periods for {s.sub}. Sessions with the same "runs at the same time as" name (default: the subject) are always placed in the same slots, so a teacher shared between them is never double-booked. Different groups never overlap. Slots you mark in the grid below are kept when you regenerate.</div>
+                <div style={{ fontSize: 11.5, color: C.sub, lineHeight: 1.55 }}>Periods/week blank = all of the standard's {s.sub} periods are combined. Put a smaller number to combine only some — the rest are taught normally from each class's mapping (e.g. PET 2 a week: 1 combined, 1 separate). “On its own”: this session gets its own slots and never overlaps other sessions. “Together”: sessions in the same block always run in the same slots (language-style), so a teacher shared between them is counted once. Slots you mark in the grid below are kept when you regenerate.</div>
               </div>
             </div>
 
@@ -2391,8 +2591,9 @@ function ExportView({ cfg }) {
 function TeacherAssignments({ cfg }) {
   const [t, setT] = useState(cfg.singles[0] || "");
   const rows = [];
-  for (const c of cfg.classes) for (const r of (cfg.bkey[c] || [])) if (r.teacher === t) rows.push({ c: c, sub: r.sub, per: periodsFor(cfg, c, r.sub) });
-  for (const g of Object.values(combGroups(cfg))) if (g.teachers.has(t)) rows.push({ c: [...g.divisions].sort(cmpClass).join(", "), sub: `${g.sub} (combined “${g.name}”)`, per: g.need });
+  const cov = combCover(cfg);
+  for (const c of cfg.classes) for (const r of (cfg.bkey[c] || [])) if (r.teacher === t) { const own = Math.max(0, periodsFor(cfg, c, r.sub) - (cov[c + "|" + r.sub] || 0)); if (own) rows.push({ c: c, sub: r.sub, per: own }); }
+  for (const g of Object.values(combGroups(cfg))) if (g.teachers.has(t)) rows.push({ c: [...new Set(g.sessions.filter((x) => x.teachers.includes(t)).flatMap((x) => x.divisions))].sort(cmpClass).join(", "), sub: `${g.sub} (combined “${g.name}”)`, per: g.need });
   const tot = rows.reduce((a, r) => a + r.per, 0);
   return (
     <div style={{ ...card, marginTop: 16 }}>
