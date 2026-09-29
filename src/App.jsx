@@ -2279,18 +2279,19 @@ function CombinedView({ cfg, update, ask, mobile, occupancy, teacherLoad }) {
     const TD = cfg.teacherDays || {};
     const off = gTeach.filter((t) => TD[t] && TD[t].length && !TD[t].includes(d));
     const clash = gTeach.filter((t) => { const e = occupancy?.[d]?.[pi]?.tok?.get(t); if (!e) return false; if (e.norm && e.norm.size) return true; return [...e.comb].some((b) => { const x = byName[b]; return x && !gSes.includes(x) && combGroupOf(x) !== myG; }); });
-    const busy = gDivs.filter((c) => { const cell = cfg.grid[c]?.[d]?.[pi]; return cell && cell[0] && !gSes.some((x) => x.name === cell[0]); });
+    const inOther = gDivs.filter((c) => { const cell = cfg.grid[c]?.[d]?.[pi]; return cell && cell[0] && byName[cell[0]] && !gSes.some((x) => x.name === cell[0]); }).map((c) => `${c} (${cfg.grid[c][d][pi][0]})`);
+    const busy = gDivs.filter((c) => { const cell = cfg.grid[c]?.[d]?.[pi]; return cell && cell[0] && !byName[cell[0]] && !gSes.some((x) => x.name === cell[0]); });
     const locked = gDivs.filter((c) => cfg.locked?.[`${c}|${d}|${pi}`]);
     const r = cfg.rules?.[s?.sub] || {};
     const ruleNo = (r.pin && r.pin !== pi + 1) || (r.forbid && r.forbid.includes(pi + 1));
-    return { off, clash, busy, locked, ruleNo, clean: !off.length && !clash.length && !busy.length && !locked.length && !ruleNo };
+    return { off, clash, busy, inOther, locked, ruleNo, clean: !off.length && !clash.length && !busy.length && !inOther.length && !locked.length && !ruleNo };
   };
   let gPlaced = 0; const gDaysUsed = new Set();
   cfg.days.forEach((d) => cfg.periods.forEach((_, pi) => { if (runningAt(d, pi)) { gPlaced++; gDaysUsed.add(d); } }));
   const placeAt = (list) => update((n) => {
     for (const [d, pi] of list) for (const x of gSes) {
       const ses = n.combined.find((y) => y.name === x.name); if (!ses) continue;
-      for (const c of ses.divisions) { if (!n.grid[c] || n.locked?.[`${c}|${d}|${pi}`]) continue; n.grid[c][d][pi] = [ses.name, ses.sub]; }
+      for (const c of ses.divisions) { if (!n.grid[c] || n.locked?.[`${c}|${d}|${pi}`]) continue; const cur = n.grid[c][d][pi][0]; if (cur && cur !== ses.name && n.combined.some((y) => y.name === cur)) continue; n.grid[c][d][pi] = [ses.name, ses.sub]; }
       ses.slots = (ses.slots || []).filter(([dd, pp]) => !(dd === d && pp === pi + 1)); ses.slots.push([d, pi + 1]);
     }
   });
@@ -2305,8 +2306,8 @@ function CombinedView({ cfg, update, ask, mobile, occupancy, teacherLoad }) {
     if (runningAt(d, pi)) { removeAt([[d, pi]]); return; }
     const info = slotInfo(d, pi);
     const probs = [];
-    if (info.clash.length || info.off.length) {
-      setCMsg({ tone: "warn", text: `Can't place on ${d} P${pi + 1}: ${[info.clash.length ? `${info.clash.join(", ")} already teaching then` : "", info.off.length ? `${info.off.join(", ")} not working on ${d}` : ""].filter(Boolean).join("; ")}. Pick a “+” slot, or press Auto-place remaining.` });
+    if (info.clash.length || info.off.length || info.inOther.length) {
+      setCMsg({ tone: "warn", text: `Can't place on ${d} P${pi + 1}: ${[info.clash.length ? `${info.clash.join(", ")} already teaching then` : "", info.off.length ? `${info.off.join(", ")} not working on ${d}` : "", info.inOther.length ? `${info.inOther.join(", ")} already in another combined session then` : ""].filter(Boolean).join("; ")}. Pick a “+” slot, or press Auto-place remaining.` });
       return;
     }
     if (info.busy.length) probs.push(`${info.busy.join(", ")} already ha${info.busy.length > 1 ? "ve" : "s"} a lesson here (it will be replaced)`);
@@ -2397,7 +2398,7 @@ function CombinedView({ cfg, update, ask, mobile, occupancy, teacherLoad }) {
     <div>
       <ViewHeader title="Combined subjects" note="Combine any subject: merge several classes for one teacher (e.g. PET for 5 A + 5 B), put two or more teachers in one class together (e.g. an IT lab), or build a language-style block where several groups run at the same time. Placing a session fills every class in it at once." />
       {cMsg && <Banner tone={cMsg.tone}>{cMsg.text}{cMsg.room && <button className="tt-btn" onClick={makeRoom} style={{ ...solidBtn, marginLeft: 10, padding: "5px 11px" }}>Make room</button>}</Banner>}
-      {sessions.length > 0 && (overlap.live.length > 0 || overlap.tCross.length > 0 || overlap.dCross.length > 0 || setupIssues.length > 0) && (
+      {sessions.length > 0 && (overlap.live.length > 0 || setupIssues.length > 0) && (
         <div style={{ ...card, marginBottom: 16 }}>
           <Panelhead text="Setup & clash check" count={overlap.live.length ? `${overlap.live.length} clash${overlap.live.length > 1 ? "es" : ""}` : setupIssues.some((x) => x.bad) ? "setup problems" : "no clashes"} tone={overlap.live.length || setupIssues.some((x) => x.bad) ? undefined : "free"} />
           <div style={{ padding: "10px 14px", display: "grid", gap: 8, fontSize: 12.5, lineHeight: 1.55 }}>
@@ -2407,13 +2408,16 @@ function CombinedView({ cfg, update, ask, mobile, occupancy, teacherLoad }) {
               <div key={k} style={{ color: C.clash }}>⚠ <b style={{ fontFamily: mono }}>{x.t}</b> on {x.d} P{x.pi + 1} is in {x.what.join(" + ")} at the same time.</div>
             ))}
             {overlap.live.length > 12 && <div style={{ color: C.clash }}>… +{overlap.live.length - 12} more clashes</div>}
-            {overlap.tCross.map((x) => (
-              <div key={"t" + x.k} style={{ color: C.sub }}>ⓘ <b style={{ fontFamily: mono }}>{x.k}</b> teaches in {x.groups.length} blocks ({x.groups.join(", ")}) — they will always get different times.</div>
-            ))}
-            {overlap.dCross.map((x) => (
-              <div key={"d" + x.k} style={{ color: C.warn }}>Division <b style={{ fontFamily: mono }}>{x.k}</b> is in different groups ({x.groups.join(", ")}) — they can't run at the same time.</div>
-            ))}
+
           </div>
+        </div>
+      )}
+      {sessions.length > 0 && !overlap.live.length && (overlap.tCross.length > 0 || overlap.dCross.length > 0) && (
+        <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.6, margin: "-4px 0 14px", padding: "8px 12px", background: "#f6f8fa", borderRadius: 9 }}>
+          ⓘ In more than one session (this is fine — they always get different times, nothing to do):{" "}
+          {overlap.dCross.length > 0 && <>classes <b style={{ fontFamily: mono }}>{overlap.dCross.map((x) => x.k).sort(cmpClass).join(", ")}</b></>}
+          {overlap.dCross.length > 0 && overlap.tCross.length > 0 && "; "}
+          {overlap.tCross.length > 0 && <>teachers <b style={{ fontFamily: mono }}>{overlap.tCross.map((x) => x.k).join(", ")}</b></>}.
         </div>
       )}
       <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "210px minmax(0,1fr)", gap: 16, alignItems: "start" }}>
@@ -2501,6 +2505,7 @@ function CombinedView({ cfg, update, ask, mobile, occupancy, teacherLoad }) {
                           let bg = "#fff", bd = null, label = <span style={{ color: C.free, fontWeight: 800, fontSize: 13 }}>+</span>, tip = "Free for every division and teacher — click to place";
                           if (on) { bg = C.accentSoft; bd = C.accent; label = <span style={{ color: C.accent, fontWeight: 800, fontSize: 11 }}>✓ running</span>; tip = "Running — click to remove"; }
                           else if (f.clash.length) { bg = C.clashSoft; bd = C.clash; label = <span style={{ color: C.clash, fontWeight: 800, fontSize: 10.5 }}>⚠ {f.clash.slice(0, 2).join(" ")}{f.clash.length > 2 ? "…" : ""}</span>; tip = `Clash: ${f.clash.join(", ")} already teaching`; }
+                          else if (f.inOther.length) { bg = C.clashSoft; bd = C.clash; label = <span style={{ color: C.clash, fontWeight: 700, fontSize: 10.5 }}>{f.inOther[0].split(" (")[0]}: {f.inOther[0].split("(")[1].replace(")", "").slice(0, 10)}</span>; tip = `Already in another combined session: ${f.inOther.join(", ")}`; }
                           else if (f.off.length) { bg = C.clashSoft; bd = C.clash; label = <span style={{ color: C.clash, fontWeight: 700, fontSize: 10.5 }}>off: {f.off.slice(0, 2).join(" ")}</span>; tip = `${f.off.join(", ")} not working this day`; }
                           else if (f.locked.length) { bg = "#f1f3f6"; label = <span style={{ color: C.sub, fontSize: 11 }}>🔒 {f.locked.length}</span>; tip = `Locked in ${f.locked.join(", ")}`; }
                           else if (f.busy.length) { bg = C.warnSoft; bd = C.warn; label = <span style={{ color: C.warn, fontWeight: 700, fontSize: 10.5 }}>{f.busy.length} busy</span>; tip = `Already has a lesson: ${f.busy.join(", ")}`; }
@@ -2513,7 +2518,7 @@ function CombinedView({ cfg, update, ask, mobile, occupancy, teacherLoad }) {
                 </table>
               </div>
               <div style={{ padding: "0 14px 12px", fontSize: 11.5, color: C.sub, lineHeight: 1.7 }}>
-                <b style={{ color: C.free }}>+</b> ready · <b style={{ color: C.accent }}>✓</b> running · <b style={{ color: C.clash }}>⚠ name</b> that teacher is already teaching · <b style={{ color: C.clash }}>off</b> teacher's day off · <b style={{ color: C.warn }}>N busy</b> divisions already have a lesson (will be replaced) · 🔒 locked · <b>rule</b> blocked by a scheduling rule. Clicking a warning slot asks before placing. Placed slots are kept when you regenerate.
+                <b style={{ color: C.free }}>+</b> ready · <b style={{ color: C.accent }}>✓</b> running · <b style={{ color: C.clash }}>⚠ name</b> that teacher is already teaching · <b style={{ color: C.clash }}>off</b> teacher's day off · <b style={{ color: C.clash }}>7 A: LAN</b> that class is in another combined session then · <b style={{ color: C.warn }}>N busy</b> classes have an ordinary lesson (it moves aside) · 🔒 locked · <b>rule</b> blocked by a scheduling rule. Clicking a warning slot asks before placing. Placed slots are kept when you regenerate.
               </div>
             </div>
           </div>
