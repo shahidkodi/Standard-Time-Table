@@ -12,6 +12,7 @@ import { supabase } from "./supabaseClient";
    ============================================================ */
 
 const STORE_KEY = "tt_cfg_v2";
+const APP_VERSION = "2026-09-29 b";
 
 const WEEK_ORDER = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const DAY_FULL = { MON: "Monday", TUE: "Tuesday", WED: "Wednesday", THU: "Thursday", FRI: "Friday", SAT: "Saturday", SUN: "Sunday" };
@@ -991,7 +992,7 @@ function NavDrawer({ open, onClose, view, setView, TH, school, theme, setTheme, 
           </div>
         )}
         <div style={{ borderTop: `1px solid ${C.line}`, padding: "14px 18px" }}>
-          <div style={{ fontSize: 11, color: C.sub, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 10 }}>Theme</div>
+          <div style={{ fontSize: 11, color: C.sub, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 10 }}>Theme <span style={{ float: "right", textTransform: "none", fontWeight: 600 }}>version {APP_VERSION}</span></div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
             {Object.entries(THEMES).map(([key, t]) => (
               <button key={key} className="tt-btn" onClick={() => setTheme(key)} title={t.name} aria-label={t.name} style={{ width: 30, height: 30, borderRadius: 30, cursor: "pointer", background: `linear-gradient(135deg, ${t.g1}, ${t.g2})`, border: theme === key ? `3px solid ${C.ink}` : "2px solid #fff", boxShadow: "0 1px 4px rgba(0,0,0,.2)" }} />
