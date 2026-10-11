@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
+import { SEED } from "./seed";
+import { loadConfig, saveConfig, subscribeConfig } from "./storage";
+import { supabase } from "./supabaseClient";
 
 /* ============================================================
    AMUPS Pallikkal — Timetable Manager  (v2)
@@ -8,9 +11,8 @@ import React, { useState, useEffect, useMemo, useRef } from "react";
    teacher's load is tracked against their mapping target.
    ============================================================ */
 
-const SEED = JSON.parse(`{"school":"AMUPS PALLIKKAL","days":["MON","TUE","WED","THU","FRI","SAT"],"periods":[1,2,3,4,5,6,7,8],"classes":["5 A","5 B","5 C","5 D","5 E","5 F","5 G","5 H","5 I","6 A","6 B","6 C","6 D","6 E","6 F","6 G","6 H","6 I","6 J","6 K","6 L","7 A","7 B","7 C","7 D","7 E","7 F","7 G","7 H","7 I","7 J","7 K"],"singles":["AA","AB-DW","AD","AKK","AMS","AVK","DN","HNA-DW1","HNA-DW2","ITP","ITT","JA-DW","JK","JMP","KKR","KMB","KPH","KPHT","KPM","KPR","KPS","KVS-DW","MEK-DW","MFK","MPS","MRC","MT","MTR","MTS","NA-DW1","NA-DW2","NA-DW3","NKP","PMM","PMS","PPK","PS","PV","RC","RSB","SB","SH","SKP","SM","TS"],"subjects":["BS","ENG","HIN","IT","LAN","LB","MAL-2","MAT","PET","SS","TAB"],"classTeacher":{"5 A":"MFK","5 B":"KPH","5 C":"KPM","5 D":"MPS","5 E":"AA","5 F":"KVS-DW","5 G":"PS","5 H":"MT","5 I":"RC","6 A":"KPS","6 B":"DN","6 C":"SB","6 D":"MTR","6 E":"MEK-DW","6 F":"NKP","6 G":"AKK","6 H":"SKP","6 I":"NA-DW1","6 J":"AMS","6 K":"KKR","6 L":"PMS","7 A":"JMP","7 B":"TS","7 C":"PPK","7 D":"PMM","7 E":"AD","7 F":"NA-DW2","7 G":"KPHT","7 H":"KPR","7 I":"SM","7 J":"NA-DW3","7 K":"KMB"},"bkey":{"5 A":[{"sub":"MAT","teacher":"KPM"},{"sub":"ENG","teacher":"DN"},{"sub":"MAL-2","teacher":"KVS-DW"},{"sub":"HIN","teacher":"HNA-DW2"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"MFK"},{"sub":"SS","teacher":"MPS"},{"sub":"LB","teacher":"PMS"},{"sub":"LAN","teacher":"KVS-DW PV SH"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"MFK"}],"5 B":[{"sub":"MAT","teacher":"KPM"},{"sub":"ENG","teacher":"KPH"},{"sub":"MAL-2","teacher":"KVS-DW"},{"sub":"HIN","teacher":"RSB"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"MFK"},{"sub":"SS","teacher":"MPS"},{"sub":"LB","teacher":"KPH"},{"sub":"LAN","teacher":"AB-DW"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"KPH"}],"5 C":[{"sub":"MAT","teacher":"KPM"},{"sub":"ENG","teacher":"DN"},{"sub":"MAL-2","teacher":"KVS-DW"},{"sub":"HIN","teacher":"RSB"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"MFK"},{"sub":"SS","teacher":"MPS"},{"sub":"LB","teacher":"KKR"},{"sub":"LAN","teacher":"AB-DW"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"KPM"}],"5 D":[{"sub":"MAT","teacher":"KPM"},{"sub":"ENG","teacher":"KPH"},{"sub":"MAL-2","teacher":"KVS-DW"},{"sub":"HIN","teacher":"RSB"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"MFK"},{"sub":"SS","teacher":"MPS"},{"sub":"LB","teacher":"MPS"},{"sub":"LAN","teacher":"MTS"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"MPS"}],"5 E":[{"sub":"MAT","teacher":"AA"},{"sub":"ENG","teacher":"MFK"},{"sub":"MAL-2","teacher":"KVS-DW"},{"sub":"HIN","teacher":"RSB"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"MT"},{"sub":"SS","teacher":"MPS"},{"sub":"LB","teacher":"AA"},{"sub":"LAN","teacher":"AB-DW"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"AA"}],"5 F":[{"sub":"MAT","teacher":"AA"},{"sub":"ENG","teacher":"NA-DW3"},{"sub":"MAL-2","teacher":"RC"},{"sub":"HIN","teacher":"RSB"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"MT"},{"sub":"SS","teacher":"KVS-DW"},{"sub":"LB","teacher":"KVS-DW"},{"sub":"LAN","teacher":"MTS"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"KVS-DW"}],"5 G":[{"sub":"MAT","teacher":"AA"},{"sub":"ENG","teacher":"PS"},{"sub":"MAL-2","teacher":"RC"},{"sub":"HIN","teacher":"RSB"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"MT"},{"sub":"SS","teacher":"RC"},{"sub":"LB","teacher":"PS"},{"sub":"LAN","teacher":"MTS"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"PS"}],"5 H":[{"sub":"MAT","teacher":"AA"},{"sub":"ENG","teacher":"PS"},{"sub":"MAL-2","teacher":"RC"},{"sub":"HIN","teacher":"RSB"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"MT"},{"sub":"SS","teacher":"RC"},{"sub":"LB","teacher":"MT"},{"sub":"LAN","teacher":"MTS"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"MT"}],"5 I":[{"sub":"MAT","teacher":"AA"},{"sub":"ENG","teacher":"PS"},{"sub":"MAL-2","teacher":"RC"},{"sub":"HIN","teacher":"RSB"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"MT"},{"sub":"SS","teacher":"RC"},{"sub":"LB","teacher":"RC"},{"sub":"LAN","teacher":"KVS-DW PV SH"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"RC"}],"6 A":[{"sub":"MAT","teacher":"KPM"},{"sub":"ENG","teacher":"KPH"},{"sub":"MAL-2","teacher":"JMP"},{"sub":"HIN","teacher":"JK"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"KPS"},{"sub":"SS","teacher":"SB"},{"sub":"LB","teacher":"KPS"},{"sub":"LAN","teacher":"KMB SH"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"KPS"}],"6 B":[{"sub":"MAT","teacher":"AKK"},{"sub":"ENG","teacher":"DN"},{"sub":"MAL-2","teacher":"NA-DW1"},{"sub":"HIN","teacher":"JK"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"KPS"},{"sub":"SS","teacher":"NKP"},{"sub":"LB","teacher":"DN"},{"sub":"LAN","teacher":"JA-DW"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"DN"}],"6 C":[{"sub":"MAT","teacher":"AKK"},{"sub":"ENG","teacher":"SB"},{"sub":"MAL-2","teacher":"DN"},{"sub":"HIN","teacher":"JK"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"PPK"},{"sub":"SS","teacher":"NKP"},{"sub":"LB","teacher":"SB"},{"sub":"LAN","teacher":"JA-DW"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"SB"}],"6 D":[{"sub":"MAT","teacher":"AKK"},{"sub":"ENG","teacher":"SB"},{"sub":"MAL-2","teacher":"PPK"},{"sub":"HIN","teacher":"JK"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"MTR"},{"sub":"SS","teacher":"NKP"},{"sub":"LB","teacher":"MTR"},{"sub":"LAN","teacher":"JA-DW"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"MTR"}],"6 E":[{"sub":"MAT","teacher":"MEK-DW"},{"sub":"ENG","teacher":"SB"},{"sub":"MAL-2","teacher":"PMS"},{"sub":"HIN","teacher":"JK"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"KPS"},{"sub":"SS","teacher":"NA-DW1"},{"sub":"LB","teacher":"MEK-DW"},{"sub":"LAN","teacher":"AB-DW"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"MEK-DW"}],"6 F":[{"sub":"MAT","teacher":"AKK"},{"sub":"ENG","teacher":"KPH"},{"sub":"MAL-2","teacher":"KPHT"},{"sub":"HIN","teacher":"JK"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"KPS"},{"sub":"SS","teacher":"NKP"},{"sub":"LB","teacher":"PPK"},{"sub":"LAN","teacher":"JA-DW PV"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"NKP"}],"6 G":[{"sub":"MAT","teacher":"AKK"},{"sub":"ENG","teacher":"SB"},{"sub":"MAL-2","teacher":"NA-DW1"},{"sub":"HIN","teacher":"JK"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"KPS"},{"sub":"SS","teacher":"NKP"},{"sub":"LB","teacher":"AKK"},{"sub":"LAN","teacher":"AB-DW"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"AKK"}],"6 H":[{"sub":"MAT","teacher":"AMS"},{"sub":"ENG","teacher":"SKP"},{"sub":"MAL-2","teacher":"KKR"},{"sub":"HIN","teacher":"JK"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"MTR"},{"sub":"SS","teacher":"KKR"},{"sub":"LB","teacher":"SKP"},{"sub":"LAN","teacher":"SH"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"SKP"}],"6 I":[{"sub":"MAT","teacher":"AMS"},{"sub":"ENG","teacher":"SKP"},{"sub":"MAL-2","teacher":"PS"},{"sub":"HIN","teacher":"RSB"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"MTR"},{"sub":"SS","teacher":"NA-DW1"},{"sub":"LB","teacher":"NA-DW1"},{"sub":"LAN","teacher":"MTS"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"NA-DW1"}],"6 J":[{"sub":"MAT","teacher":"AMS"},{"sub":"ENG","teacher":"SKP"},{"sub":"MAL-2","teacher":"KKR"},{"sub":"HIN","teacher":"RSB"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"MTR"},{"sub":"SS","teacher":"KKR"},{"sub":"LB","teacher":"AMS"},{"sub":"LAN","teacher":"MTS"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"AMS"}],"6 K":[{"sub":"MAT","teacher":"AMS"},{"sub":"ENG","teacher":"SKP"},{"sub":"MAL-2","teacher":"KKR"},{"sub":"HIN","teacher":"HNA-DW2"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"NA-DW1"},{"sub":"SS","teacher":"KKR"},{"sub":"LB","teacher":"KKR"},{"sub":"LAN","teacher":"SH"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"KKR"}],"6 L":[{"sub":"MAT","teacher":"KPR"},{"sub":"ENG","teacher":"DN"},{"sub":"MAL-2","teacher":"PMS"},{"sub":"HIN","teacher":"RSB"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"NA-DW1"},{"sub":"SS","teacher":"PMS"},{"sub":"LB","teacher":"PMS"},{"sub":"LAN","teacher":"KMB PV SH"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"PMS"}],"7 A":[{"sub":"MAT","teacher":"MEK-DW"},{"sub":"ENG","teacher":"JMP"},{"sub":"MAL-2","teacher":"KMB"},{"sub":"HIN","teacher":"HNA-DW1"},{"sub":"PET","teacher":"KPHT"},{"sub":"BS","teacher":"KPHT"},{"sub":"SS","teacher":"TS"},{"sub":"LB","teacher":"JMP"},{"sub":"LAN","teacher":"JA-DW PV SH KMB"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"JMP"}],"7 B":[{"sub":"MAT","teacher":"MEK-DW"},{"sub":"ENG","teacher":"JMP"},{"sub":"MAL-2","teacher":"KMB"},{"sub":"HIN","teacher":"HNA-DW1"},{"sub":"PET","teacher":"KPHT"},{"sub":"BS","teacher":"PPK"},{"sub":"SS","teacher":"TS"},{"sub":"LB","teacher":"TS"},{"sub":"LAN","teacher":"JA-DW"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"TS"}],"7 C":[{"sub":"MAT","teacher":"MEK-DW"},{"sub":"ENG","teacher":"JMP"},{"sub":"MAL-2","teacher":"NA-DW2"},{"sub":"HIN","teacher":"HNA-DW1"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"PPK"},{"sub":"SS","teacher":"TS"},{"sub":"LB","teacher":"PPK"},{"sub":"LAN","teacher":"AVK"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"PPK"}],"7 D":[{"sub":"MAT","teacher":"PMM"},{"sub":"ENG","teacher":"NA-DW3"},{"sub":"MAL-2","teacher":"KMB"},{"sub":"HIN","teacher":"HNA-DW2"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"PPK"},{"sub":"SS","teacher":"TS"},{"sub":"LB","teacher":"PMM"},{"sub":"LAN","teacher":"AVK PV SH KVS-DW"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"PMM"}],"7 E":[{"sub":"MAT","teacher":"PMM"},{"sub":"ENG","teacher":"AD"},{"sub":"MAL-2","teacher":"NA-DW3"},{"sub":"HIN","teacher":"HNA-DW1"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"KPHT"},{"sub":"SS","teacher":"NA-DW2"},{"sub":"LB","teacher":"AD"},{"sub":"LAN","teacher":"AVK"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"AD"}],"7 F":[{"sub":"MAT","teacher":"PMM"},{"sub":"ENG","teacher":"AD"},{"sub":"MAL-2","teacher":"KMB"},{"sub":"HIN","teacher":"HNA-DW1"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"SM"},{"sub":"SS","teacher":"NA-DW2"},{"sub":"LB","teacher":"NA-DW2"},{"sub":"LAN","teacher":"AVK"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"NA-DW2"}],"7 G":[{"sub":"MAT","teacher":"MEK-DW"},{"sub":"ENG","teacher":"JMP"},{"sub":"MAL-2","teacher":"KMB"},{"sub":"HIN","teacher":"HNA-DW1"},{"sub":"PET","teacher":"KPHT"},{"sub":"BS","teacher":"KPHT"},{"sub":"SS","teacher":"TS"},{"sub":"LB","teacher":"KPHT"},{"sub":"LAN","teacher":"JA-DW PV SH KMB"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"KPHT"}],"7 H":[{"sub":"MAT","teacher":"KPR"},{"sub":"ENG","teacher":"AD"},{"sub":"MAL-2","teacher":"NA-DW3"},{"sub":"HIN","teacher":"HNA-DW1"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"SM"},{"sub":"SS","teacher":"PMS"},{"sub":"LB","teacher":"KPR"},{"sub":"LAN","teacher":"AVK"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"KPR"}],"7 I":[{"sub":"MAT","teacher":"KPR"},{"sub":"ENG","teacher":"NA-DW3"},{"sub":"MAL-2","teacher":"AMS"},{"sub":"HIN","teacher":"HNA-DW2"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"SM"},{"sub":"SS","teacher":"NA-DW2"},{"sub":"LB","teacher":"SM"},{"sub":"LAN","teacher":"AVK"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"SM"}],"7 J":[{"sub":"MAT","teacher":"PMM"},{"sub":"ENG","teacher":"NA-DW3"},{"sub":"MAL-2","teacher":"NA-DW2"},{"sub":"HIN","teacher":"HNA-DW2"},{"sub":"PET","teacher":"MTR"},{"sub":"BS","teacher":"SM"},{"sub":"SS","teacher":"PMS"},{"sub":"LB","teacher":"NA-DW3"},{"sub":"LAN","teacher":"SH"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"NA-DW3"}],"7 K":[{"sub":"MAT","teacher":"KPR"},{"sub":"ENG","teacher":"AD"},{"sub":"MAL-2","teacher":"KMB"},{"sub":"HIN","teacher":"HNA-DW1"},{"sub":"PET","teacher":"MRC"},{"sub":"BS","teacher":"SM"},{"sub":"SS","teacher":"NA-DW2"},{"sub":"LB","teacher":"KMB"},{"sub":"LAN","teacher":"AVK PV SH KVS-DW"},{"sub":"IT","teacher":"ITT"},{"sub":"IT","teacher":"ITP"},{"sub":"TAB","teacher":"KMB"}]},"grid":{"5 A":{"MON":[["MFK","BS"],["DN","ENG"],["KVS-DW PV SH","LAN"],["KVS-DW","MAL-2"],["HNA-DW2","HIN"],["KPM","MAT"],["MPS","SS"],[null,null]],"TUE":[["MFK","BS"],["HNA-DW2","HIN"],["DN","ENG"],["MPS","SS"],["MRC","PET"],["KPM","MAT"],["KVS-DW PV SH","LAN"],[null,null]],"WED":[["MFK","BS"],["KVS-DW PV SH","LAN"],["MPS","SS"],["DN","ENG"],["KPM","MAT"],["ITT","IT"],["MFK","TAB"],[null,null]],"THU":[["MFK","BS"],["KPM","MAT"],["DN","ENG"],["KVS-DW","MAL-2"],["DN","ENG"],["MPS","SS"],["PMS","LB"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["MFK","BS"],["KPM","MAT"],["MPS","SS"],["ITP","IT"],["KVS-DW PV SH","LAN"],["DN","ENG"],[null,null],[null,null]]},"5 B":{"MON":[["KPH","ENG"],["KVS-DW","MAL-2"],["AB-DW","LAN"],["KPM","MAT"],["ITT","IT"],["MPS","SS"],["MFK","BS"],[null,null]],"TUE":[["KPH","ENG"],["RSB","HIN"],["KVS-DW","MAL-2"],["MRC","PET"],["MFK","BS"],["MPS","SS"],["KPM","MAT"],[null,null]],"WED":[["KPH","ENG"],["AB-DW","LAN"],["KPM","MAT"],["RSB","HIN"],["MFK","BS"],["MPS","SS"],["KPH","TAB"],[null,null]],"THU":[["KPH","ENG"],["KPH","ENG"],["MFK","BS"],["AB-DW","LAN"],["KPM","MAT"],["KPH","LB"],["MPS","SS"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["ITP","IT"],["MPS","SS"],["MFK","BS"],["KPH","ENG"],["KPM","MAT"],["AB-DW","LAN"],[null,null],[null,null]]},"5 C":{"MON":[["KPM","MAT"],["AB-DW","LAN"],["MFK","BS"],["MPS","SS"],["ITP","IT"],["DN","ENG"],["DN","ENG"],[null,null]],"TUE":[["KPM","MAT"],["AB-DW","LAN"],["MFK","BS"],["DN","ENG"],["RSB","HIN"],["KVS-DW","MAL-2"],["MPS","SS"],[null,null]],"WED":[["KPM","MAT"],["DN","ENG"],["MFK","BS"],["MPS","SS"],["KVS-DW","MAL-2"],["MRC","PET"],["KPM","TAB"],[null,null]],"THU":[["KPM","MAT"],["ITT","IT"],["MPS","SS"],["RSB","HIN"],["AB-DW","LAN"],["DN","ENG"],["MFK","BS"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["KPM","MAT"],["DN","ENG"],["AB-DW","LAN"],["MFK","BS"],["MPS","SS"],["KKR","LB"],[null,null],[null,null]]},"5 D":{"MON":[["MPS","SS"],["KPH","ENG"],["MTS","LAN"],["MFK","BS"],["KPM","MAT"],["ITP","IT"],["KPH","ENG"],[null,null]],"TUE":[["MPS","SS"],["KPM","MAT"],["MTS","LAN"],["KPH","ENG"],["MPS","LB"],["MFK","BS"],["RSB","HIN"],[null,null]],"WED":[["MPS","SS"],["KPM","MAT"],["MTS","LAN"],["MFK","BS"],["MRC","PET"],["KPH","ENG"],["MPS","TAB"],[null,null]],"THU":[["MPS","SS"],["KVS-DW","MAL-2"],["ITT","IT"],["MTS","LAN"],["KPH","ENG"],["MFK","BS"],["KPM","MAT"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["MPS","SS"],["KPH","ENG"],["KPM","MAT"],["KVS-DW","MAL-2"],["MFK","BS"],["RSB","HIN"],[null,null],[null,null]]},"5 E":{"MON":[["AA","MAT"],["MFK","ENG"],["MPS","SS"],["AB-DW","LAN"],["MFK","ENG"],["MT","BS"],["AA","LB"],[null,null]],"TUE":[["AA","MAT"],["ITT","IT"],["MPS","SS"],["RSB","HIN"],["MT","BS"],["AB-DW","LAN"],["MFK","ENG"],[null,null]],"WED":[["AA","MAT"],["MPS","SS"],["MT","BS"],["KVS-DW","MAL-2"],["AB-DW","LAN"],["MFK","ENG"],["AA","TAB"],[null,null]],"THU":[["AA","MAT"],["MPS","SS"],["MT","BS"],["MRC","PET"],["MFK","ENG"],["AB-DW","LAN"],["KVS-DW","MAL-2"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["AA","MAT"],["MFK","ENG"],["RSB","HIN"],["MT","BS"],["ITP","IT"],["MPS","SS"],[null,null],[null,null]]},"5 F":{"MON":[["KVS-DW","SS"],["RC","MAL-2"],["NA-DW3","ENG"],["MT","BS"],["AA","MAT"],["KVS-DW","LB"],["MTS","LAN"],[null,null]],"TUE":[["KVS-DW","SS"],["NA-DW3","ENG"],["ITT","IT"],["NA-DW3","ENG"],["AA","MAT"],["MT","BS"],["MRC","PET"],[null,null]],"WED":[["KVS-DW","SS"],["AA","MAT"],["RSB","HIN"],["MTS","LAN"],["MT","BS"],["NA-DW3","ENG"],["KVS-DW","TAB"],[null,null]],"THU":[["KVS-DW","SS"],["RSB","HIN"],["AA","MAT"],["NA-DW3","ENG"],["ITP","IT"],["MTS","LAN"],["MT","BS"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["KVS-DW","SS"],["RC","MAL-2"],["AA","MAT"],["MTS","LAN"],["MT","BS"],["NA-DW3","ENG"],[null,null],[null,null]]},"5 G":{"MON":[["PS","ENG"],["MT","BS"],["AA","MAT"],["PS","LB"],["MTS","LAN"],["RC","SS"],["RSB","HIN"],[null,null]],"TUE":[["PS","ENG"],["MT","BS"],["PS","ENG"],["AA","MAT"],["ITT","IT"],["RC","SS"],["RC","MAL-2"],[null,null]],"WED":[["PS","ENG"],["MTS","LAN"],["AA","MAT"],["RC","SS"],["RC","MAL-2"],["MT","BS"],["PS","TAB"],[null,null]],"THU":[["PS","ENG"],["AA","MAT"],["MTS","LAN"],["MT","BS"],["RC","SS"],["ITP","IT"],["RSB","HIN"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["PS","ENG"],["MTS","LAN"],["MRC","PET"],["RC","SS"],["AA","MAT"],["MT","BS"],[null,null],[null,null]]},"5 H":{"MON":[["MT","BS"],["RSB","HIN"],["RC","MAL-2"],["RC","SS"],["MT","LB"],["AA","MAT"],["PS","ENG"],[null,null]],"TUE":[["MT","BS"],["AA","MAT"],["MRC","PET"],["ITT","IT"],["RC","SS"],["PS","ENG"],["MTS","LAN"],[null,null]],"WED":[["MT","BS"],["PS","ENG"],["RC","SS"],["AA","MAT"],["RSB","HIN"],["MTS","LAN"],["MT","TAB"],[null,null]],"THU":[["MT","BS"],["PS","ENG"],["RC","MAL-2"],["AA","MAT"],["MTS","LAN"],["RC","SS"],["ITP","IT"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["MT","BS"],["AA","MAT"],["PS","ENG"],["PS","ENG"],["RC","SS"],["MTS","LAN"],[null,null],[null,null]]},"5 I":{"MON":[["RC","MAL-2"],["AA","MAT"],["KVS-DW PV SH","LAN"],["RSB","HIN"],["RC","SS"],["PS","ENG"],["MT","BS"],[null,null]],"TUE":[["ITT","IT"],["RC","SS"],["RC","LB"],["MT","BS"],["PS","ENG"],["AA","MAT"],["KVS-DW PV SH","LAN"],[null,null]],"WED":[["RC","SS"],["KVS-DW PV SH","LAN"],["PS","ENG"],["MT","BS"],["AA","MAT"],["RSB","HIN"],["RC","TAB"],[null,null]],"THU":[["RC","SS"],["MT","BS"],["PS","ENG"],["PS","ENG"],["MRC","PET"],["AA","MAT"],["RC","MAL-2"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["RC","SS"],["ITP","IT"],["MT","BS"],["AA","MAT"],["KVS-DW PV SH","LAN"],["PS","ENG"],[null,null],[null,null]]},"6 A":{"MON":[["KPS","BS"],["SB","SS"],["KPM","MAT"],["JMP","MAL-2"],["KPH","ENG"],["JK","HIN"],["KMB SH","LAN"],[null,null]],"TUE":[["KPS","BS"],["KPH","ENG"],["KMB SH","LAN"],["SB","SS"],["KPM","MAT"],["JK","HIN"],["ITT","IT"],[null,null]],"WED":[["KPS","BS"],["KPH","ENG"],["SB","SS"],["JMP","MAL-2"],["KMB SH","LAN"],["KPM","MAT"],["KPS","TAB"],[null,null]],"THU":[["KPS","BS"],["KPS","LB"],["KPM","MAT"],["SB","SS"],["KMB SH","LAN"],["MRC","PET"],["KPH","ENG"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["KPS","BS"],["SB","SS"],["ITP","IT"],["KPM","MAT"],["JK","HIN"],["KPH","ENG"],[null,null],[null,null]]},"6 B":{"MON":[["DN","ENG"],["NA-DW1","MAL-2"],["DN","LB"],["KPS","BS"],["AKK","MAT"],["JA-DW","LAN"],["NKP","SS"],[null,null]],"TUE":[["DN","ENG"],["MRC","PET"],["AKK","MAT"],["JK","HIN"],["NKP","SS"],["JA-DW","LAN"],["KPS","BS"],[null,null]],"WED":[["DN","ENG"],["JA-DW","LAN"],["AKK","MAT"],["NKP","SS"],["ITP","IT"],["KPS","BS"],["DN","TAB"],[null,null]],"THU":[["DN","ENG"],["NKP","SS"],["KPS","BS"],["JA-DW","LAN"],["AKK","MAT"],["NA-DW1","MAL-2"],["JK","HIN"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["DN","ENG"],["NKP","SS"],["JK","HIN"],["ITT","IT"],["KPS","BS"],["AKK","MAT"],[null,null],[null,null]]},"6 C":{"MON":[["SB","LB"],["AKK","MAT"],["JA-DW","LAN"],["SB","ENG"],["PPK","BS"],["NKP","SS"],["JK","HIN"],[null,null]],"TUE":[["SB","ENG"],["AKK","MAT"],["PPK","BS"],["JA-DW","LAN"],["ITP","IT"],["DN","MAL-2"],["NKP","SS"],[null,null]],"WED":[["SB","ENG"],["NKP","SS"],["PPK","BS"],["JK","HIN"],["AKK","MAT"],["DN","MAL-2"],["SB","TAB"],[null,null]],"THU":[["SB","ENG"],["JK","HIN"],["MRC","PET"],["AKK","MAT"],["NKP","SS"],["JA-DW","LAN"],["PPK","BS"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["SB","ENG"],["ITT","IT"],["JA-DW","LAN"],["AKK","MAT"],["NKP","SS"],["PPK","BS"],[null,null],[null,null]]},"6 D":{"MON":[["MTR","BS"],["JA-DW","LAN"],["JK","HIN"],["NKP","SS"],["SB","ENG"],["MRC","PET"],["AKK","MAT"],[null,null]],"TUE":[["MTR","BS"],["JA-DW","LAN"],["NKP","SS"],["PPK","MAL-2"],["AKK","MAT"],["SB","ENG"],["JK","HIN"],[null,null]],"WED":[["MTR","BS"],["AKK","MAT"],["NKP","SS"],["SB","ENG"],["MTR","LB"],["ITP","IT"],["MTR","TAB"],[null,null]],"THU":[["MTR","BS"],["JA-DW","LAN"],["NKP","SS"],["JK","HIN"],["PPK","MAL-2"],["AKK","MAT"],["SB","ENG"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["MTR","BS"],["AKK","MAT"],["SB","ENG"],["NKP","SS"],["JA-DW","LAN"],["ITT","IT"],[null,null],[null,null]]},"6 E":{"MON":[["MEK-DW","MAT"],["MEK-DW","LB"],["SB","ENG"],["JK","HIN"],["KPS","BS"],["NA-DW1","SS"],["AB-DW","LAN"],[null,null]],"TUE":[["MEK-DW","MAT"],["KPS","BS"],["JK","HIN"],["AB-DW","LAN"],["NA-DW1","SS"],["PMS","MAL-2"],["SB","ENG"],[null,null]],"WED":[["MEK-DW","MAT"],["KPS","BS"],["NA-DW1","SS"],["AB-DW","LAN"],["ITT","IT"],["SB","ENG"],["MEK-DW","TAB"],[null,null]],"THU":[["ITP","IT"],["SB","ENG"],["MEK-DW","MAT"],["NA-DW1","SS"],["JK","HIN"],["KPS","BS"],["MRC","PET"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["MEK-DW","MAT"],["AB-DW","LAN"],["KPS","BS"],["SB","ENG"],["PMS","MAL-2"],["NA-DW1","SS"],[null,null],[null,null]]},"6 F":{"MON":[["NKP","SS"],["ITT","IT"],["AKK","MAT"],["KPH","ENG"],["KPHT","MAL-2"],["KPS","BS"],["JA-DW PV","LAN"],[null,null]],"TUE":[["NKP","SS"],["JK","HIN"],["JA-DW PV","LAN"],["AKK","MAT"],["KPH","ENG"],["KPS","BS"],["PPK","LB"],[null,null]],"WED":[["NKP","SS"],["ITP","IT"],["KPH","ENG"],["KPS","BS"],["JA-DW PV","LAN"],["AKK","MAT"],["NKP","TAB"],[null,null]],"THU":[["NKP","SS"],["AKK","MAT"],["KPH","ENG"],["KPS","BS"],["JA-DW PV","LAN"],["JK","HIN"],["KPHT","MAL-2"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["NKP","SS"],["JK","HIN"],["KPH","ENG"],["KPS","BS"],["AKK","MAT"],["MRC","PET"],[null,null],[null,null]]},"6 G":{"MON":[["AKK","MAT"],["NKP","SS"],["KPS","BS"],["ITT","IT"],["JK","HIN"],["AB-DW","LAN"],["SB","ENG"],[null,null]],"TUE":[["AKK","LB"],["NKP","SS"],["SB","ENG"],["ITP","IT"],["KPS","BS"],["AKK","MAT"],["AB-DW","LAN"],[null,null]],"WED":[["AKK","MAT"],["SB","ENG"],["KPS","BS"],["NA-DW1","MAL-2"],["JK","HIN"],["NKP","SS"],["AKK","TAB"],[null,null]],"THU":[["AKK","MAT"],["AB-DW","LAN"],["JK","HIN"],["NKP","SS"],["KPS","BS"],["SB","ENG"],["NA-DW1","MAL-2"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["AKK","MAT"],["KPS","BS"],["NKP","SS"],["AB-DW","LAN"],["MRC","PET"],["SB","ENG"],[null,null],[null,null]]},"6 H":{"MON":[["SKP","ENG"],["MTR","BS"],["AMS","MAT"],["KKR","SS"],["KKR","MAL-2"],["SH","LAN"],["MRC","PET"],[null,null]],"TUE":[["SKP","ENG"],["AMS","MAT"],["KKR","SS"],["SKP","LB"],["JK","HIN"],["SH","LAN"],["MTR","BS"],[null,null]],"WED":[["SKP","ENG"],["MTR","BS"],["ITT","IT"],["AMS","MAT"],["KKR","SS"],["JK","HIN"],["SKP","TAB"],[null,null]],"THU":[["SKP","ENG"],["SH","LAN"],["AMS","MAT"],["ITP","IT"],["MTR","BS"],["KKR","SS"],["KKR","MAL-2"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["SKP","ENG"],["MTR","BS"],["SH","LAN"],["AMS","MAT"],["KKR","SS"],["JK","HIN"],[null,null],[null,null]]},"6 I":{"MON":[["NA-DW1","SS"],["AMS","MAT"],["RSB","HIN"],["MTS","LAN"],["PS","MAL-2"],["SKP","ENG"],["MTR","BS"],[null,null]],"TUE":[["NA-DW1","SS"],["NA-DW1","LB"],["AMS","MAT"],["MTS","LAN"],["MTR","BS"],["SKP","ENG"],["PS","MAL-2"],[null,null]],"WED":[["NA-DW1","SS"],["ITT","IT"],["SKP","ENG"],["MRC","PET"],["AMS","MAT"],["MTR","BS"],["NA-DW1","TAB"],[null,null]],"THU":[["NA-DW1","SS"],["MTR","BS"],["ITP","IT"],["AMS","MAT"],["SKP","ENG"],["RSB","HIN"],["MTS","LAN"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["NA-DW1","SS"],["AMS","MAT"],["MTR","BS"],["RSB","HIN"],["MTS","LAN"],["SKP","ENG"],[null,null],[null,null]]},"6 J":{"MON":[["AMS","MAT"],["SKP","ENG"],["MRC","PET"],["MTR","BS"],["RSB","HIN"],["MTS","LAN"],["KKR","SS"],[null,null]],"TUE":[["AMS","MAT"],["SKP","ENG"],["MTR","BS"],["KKR","SS"],["MTS","LAN"],["RSB","HIN"],["ITP","IT"],[null,null]],"WED":[["AMS","MAT"],["AMS","LB"],["KKR","SS"],["MTR","BS"],["SKP","ENG"],["KKR","MAL-2"],["AMS","TAB"],[null,null]],"THU":[["AMS","MAT"],["MTS","LAN"],["KKR","SS"],["ITT","IT"],["RSB","HIN"],["MTR","BS"],["SKP","ENG"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["AMS","MAT"],["KKR","SS"],["MTS","LAN"],["KKR","MAL-2"],["SKP","ENG"],["MTR","BS"],[null,null],[null,null]]},"6 K":{"MON":[["KKR","SS"],["SH","LAN"],["SKP","ENG"],["NA-DW1","BS"],["AMS","MAT"],["HNA-DW2","HIN"],["ITP","IT"],[null,null]],"TUE":[["HNA-DW2","HIN"],["KKR","SS"],["NA-DW1","BS"],["SH","LAN"],["AMS","MAT"],["KKR","MAL-2"],["SKP","ENG"],[null,null]],"WED":[["KKR","LB"],["KKR","SS"],["AMS","MAT"],["SH","LAN"],["NA-DW1","BS"],["SKP","ENG"],["KKR","TAB"],[null,null]],"THU":[["KKR","SS"],["NA-DW1","BS"],["SKP","ENG"],["KKR","MAL-2"],["ITT","IT"],["AMS","MAT"],["SH","LAN"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["KKR","SS"],["HNA-DW2","HIN"],["SKP","ENG"],["MRC","PET"],["NA-DW1","BS"],["AMS","MAT"],[null,null],[null,null]]},"6 L":{"MON":[["RSB","HIN"],["MRC","PET"],["NA-DW1","BS"],["DN","ENG"],["PMS","SS"],["KPR","MAT"],["KMB PV SH","LAN"],[null,null]],"TUE":[["PMS","SS"],["KPR","MAT"],["KMB PV SH","LAN"],["NA-DW1","BS"],["DN","ENG"],["ITP","IT"],["PMS","MAL-2"],[null,null]],"WED":[["PMS","SS"],["RSB","HIN"],["DN","ENG"],["KPR","MAT"],["KMB PV SH","LAN"],["NA-DW1","BS"],["PMS","TAB"],[null,null]],"THU":[["PMS","SS"],["KPR","MAT"],["NA-DW1","BS"],["PMS","LB"],["KMB PV SH","LAN"],["ITT","IT"],["DN","ENG"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["PMS","SS"],["KPR","MAT"],["NA-DW1","BS"],["DN","ENG"],["RSB","HIN"],["PMS","MAL-2"],[null,null],[null,null]]},"7 A":{"MON":[["JMP","ENG"],["KMB","MAL-2"],["ITP","IT"],["MEK-DW","MAT"],["JA-DW PV SH KMB","LAN"],["TS","SS"],["KPHT","BS"],[null,null]],"TUE":[["JMP","ENG"],["MEK-DW","MAT"],["TS","SS"],["KPHT","BS"],["JA-DW PV SH KMB","LAN"],["HNA-DW1","HIN"],["KMB","MAL-2"],[null,null]],"WED":[["JMP","ENG"],["MEK-DW","MAT"],["JA-DW PV SH KMB","LAN"],["TS","SS"],["HNA-DW1","HIN"],["KPHT","BS"],["JMP","TAB"],[null,null]],"THU":[["JMP","ENG"],["KPHT","BS"],["JA-DW PV SH KMB","LAN"],["TS","SS"],["KPHT","PET"],["MEK-DW","MAT"],["ITT","IT"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["JMP","ENG"],["TS","SS"],["MEK-DW","MAT"],["JMP","LB"],["KPHT","BS"],["HNA-DW1","HIN"],[null,null],[null,null]]},"7 B":{"MON":[["TS","SS"],["PPK","BS"],["JMP","ENG"],["JA-DW","LAN"],["HNA-DW1","HIN"],["MEK-DW","MAT"],["ITT","IT"],[null,null]],"TUE":[["TS","SS"],["HNA-DW1","HIN"],["MEK-DW","MAT"],["JMP","ENG"],["PPK","BS"],["KMB","MAL-2"],["JA-DW","LAN"],[null,null]],"WED":[["TS","SS"],["JMP","ENG"],["ITP","IT"],["PPK","BS"],["MEK-DW","MAT"],["TS","LB"],["TS","TAB"],[null,null]],"THU":[["TS","SS"],["JMP","ENG"],["HNA-DW1","HIN"],["PPK","BS"],["MEK-DW","MAT"],["KPHT","PET"],["JA-DW","LAN"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["TS","SS"],["JA-DW","LAN"],["JMP","ENG"],["MEK-DW","MAT"],["PPK","BS"],["KMB","MAL-2"],[null,null],[null,null]]},"7 C":{"MON":[["ITP","IT"],["TS","SS"],["AVK","LAN"],["MRC","PET"],["MEK-DW","MAT"],["JMP","ENG"],["PPK","BS"],[null,null]],"TUE":[["PPK","BS"],["JMP","ENG"],["NA-DW2","MAL-2"],["TS","SS"],["HNA-DW1","HIN"],["MEK-DW","MAT"],["AVK","LAN"],[null,null]],"WED":[["PPK","BS"],["HNA-DW1","HIN"],["TS","SS"],["MEK-DW","MAT"],["AVK","LAN"],["JMP","ENG"],["PPK","TAB"],[null,null]],"THU":[["PPK","BS"],["AVK","LAN"],["PPK","LB"],["MEK-DW","MAT"],["JMP","ENG"],["TS","SS"],["HNA-DW1","HIN"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["PPK","BS"],["MEK-DW","MAT"],["ITT","IT"],["NA-DW2","MAL-2"],["TS","SS"],["JMP","ENG"],[null,null],[null,null]]},"7 D":{"MON":[["PMM","MAT"],["NA-DW3","ENG"],["KMB","MAL-2"],["HNA-DW2","HIN"],["AVK PV SH KVS-DW","LAN"],["PPK","BS"],["TS","SS"],[null,null]],"TUE":[["PMM","MAT"],["PPK","BS"],["NA-DW3","ENG"],["HNA-DW2","HIN"],["AVK PV SH KVS-DW","LAN"],["ITT","IT"],["TS","SS"],[null,null]],"WED":[["PMM","MAT"],["MRC","PET"],["AVK PV SH KVS-DW","LAN"],["NA-DW3","ENG"],["TS","SS"],["PPK","BS"],["PMM","TAB"],[null,null]],"THU":[["PMM","MAT"],["ITP","IT"],["AVK PV SH KVS-DW","LAN"],["KMB","MAL-2"],["NA-DW3","ENG"],["PPK","BS"],["TS","SS"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["PMM","MAT"],["PPK","BS"],["PMM","LB"],["NA-DW3","ENG"],["HNA-DW2","HIN"],["TS","SS"],[null,null],[null,null]]},"7 E":{"MON":[["AD","ENG"],["KPHT","BS"],["ITT","IT"],["AVK","LAN"],["NA-DW3","MAL-2"],["PMM","MAT"],["NA-DW2","SS"],[null,null]],"TUE":[["ITP","IT"],["AD","ENG"],["HNA-DW1","HIN"],["PMM","MAT"],["NA-DW3","MAL-2"],["KPHT","BS"],["NA-DW2","SS"],[null,null]],"WED":[["AD","ENG"],["PMM","MAT"],["MRC","PET"],["NA-DW2","SS"],["KPHT","BS"],["AVK","LAN"],["AD","TAB"],[null,null]],"THU":[["AD","ENG"],["HNA-DW1","HIN"],["KPHT","BS"],["NA-DW2","SS"],["AD","LB"],["PMM","MAT"],["AVK","LAN"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["AD","ENG"],["KPHT","BS"],["NA-DW2","SS"],["PMM","MAT"],["HNA-DW1","HIN"],["AVK","LAN"],[null,null],[null,null]]},"7 F":{"MON":[["NA-DW2","SS"],["AVK","LAN"],["PMM","MAT"],["ITP","IT"],["SM","BS"],["AD","ENG"],["HNA-DW1","HIN"],[null,null]],"TUE":[["NA-DW2","SS"],["SM","BS"],["AVK","LAN"],["HNA-DW1","HIN"],["PMM","MAT"],["MRC","PET"],["AD","ENG"],[null,null]],"WED":[["NA-DW2","SS"],["KMB","MAL-2"],["SM","BS"],["ITT","IT"],["PMM","MAT"],["AD","ENG"],["NA-DW2","TAB"],[null,null]],"THU":[["NA-DW2","SS"],["KMB","MAL-2"],["PMM","MAT"],["AD","ENG"],["HNA-DW1","HIN"],["AVK","LAN"],["SM","BS"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["NA-DW2","SS"],["NA-DW2","LB"],["SM","BS"],["AVK","LAN"],["PMM","MAT"],["AD","ENG"],[null,null],[null,null]]},"7 G":{"MON":[["KPHT","BS"],["HNA-DW1","HIN"],["MEK-DW","MAT"],["TS","SS"],["JA-DW PV SH KMB","LAN"],["ITT","IT"],["JMP","ENG"],[null,null]],"TUE":[["KPHT","BS"],["ITP","IT"],["JMP","ENG"],["MEK-DW","MAT"],["JA-DW PV SH KMB","LAN"],["TS","SS"],["HNA-DW1","HIN"],[null,null]],"WED":[["KPHT","BS"],["TS","SS"],["JA-DW PV SH KMB","LAN"],["KPHT","LB"],["JMP","ENG"],["MEK-DW","MAT"],["KPHT","TAB"],[null,null]],"THU":[["KPHT","BS"],["MEK-DW","MAT"],["JA-DW PV SH KMB","LAN"],["KPHT","PET"],["TS","SS"],["JMP","ENG"],["KMB","MAL-2"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["KPHT","BS"],["HNA-DW1","HIN"],["KMB","MAL-2"],["TS","SS"],["JMP","ENG"],["MEK-DW","MAT"],[null,null],[null,null]]},"7 H":{"MON":[["KPR","MAT"],["PMS","SS"],["AD","ENG"],["HNA-DW1","HIN"],["MRC","PET"],["SM","BS"],["AVK","LAN"],[null,null]],"TUE":[["KPR","MAT"],["PMS","SS"],["ITP","IT"],["AVK","LAN"],["AD","ENG"],["NA-DW3","MAL-2"],["SM","BS"],[null,null]],"WED":[["KPR","MAT"],["AD","ENG"],["KPR","LB"],["HNA-DW1","HIN"],["PMS","SS"],["SM","BS"],["KPR","TAB"],[null,null]],"THU":[["KPR","MAT"],["PMS","SS"],["NA-DW3","MAL-2"],["SM","BS"],["AVK","LAN"],["HNA-DW1","HIN"],["AD","ENG"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["KPR","MAT"],["AVK","LAN"],["AD","ENG"],["PMS","SS"],["ITT","IT"],["SM","BS"],[null,null],[null,null]]},"7 I":{"MON":[["SM","BS"],["ITP","IT"],["HNA-DW2","HIN"],["NA-DW3","ENG"],["NA-DW2","SS"],["AVK","LAN"],["KPR","MAT"],[null,null]],"TUE":[["SM","BS"],["AVK","LAN"],["KPR","MAT"],["NA-DW2","SS"],["HNA-DW2","HIN"],["SM","LB"],["NA-DW3","ENG"],[null,null]],"WED":[["SM","BS"],["NA-DW3","ENG"],["NA-DW2","SS"],["AVK","LAN"],["KPR","MAT"],["AMS","MAL-2"],["SM","TAB"],[null,null]],"THU":[["SM","BS"],["MRC","PET"],["NA-DW2","SS"],["AVK","LAN"],["AMS","MAL-2"],["NA-DW3","ENG"],["KPR","MAT"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["ITT","IT"],["NA-DW3","ENG"],["HNA-DW2","HIN"],["SM","BS"],["KPR","MAT"],["NA-DW2","SS"],[null,null],[null,null]]},"7 J":{"MON":[["NA-DW3","ENG"],["SM","BS"],["NA-DW2","MAL-2"],["SH","LAN"],["PMM","MAT"],["PMS","SS"],["HNA-DW2","HIN"],[null,null]],"TUE":[["NA-DW3","ENG"],["SH","LAN"],["PMM","MAT"],["PMS","SS"],["SM","BS"],["NA-DW2","MAL-2"],["HNA-DW2","HIN"],[null,null]],"WED":[["NA-DW3","ENG"],["PMS","SS"],["PMM","MAT"],["ITP","IT"],["SM","BS"],["SH","LAN"],["NA-DW3","TAB"],[null,null]],"THU":[["ITT","IT"],["NA-DW3","ENG"],["PMS","SS"],["MTR","PET"],["SM","BS"],["SH","LAN"],["PMM","MAT"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["NA-DW3","ENG"],["SM","BS"],["PMS","SS"],["HNA-DW2","HIN"],["NA-DW3","LB"],["PMM","MAT"],[null,null],[null,null]]},"7 K":{"MON":[["ITT","IT"],["KPR","MAT"],["SM","BS"],["NA-DW2","SS"],["AVK PV SH KVS-DW","LAN"],["HNA-DW1","HIN"],["AD","ENG"],[null,null]],"TUE":[["AD","ENG"],["NA-DW2","SS"],["SM","BS"],["KMB","MAL-2"],["AVK PV SH KVS-DW","LAN"],["AD","ENG"],["KPR","MAT"],[null,null]],"WED":[["KMB","MAL-2"],["KPR","MAT"],["AVK PV SH KVS-DW","LAN"],["SM","BS"],["NA-DW2","SS"],["HNA-DW1","HIN"],["KMB","TAB"],[null,null]],"THU":[["KMB","LB"],["AD","ENG"],["AVK PV SH KVS-DW","LAN"],["KPR","MAT"],["NA-DW2","SS"],["SM","BS"],["NA-DW2","SS"],[null,null]],"FRI":[[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null],[null,null]],"SAT":[["SM","BS"],["MRC","PET"],["KPR","MAT"],["HNA-DW1","HIN"],["AD","ENG"],["ITP","IT"],[null,null],[null,null]]}},"standards":["5","6","7"],"stdPeriods":{"5":{"MAT":5,"ENG":6,"MAL-2":2,"HIN":2,"PET":1,"BS":5,"SS":5,"LB":1,"LAN":4,"IT":1,"TAB":1},"6":{"MAT":5,"ENG":5,"MAL-2":2,"HIN":3,"PET":1,"BS":5,"SS":5,"LB":1,"LAN":4,"IT":1,"TAB":1},"7":{"MAT":5,"ENG":5,"MAL-2":2,"HIN":3,"PET":1,"BS":5,"SS":5,"LB":1,"LAN":4,"IT":1,"TAB":1}},"combined":[{"name":"AVK PV SH KVS-DW","sub":"LAN","teachers":["AVK","KVS-DW","PV","SH"],"divisions":["7 D","7 K"]},{"name":"JA-DW PV","sub":"LAN","teachers":["JA-DW","PV"],"divisions":["6 F"]},{"name":"JA-DW PV SH KMB","sub":"LAN","teachers":["JA-DW","KMB","PV","SH"],"divisions":["7 A","7 G"]},{"name":"KMB PV SH","sub":"LAN","teachers":["KMB","PV","SH"],"divisions":["6 L"]},{"name":"KMB SH","sub":"LAN","teachers":["KMB","SH"],"divisions":["6 A"]},{"name":"KVS-DW PV SH","sub":"LAN","teachers":["KVS-DW","PV","SH"],"divisions":["5 A","5 I"]}]}`);
 const STORE_KEY = "tt_cfg_v2";
-const APP_VERSION = "2026-09-29 c";
+const APP_VERSION = "2026-10-11 d";
 
 const WEEK_ORDER = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const DAY_FULL = { MON: "Monday", TUE: "Tuesday", WED: "Wednesday", THU: "Thursday", FRI: "Friday", SAT: "Saturday", SUN: "Sunday" };
@@ -399,6 +401,53 @@ function autoSchedule(cfg, mode = "all", onlyClass = null, opts = {}) {
     let chainLeft = 25000;
     for (const l of remaining) { if (chainLeft <= 0 || Date.now() > deadline) { still2.push(l); continue; } budget = Math.min(2500, chainLeft); const b0 = budget; const mark = log.length; const okP = place(l, 3, new Set()); chainLeft -= b0 - Math.max(0, budget); if (!okP) { rollback(mark); still2.push(l); } }
     remaining = still2;
+    // 8. tight timetables (no free periods): keep placing the stuck lessons, pushing out whatever is in the way
+    //    and re-placing that in turn, until everything fits or time runs out. Rule-placed, locked and combined cells never move.
+    if (remaining.length && !opts.noWalk) {
+      const wEnd = Math.min(deadline, Date.now() + (opts.walkMs || 2500));
+      let pool = remaining.slice();
+      const snap = () => { const s = {}; for (const c of writable) if (grid[c]) s[c] = grid[c].map((row) => row.map((x) => [x[0], x[1]])); return { s, pool: pool.slice() }; };
+      const restore = (b) => { for (const c of Object.keys(b.s)) for (let d = 0; d < D; d++) for (let p = 0; p < P; p++) if (grid[c][d][p][0] && !fixed.has(key(c, d, p)) && !frozen.has(key(c, d, p))) unbook(c, d, p);
+        for (const c of Object.keys(b.s)) for (let d = 0; d < D; d++) for (let p = 0; p < P; p++) { const [code, sub] = b.s[c][d][p]; if (code && !grid[c][d][p][0]) put(c, d, p, code, sub); }
+        pool = b.pool.slice(); };
+      let best = snap(); const tabu = new Map(); let it = 0, fails = 0;
+      while (pool.length && Date.now() < wEnd && fails < 4000) {
+        it++;
+        const li = Math.floor(r() * pool.length); const l = pool[li]; const toks = tOf(l.teacher);
+        const cands = [];
+        for (let d = 0; d < D; d++) {
+          if (!toks.every((t) => availT(t, d))) continue;
+          for (let p = 0; p < P; p++) {
+            const k = key(l.c, d, p);
+            if (frozen.has(k) || !allowed(l.sub, p) || av(l.c, l.sub, l.teacher, p)) continue;
+            const ej = []; let ok = true;
+            if (grid[l.c][d][p][0]) { if (!movable(l.c, d, p)) continue; ej.push([l.c, d, p]); }
+            for (const t of toks) if (tbusy[d][p].has(t)) { const hc = tcls[d][p].get(t); if (!hc || !movable(hc, d, p)) { ok = false; break; } if (!ej.some(([c]) => c === hc)) ej.push([hc, d, p]); }
+            if (!ok) continue;
+            let pen = 0; for (const [c, dd, pp] of ej) if ((tabu.get(c + "|" + dd + "|" + pp + "|" + grid[c][dd][pp][0]) || 0) > it) pen += 6;
+            cands.push({ d, p, ej, cost: ej.length * 2 + pen + r() * 1.5 });
+          }
+        }
+        cands.sort((a, b) => a.cost - b.cost);
+        let done = false;
+        for (const o of cands.slice(0, 6)) {
+          const out = o.ej.map(([c, dd, pp]) => ({ c, d: dd, p: pp, teacher: grid[c][dd][pp][0], sub: grid[c][dd][pp][1] }));
+          for (const x of out) unbook(x.c, x.d, x.p);
+          if (free(l.c, o.d, o.p) && tOK(toks, o.d, o.p) && dayOK(l.c, l.sub, o.d)) {
+            put(l.c, o.d, o.p, l.teacher, l.sub);
+            pool.splice(li, 1);
+            tabu.set(l.c + "|" + o.d + "|" + o.p + "|" + l.teacher, it + 8);
+            for (const x of out) { pool.push({ c: x.c, sub: x.sub, teacher: x.teacher }); tabu.set(x.c + "|" + x.d + "|" + x.p + "|" + x.teacher, it + 12); }
+            done = true; break;
+          }
+          for (const x of out) put(x.c, x.d, x.p, x.teacher, x.sub);
+        }
+        if (!done) { fails++; continue; }
+        if (pool.length < best.pool.length) best = snap();
+      }
+      if (pool.length > best.pool.length) restore(best);
+      remaining = pool;
+    }
     const notesOut = Object.values(autoNotes).map((x) => `${x.sub} in Std ${x.st} needs ${x.per} periods but has ${x.days} day(s) — placed twice on a day where needed (${x.classes.length} class${x.classes.length > 1 ? "es" : ""})`);
 
     const missing = {};
@@ -527,17 +576,17 @@ export default function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [theme, setTheme] = useState("teal");
   const mobile = useIsMobile();
-  useEffect(() => { (async () => { try { const r = await window.storage.get("tt_theme"); if (r && r.value) setTheme(r.value); } catch {} })(); }, []);
-  const persistTheme = (name) => { setTheme(name); setMenuOpen(false); try { window.storage.set("tt_theme", name); } catch {} };
+  useEffect(() => { try { const t = localStorage.getItem("tt_theme"); if (t) setTheme(t); } catch {} }, []);
+  const persistTheme = (name) => { setTheme(name); setMenuOpen(false); try { localStorage.setItem("tt_theme", name); } catch {} };
   const TH = THEMES[theme] || THEMES.teal;
   const handleSignOut = () => { if (typeof supabase !== "undefined") { try { supabase.auth.signOut(); } catch {} } else { alert("Sign out works on your deployed app, which has staff login. This in-chat preview has no login to sign out of."); } };
 
   useEffect(() => {
     let alive = true;
     (async () => {
-      let next = null;
-      try { const r = await window.storage.get(STORE_KEY); if (r && r.value) next = JSON.parse(r.value); } catch {}
-      if (!next) next = clone(SEED);
+      let next = null; let wasEmpty = false;
+      try { next = await loadConfig(); } catch {}
+      if (!next) { next = clone(SEED); wasEmpty = true; }
       // migrate older configs: ensure combined sessions + stdPeriods exist
       if (!next.combined) {
         const singles = new Set(next.singles);
@@ -557,17 +606,25 @@ export default function App() {
       if (!next.classRules) next.classRules = {};
       if (!next.locked) next.locked = {};
       if (!next.twice) next.twice = {};
+      const relinked = relinkCombined(next); if (relinked) wasEmpty = true;
       if (!next.combinedV3) { (next.combined || []).forEach((x) => { if (!x.group || x.group === x.sub) x.group = stdBlockName(x); }); next.combinedV2 = true; next.combinedV3 = true; }
+      if (!alive) return;
       if (Array.isArray(next.classes)) next.classes.sort(cmpClass);
-      if (alive) setCfg(next);
+      setCfg(next);
+      lastSaved.current = JSON.stringify(next);
+      if (wasEmpty) { try { await saveConfig(next); } catch {} }
     })();
-    return () => { alive = false; };
+    const ch = subscribeConfig((remote) => { if (!remote) return; const js = JSON.stringify(remote); if (js === lastSaved.current) return; lastSaved.current = js; if (Array.isArray(remote.classes)) remote.classes.sort(cmpClass); setCfg(remote); setSaved("synced"); });
+    return () => { alive = false; if (ch) { try { supabase.removeChannel(ch); } catch {} } };
   }, []);
 
-  const persist = async (next) => {
+  const lastSaved = useRef("");
+  const saveTimer = useRef(null);
+  const persist = (next) => {
     setSaved("saving…");
-    try { await window.storage.set(STORE_KEY, JSON.stringify(next)); setSaved("saved"); }
-    catch { setSaved("local only"); }
+    lastSaved.current = JSON.stringify(next);
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => { try { await saveConfig(next); setSaved("saved"); } catch { setSaved("offline · saved on device"); } }, 600);
   };
   const update = (fn) => setCfg((prev) => { const next = clone(prev); fn(next); if (Array.isArray(next.classes)) next.classes.sort(cmpClass); persist(next); return next; });
 
@@ -1163,7 +1220,7 @@ function BKeyView({ cfg, cls, setCls, update, expand, teacherLoad, mobile, ask }
     if (!file) return;
     setImp("");
     try {
-      if (/\.xlsx?$/i.test(file.name)) { setImp("Excel (.xlsx) import runs on the deployed app. In this preview, please save your sheet as CSV (columns: Class, Subject, Teacher) and upload that."); return; }
+      if (/\.xlsx?$/i.test(file.name)) { setImp("Please save your Excel sheet as CSV (columns: Class, Subject, Teacher) and upload that."); return; }
       const data = (await file.text()).split(/\r?\n/).map((l) => l.split(","));
       const parsed = parseBKeyRows(data);
       if (!parsed.length) { setImp("No rows found. Use columns: Class, Subject, Teacher."); return; }
@@ -1902,6 +1959,15 @@ function CTDaysPanel({ cfg, update }) {
   const setMany = (list, v) => update((n) => { for (const c of list) if (n.classTeacher[c]) setVal(n, c, v); });
   const ctSubs = (c) => { const ct = cfg.classTeacher[c]; return (cfg.bkey[c] || []).filter((r) => r.teacher === ct && r.sub).map((r) => `${r.sub} ${periodsFor(cfg, c, r.sub)}`).join(", "); };
   const list = cfg.classes.filter((c) => !q.trim() || (c + " " + (cfg.classTeacher[c] || "")).toLowerCase().includes(q.trim().toLowerCase()));
+  // if every class keeps P1 for its class teacher every day, teachers who are nobody's class teacher can never use P1
+  const p1Short = useMemo(() => {
+    const allDays = cfg.classes.filter((c) => cfg.classTeacher[c]).every((c) => valOf(c) === String(D));
+    if (!allDays) return [];
+    const cts = new Set(Object.values(cfg.classTeacher).filter(Boolean)); const cov = combCover(cfg); const need = {};
+    for (const c of cfg.classes) for (const r of (cfg.bkey[c] || [])) { if (!r.teacher || cts.has(r.teacher) || (cfg.combined || []).some((x) => x.name === r.teacher)) continue; need[r.teacher] = (need[r.teacher] || 0) + Math.max(0, periodsFor(cfg, c, r.sub) - (cov[c + "|" + r.sub] || 0)); }
+    const blocked = (cfg.commonPeriods || []).reduce((a, cp) => a + (cp.classes.length >= cfg.classes.length ? (cp.slots || []).length : 0), 0);
+    return Object.entries(need).map(([t, n]) => ({ t, n, room: teacherCap(cfg, t) - blocked - teacherWorkDays(cfg, t).length })).filter((x) => x.n > x.room);
+  }, [cfg]);
   const opts = [["off", "Off"], ...Array.from({ length: D }, (_, i) => [String(i + 1), i + 1 === D ? `${D} (every day)` : `${i + 1} day${i ? "s" : ""}`])];
 
   const runBalance = () => {
@@ -1956,6 +2022,9 @@ function CTDaysPanel({ cfg, update }) {
           <button className="tt-btn" onClick={runBalance} disabled={busy} style={{ ...solidBtn, opacity: busy ? 0.6 : 1 }}>{busy ? "Testing…" : "Find the best days"}</button>
           <span style={{ fontSize: 11.5, color: C.sub, width: "100%" }}>Test-generates the timetable and lowers the class-teacher days only in the classes where IT, PET, LB or other periods can't fit — one day at a time. Nothing changes until you apply. Classes with exact days ticked are left as they are.</span>
         </div>
+        {p1Short.length > 0 && <div style={{ fontSize: 12.5, lineHeight: 1.55, padding: "8px 11px", borderRadius: 9, background: C.warnSoft, color: C.warn }}>
+          With the class teacher in P1 <b>every day in every class</b>, these teachers can never teach in P1 and don't have enough other periods: {p1Short.map((x) => `${x.t} needs ${x.n}, only ${x.room} non-P1 periods`).join("; ")}. Some classes must give P1 to them — press <b>Find the best days</b>.
+        </div>}
         {prog && <div style={{ fontSize: 12.5, color: C.primary, fontWeight: 600 }}>{prog}</div>}
         {result && (
           <div style={{ border: `1px solid ${result.res.unplaced ? C.warn : C.free}55`, background: result.res.unplaced ? C.warnSoft : C.freeSoft, borderRadius: 10, padding: "10px 12px", fontSize: 12.5, lineHeight: 1.6 }}>
@@ -2165,12 +2234,10 @@ ALWAYS reply with STRICT JSON only, no markdown, in this shape:
 DATA:
 ${buildContext(cfg, teacherLoad)}`;
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 1000, system, messages: history.map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.text })) }),
-      });
+      const res = await fetch("/api/assistant", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ system, messages: history.map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.text })) }) });
       const data = await res.json();
-      const text = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
+      if (data.error) throw new Error(data.error);
+      const text = data.text || "";
       let parsed; try { parsed = JSON.parse(text.replace(/```json|```/g, "").trim()); } catch { parsed = { reply: text || "(no response)", actions: [] }; }
       const applied = apply(parsed.actions);
       setMsgs((m) => [...m, { role: "assistant", text: parsed.reply + (applied ? `\n\n✓ Applied ${applied} change${applied > 1 ? "s" : ""}.` : ""), actions: parsed.actions }]);
@@ -2545,6 +2612,53 @@ function ChipPicker({ label, all, selected, onToggle, onSetAll }) {
   );
 }
 
+// Periods with several teachers (e.g. "LAN/KVS PV SH") are combined periods: link each to its combined session
+// (same class + subject, or same teachers), creating the session if needed. Then sessions that run in exactly
+// the same periods and share a teacher are put in one block, so their shared teachers are not counted as clashing.
+function relinkCombined(n) {
+  n.combined = n.combined || [];
+  const singles = new Set(n.singles || []);
+  const findName = (code) => n.combined.find((x) => x.name === code) || n.combined.find((x) => x.name === baseName(code));
+  const created = new Set(); let changed = 0;
+  for (const c of n.classes || []) for (const d of n.days || []) (n.grid?.[c]?.[d] || []).forEach((sl) => {
+    if (!sl || !sl[0] || !sl[1]) return;
+    const named = findName(sl[0]);
+    if (named) { if (named.sub === sl[1] && !named.divisions.includes(c)) { named.divisions.push(c); changed++; } if (named.name !== sl[0]) { sl[0] = named.name; changed++; } return; }
+    const toks = String(sl[0]).trim().split(/\s+/).filter(Boolean);
+    let s = n.combined.find((x) => x.sub === sl[1] && (x.divisions || []).includes(c) && (toks.length > 1 || (x.teachers.length === 1 && x.teachers[0] === toks[0])));
+    if (!s && toks.length > 1) {
+      const key = [...toks].sort().join(" ");
+      s = n.combined.find((x) => x.sub === sl[1] && [...x.teachers].sort().join(" ") === key);
+      if (!s) {
+        let nm = sl[0], k = 2; while (n.combined.some((x) => x.name === nm)) nm = `${sl[0]} (${k++})`;
+        s = { name: nm, sub: sl[1], teachers: toks.slice(), divisions: [] }; n.combined.push(s); created.add(s);
+        for (const t of toks) if (!singles.has(t)) { singles.add(t); (n.singles ||= []).push(t); }
+      }
+      if (!s.divisions.includes(c)) s.divisions.push(c);
+    }
+    if (!s) return;
+    if (sl[0] !== s.name) { sl[0] = s.name; changed++; }
+  });
+  for (const s of created) s.group = stdBlockName(s);
+  if (created.size) (n.singles || []).sort();
+  // sessions that always run together and share a teacher belong to one block
+  const slotsOf = {}; for (const s of n.combined) slotsOf[s.name] = new Set();
+  for (const c of n.classes || []) for (const d of n.days || []) (n.grid?.[c]?.[d] || []).forEach((sl, p) => { if (sl && sl[0] && slotsOf[sl[0]]) slotsOf[sl[0]].add(d + "|" + p); });
+  const same = (a, b) => a.size > 0 && a.size === b.size && [...a].every((x) => b.has(x));
+  for (let loop = 0; loop < 5; loop++) {
+    let moved = false;
+    for (const a of n.combined) for (const b of n.combined) {
+      if (a === b || combGroupOf(a) === combGroupOf(b)) continue;
+      if (!a.teachers.some((t) => b.teachers.includes(t)) || !same(slotsOf[a.name], slotsOf[b.name])) continue;
+      const g = a.group || b.group || stdBlockName(a);
+      for (const x of n.combined) if (x === a || x === b || (x.group && (x.group === a.group || x.group === b.group))) x.group = g;
+      a.group = g; b.group = g; moved = true; changed++;
+    }
+    if (!moved) break;
+  }
+  return changed;
+}
+
 /* ---------------- Timetable import ---------------- */
 function parseDelimited(text) {
   const lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
@@ -2602,7 +2716,10 @@ function parseTimetableImport(cfg, rows) {
     else if (parts[0] === null) { tea = parts[1]; }
     else if (sMap[String(parts[0]).toUpperCase()] || !sMap[String(parts[parts.length - 1]).toUpperCase()]) { sub = parts[0]; tea = parts.slice(1).join(" "); }
     else { sub = parts[parts.length - 1]; tea = parts.slice(0, -1).join(" "); }
-    const T = tea ? resolveTeacher(tea, cls) : null;
+    const subGuess = sub ? String(sub).trim().toUpperCase() : null;
+    const multi = tea && String(tea).trim().split(/[\s,+&]+/).filter(Boolean).length > 1;
+    const sessHit = multi && subGuess ? (cfg.combined || []).find((x) => x.divisions.includes(cls) && String(x.sub).toUpperCase() === subGuess) : null;
+    const T = sessHit ? { code: sessHit.name, sub: sessHit.sub } : tea ? resolveTeacher(tea, cls) : null;
     let S = sub ? resolveSub(sub) : (T && T.sub) || null;
     if (!S && T) { const row = (cfg.bkey[cls] || []).find((r) => r.teacher === T.code); S = row ? row.sub : null; }
     if (!S && !T) return null;
@@ -2612,7 +2729,7 @@ function parseTimetableImport(cfg, rows) {
     const day = impDay(dayRaw); if (!day) { if (String(dayRaw).trim()) out.badDays.add(String(dayRaw).trim()); out.skipped++; return; }
     if (!(p >= 1)) { out.skipped++; return; }
     const cls = resolveClass(clsRaw);
-    const r = teacherRaw === undefined ? parseCell(cellOrSub, cls) : (() => { const T = resolveTeacher(teacherRaw, cls); const S = cellOrSub ? resolveSub(cellOrSub) : (T && T.sub) || null; if (!S && !T) return null; return { code: T ? T.code : S, sub: S || "" }; })();
+    const r = teacherRaw === undefined ? parseCell(cellOrSub, cls) : (() => { const su = String(cellOrSub || "").trim().toUpperCase(); const multi = String(teacherRaw || "").trim().split(/[\s,+&]+/).filter(Boolean).length > 1; const hit = multi && su ? (cfg.combined || []).find((x) => x.divisions.includes(cls) && String(x.sub).toUpperCase() === su) : null; const T = hit ? { code: hit.name, sub: hit.sub } : resolveTeacher(teacherRaw, cls); const S = cellOrSub ? resolveSub(cellOrSub) : (T && T.sub) || null; if (!S && !T) return null; return { code: T ? T.code : S, sub: S || "" }; })();
     if (!r) return;
     out.maxP = Math.max(out.maxP, p);
     if (!cfg.days.includes(day)) { out.badDays.add(day); out.skipped++; return; }
@@ -2644,6 +2761,7 @@ function applyTimetableImport(n, parsed, o) {
     const rows = n.bkey[e.cls] || (n.bkey[e.cls] = []);
     if (!rows.some((r) => r.sub === e.sub && r.teacher === e.code)) { const blank = rows.find((r) => r.sub === e.sub && !r.teacher); if (blank) blank.teacher = e.code; else rows.push({ sub: e.sub, teacher: e.code }); }
   }
+  relinkCombined(n);
   return { placed, classes: touched.size };
 }
 
@@ -2991,6 +3109,105 @@ function TeacherFreeReport({ cfg }) {
 }
 
 /* ---------------- Classes & setup ---------------- */
+/* ---------------- Classes, class teachers & teachers import ---------------- */
+function parseClassTeacherImport(cfg, rows) {
+  const out = { classes: [], teachers: [], newClasses: [], newTeachers: [], ctTwice: [], ctReplaced: [], error: "" };
+  const hi = rows.findIndex((r) => r.some((x) => /class|teacher|staff/i.test(x)));
+  if (hi < 0) { out.error = "No header row found. The first row must be: Class, Class Teacher, Teacher"; return out; }
+  const h = rows[hi].map((x) => x.toLowerCase().replace(/[\s_.-]+/g, " ").trim());
+  const ci = h.findIndex((x) => /^(class|div|division|class (and|&) div|class div)$/.test(x));
+  const cti = h.findIndex((x) => /^(class teacher|ct|class tr|teacher in charge|cls teacher)$/.test(x));
+  const ti = h.findIndex((x, k) => k !== cti && /^(teachers?|staff|tr|teacher code|code|name)$/.test(x));
+  if (ci < 0 && ti < 0) { out.error = "Couldn't find a Class column or a Teacher column in the header."; return out; }
+  const clsMap = {}; cfg.classes.forEach((c) => (clsMap[impKey(c)] = c));
+  const tSet = new Set(cfg.singles.map((t) => t.toUpperCase()));
+  const tCase = {}; cfg.singles.forEach((t) => (tCase[t.toUpperCase()] = t));
+  const seenT = new Set(), seenC = new Set(), ctOf = {};
+  const addT = (raw) => { const U = String(raw || "").trim().toUpperCase(); if (!U || seenT.has(U)) return U ? tCase[U] || U : null; seenT.add(U); const t = tCase[U] || U; out.teachers.push(t); if (!tSet.has(U)) out.newTeachers.push(t); return t; };
+  for (const r of rows.slice(hi + 1)) {
+    if (ti >= 0 && r[ti]) String(r[ti]).split(/[;,/|]+/).forEach((x) => addT(x));
+    if (ci < 0 || !r[ci]) continue;
+    const k = impKey(r[ci]); if (!k || seenC.has(k)) continue; seenC.add(k);
+    const cls = clsMap[k] || impClassName(r[ci]);
+    if (!clsMap[k]) out.newClasses.push(cls);
+    const ct = cti >= 0 && r[cti] ? addT(r[cti]) : null;
+    out.classes.push({ cls, ct });
+    if (ct) { (ctOf[ct] ||= []).push(cls); const cur = cfg.classTeacher[cls]; if (cur && cur !== ct) out.ctReplaced.push(`${cls}: ${cur} → ${ct}`); }
+  }
+  out.ctTwice = Object.entries(ctOf).filter(([, cs]) => cs.length > 1).map(([t, cs]) => `${t} (${cs.join(", ")})`);
+  return out;
+}
+
+function applyClassTeacherImport(n, parsed) {
+  for (const t of parsed.newTeachers) if (!n.singles.includes(t)) n.singles.push(t);
+  n.singles.sort();
+  for (const { cls, ct } of parsed.classes) {
+    if (!n.classes.includes(cls)) {
+      n.classes.push(cls); n.classTeacher[cls] = null;
+      n.grid[cls] = {}; n.days.forEach((d) => (n.grid[cls][d] = emptyDay(n.periods.length)));
+      const s = stdOf(cls);
+      if (!n.stdPeriods[s]) { const prior = Object.keys(n.stdPeriods).sort(); n.stdPeriods[s] = prior.length ? clone(n.stdPeriods[prior[prior.length - 1]]) : {}; }
+    }
+    if (ct) { for (const c of Object.keys(n.classTeacher)) if (c !== cls && n.classTeacher[c] === ct) n.classTeacher[c] = null; n.classTeacher[cls] = ct; }
+  }
+}
+
+function exportClassTeacherCSV(cfg) {
+  const L = ["Class,Class Teacher,Teacher"];
+  const n = Math.max(cfg.classes.length, cfg.singles.length);
+  for (let i = 0; i < n; i++) { const c = cfg.classes[i] || ""; L.push([c, c ? cfg.classTeacher[c] || "" : "", cfg.singles[i] || ""].join(",")); }
+  const blob = new Blob([L.join("\n") + "\n"], { type: "text/csv" });
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "classes_and_teachers.csv"; a.click();
+}
+
+function ClassTeacherImport({ cfg, update, ask }) {
+  const [text, setText] = useState("");
+  const [parsed, setParsed] = useState(null);
+  const [done, setDone] = useState("");
+  const fileRef = useRef(null);
+  const read = (t) => { setDone(""); const s = String(t || "").trim(); if (!s) { setParsed(null); return; } setParsed(parseClassTeacherImport(cfg, parseDelimited(s))); };
+  const onFile = async (f) => { if (!f) return; if (/\.xlsx?$/i.test(f.name)) { setParsed({ error: "Excel files: select the cells in Excel, copy, and paste them in the box — or save the sheet as CSV." }); return; } const t = await f.text(); setText(t); read(t); };
+  const apply = () => ask(`Import ${parsed.classes.length} class(es) and ${parsed.teachers.length} teacher(s)? New ones are added; existing classes keep their mapping and timetable${parsed.ctReplaced.length ? `, and ${parsed.ctReplaced.length} class teacher(s) change` : ""}.`, () => {
+    update((n) => applyClassTeacherImport(n, parsed));
+    setDone(`Imported: ${parsed.newClasses.length} new class(es), ${parsed.newTeachers.length} new teacher(s), ${parsed.classes.filter((x) => x.ct).length} class teacher(s) set.`);
+    setParsed(null); setText("");
+  });
+  return (
+    <div style={{ ...card, marginBottom: 16 }}>
+      <Panelhead text="Import classes, class teachers & teachers (CSV)" />
+      <div style={{ padding: 14, display: "grid", gap: 10 }}>
+        <div style={{ fontSize: 12.5, color: C.sub, lineHeight: 1.6 }}>
+          Columns: <code style={{ fontFamily: mono }}>Class, Class Teacher, Teacher</code>. Each row can have a class with its class teacher, a teacher code, or both — the Teacher column is just the list of all teachers, it doesn't have to line up with the classes. Paste cells copied from Excel / Google Sheets, or choose a CSV file.
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <input ref={fileRef} type="file" accept=".csv,.tsv,.txt,.xlsx,.xls" style={{ display: "none" }} onChange={(e) => { onFile(e.target.files && e.target.files[0]); e.target.value = ""; }} />
+          <button className="tt-btn" onClick={() => fileRef.current && fileRef.current.click()} style={ghostBtn}>Choose file…</button>
+          <button className="tt-btn" onClick={() => exportClassTeacherCSV(cfg)} style={ghostBtn}>Download current list (CSV template)</button>
+        </div>
+        <textarea className="tt-in" value={text} onChange={(e) => setText(e.target.value)} placeholder={"Class,Class Teacher,Teacher\n5 A,MFK,MFK\n5 B,KPH,KPH\n5 C,KPM,DN\n,,ITT"} style={{ width: "100%", minHeight: 100, fontFamily: mono, resize: "vertical" }} />
+        <div><button className="tt-btn" onClick={() => read(text)} style={solidBtn} disabled={!text.trim()}>Read & check</button></div>
+        {done && <Banner tone="primary">{done}</Banner>}
+        {parsed && parsed.error && <Banner tone="warn">{parsed.error}</Banner>}
+        {parsed && !parsed.error && (
+          <div style={{ border: `1px solid ${C.line}`, borderRadius: 10, padding: 12, display: "grid", gap: 6, fontSize: 12.5, lineHeight: 1.6 }}>
+            <div><b>{parsed.classes.length}</b> class(es) · <b>{parsed.classes.filter((x) => x.ct).length}</b> with a class teacher · <b>{parsed.teachers.length}</b> teacher(s)</div>
+            {parsed.newClasses.length > 0 && <div>New classes: <b style={{ fontFamily: mono }}>{parsed.newClasses.sort(cmpClass).join(", ")}</b></div>}
+            {parsed.newTeachers.length > 0 && <div>New teachers: <b style={{ fontFamily: mono }}>{parsed.newTeachers.join(", ")}</b></div>}
+            {parsed.ctReplaced.length > 0 && <div style={{ color: C.warn }}>Class teacher changes: <span style={{ fontFamily: mono }}>{parsed.ctReplaced.join("; ")}</span></div>}
+            {parsed.ctTwice.length > 0 && <div style={{ color: C.clash }}>Class teacher of more than one class (only the last one is kept): <b style={{ fontFamily: mono }}>{parsed.ctTwice.join("; ")}</b></div>}
+            {!parsed.newClasses.length && !parsed.newTeachers.length && !parsed.ctReplaced.length && <div style={{ color: C.free }}>Everything already matches the app — nothing new to add.</div>}
+            <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+              <button className="tt-btn" onClick={apply} style={solidBtn}>Import</button>
+              <button className="tt-btn" onClick={() => setParsed(null)} style={ghostBtn}>Cancel</button>
+            </div>
+            <div style={{ fontSize: 11.5, color: C.sub }}>Nothing is removed: classes and teachers not in the file stay. New classes start with an empty timetable; set their subjects in Mapping.</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function TeacherAvailability({ cfg, update }) {
   const [q, setQ] = useState("");
   const TD = cfg.teacherDays || {};
@@ -3116,6 +3333,7 @@ function SetupView({ cfg, update, ask, mobile }) {
         </div>
       </div>
 
+      <ClassTeacherImport cfg={cfg} update={update} ask={ask} />
       <TeacherAvailability cfg={cfg} update={update} />
 
       <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "minmax(0,1.2fr) minmax(0,1fr)", gap: 16, alignItems: "start" }}>
