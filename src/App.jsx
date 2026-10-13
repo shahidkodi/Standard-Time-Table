@@ -12,7 +12,7 @@ import { supabase } from "./supabaseClient";
    ============================================================ */
 
 const STORE_KEY = "tt_cfg_v2";
-const APP_VERSION = "2026-10-13 b";
+const APP_VERSION = "2026-10-13 e";
 
 const WEEK_ORDER = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const DAY_FULL = { MON: "Monday", TUE: "Tuesday", WED: "Wednesday", THU: "Thursday", FRI: "Friday", SAT: "Saturday", SUN: "Sunday" };
@@ -44,6 +44,7 @@ const THEMES = {
   slate:   { name: "Slate",   bg: "#eceef2", g1: "#475569", g2: "#1e293b", accent: "#475569" },
   rose:    { name: "Rose",    bg: "#f7eef1", g1: "#e11d63", g2: "#9d174d", accent: "#e11d63" },
 };
+var CUR_TH = null, CUR_VIEW = "classes", SCHOOL_NAME = "";
 
 const TABS = [
   ["classes", "Class timetables"], ["teachers", "Teacher timetables"], ["free", "Free & substitution"],
@@ -703,6 +704,13 @@ export default function App() {
     return out;
   }, [occupancy, cfg]);
   const [showClashes, setShowClashes] = useState(false);
+  useEffect(() => {
+    const href = cfg && cfg.logoIcon; if (!href) return;
+    try {
+      const set = (rel, type) => { let l = document.querySelector(`link[rel='${rel}']`); if (!l) { l = document.createElement("link"); l.rel = rel; document.head.appendChild(l); } if (type) l.type = type; l.href = href; };
+      set("icon", "image/png"); set("apple-touch-icon");
+    } catch (e) { /* ignore */ }
+  }, [cfg && cfg.logoIcon]);
   const [fixMsg, setFixMsg] = useState("");
   const doFixAll = () => ask("Fix all clashes? The periods that collide are taken out and placed again at free times. Locked slots, rules and everything else stay as they are.", () => {
     setFixMsg("Fixing…");
@@ -738,12 +746,36 @@ export default function App() {
     return t;
   }, [cfg, combinedByBase]);
 
+  const tabStatus = useMemo(() => {
+    if (!cfg) return {};
+    const cov = combCover(cfg);
+    const mapped = cfg.classes.filter((c) => { const rows = cfg.bkey[c] || []; return rows.length > 0 && rows.every((r) => r.sub && (r.teacher || (cov[c + "|" + r.sub] || 0) >= periodsFor(cfg, c, r.sub))); }).length;
+    let f = 0, tot = 0; for (const c of cfg.classes) { const lim = classPeriods(cfg, c); for (const d of cfg.days) for (let p = 0; p < lim; p++) { tot++; if (cfg.grid?.[c]?.[d]?.[p]?.[0]) f++; } }
+    const pct = tot ? Math.floor((f * 100) / tot) : 0;
+    let freeTot = 0; for (const t of cfg.singles) freeTot += Math.max(0, teacherCap(cfg, t) - ((teacherLoad[t] || {}).placed || 0));
+    const nRules = Object.values(cfg.rules || {}).filter((r) => r && (r.pin || r.forbid || r.band || r.distinct)).length + Object.keys(cfg.classRules || {}).length + (cfg.commonPeriods || []).length + Object.keys(cfg.teacherDays || {}).filter((k) => (cfg.teacherDays[k] || []).length).length;
+    const pl = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+    return {
+      classes: { text: pl(cfg.classes.length, "class").replace("classs", "classes"), tone: cfg.classes.length ? "info" : "warn" },
+      teachers: { text: pl(cfg.singles.length, "teacher"), tone: cfg.singles.length ? "info" : "warn" },
+      free: { text: `${freeTot} free / week`, tone: "info" },
+      bkey: { text: `${mapped} / ${cfg.classes.length} mapped`, tone: cfg.classes.length && mapped === cfg.classes.length ? "ok" : "warn" },
+      edit: { text: tot ? `${pct}% filled` : "empty", tone: tot && f === tot ? "ok" : "warn" },
+      rules: { text: nRules ? pl(nRules, "rule") + " set" : "no rules", tone: "info" },
+      combined: { text: pl((cfg.combined || []).length, "session"), tone: "info" },
+      analysis: { text: totalClashes ? pl(totalClashes, "clash").replace("clashs", "clashes") : "no clashes", tone: totalClashes ? "bad" : "ok" },
+      export: { text: "PDF · CSV", tone: "info" },
+      assistant: { text: "ask for help", tone: "info" },
+      setup: { text: `${cfg.days.length} days · ${cfg.periods.length} periods`, tone: "info" },
+    };
+  }, [cfg, teacherLoad, totalClashes]);
   if (!cfg) return <div style={{ padding: 40, fontFamily: sans, color: C.sub }}>Loading timetable…</div>;
   // guard: selected items may have been removed
   const safeCls = cfg.classes.includes(cls) ? cls : cfg.classes[0];
   const safeTch = cfg.singles.includes(tch) ? tch : cfg.singles[0];
   const safeFday = cfg.days.includes(fday) ? fday : cfg.days[0];
 
+  SCHOOL_LOGO = cfg.logo || ""; SCHOOL_WM = cfg.wmPdf !== false; SCHOOL_NAME = cfg.school || ""; CUR_TH = TH; CUR_VIEW = view;
   const ctx = { cfg, update, expand, occupancy, clashTokens, teacherLoad, ask, askPw, isCombined, combinedByBase, mobile };
 
   return (
@@ -757,6 +789,14 @@ export default function App() {
         button.tt-btn{cursor:pointer;font-family:${sans};transition:transform .08s,box-shadow .12s,background .12s,color .12s}
         button.tt-btn:active{transform:translateY(1px)}
         .tt-tab{cursor:pointer;transition:background .14s,color .14s}
+        .tt-note{position:relative;padding:10px 16px 10px 42px!important;font-size:12.5px!important;line-height:1.6!important;color:#4b5870!important;background:linear-gradient(90deg, ${TH.accent}10, rgba(255,255,255,0) 75%);border-top:1px solid ${C.line}}
+        .tt-note::before{content:"i";position:absolute;left:16px;top:11px;width:17px;height:17px;border-radius:50%;background:${TH.accent};color:#fff;font:italic 700 11px/17px Georgia,serif;text-align:center}
+        .tt-callout{position:relative;margin:0;padding:10px 14px 10px 40px;font-size:12.5px;line-height:1.6;color:#44516a;background:linear-gradient(90deg, ${TH.accent}12, ${TH.accent}05);border:1px solid ${TH.accent}26;border-left:4px solid ${TH.accent};border-radius:10px}
+        .tt-callout::before{content:"i";position:absolute;left:13px;top:11px;width:17px;height:17px;border-radius:50%;background:${TH.accent};color:#fff;font:italic 700 11px/17px Georgia,serif;text-align:center}
+        .tt-callout b,.tt-note b{color:#16213a}
+        .tt-printbtn:hover{filter:brightness(1.06);box-shadow:0 6px 16px ${TH.accent}55!important}
+        .tt-navcard{transition:transform .12s,box-shadow .14s,border-color .14s,background .14s}
+        .tt-navcard:hover{transform:translateY(-1px);border-color:${TH.accent}88!important}
         .tt-list::-webkit-scrollbar,.tt-scroll::-webkit-scrollbar{width:9px;height:9px}
         .tt-list::-webkit-scrollbar-thumb,.tt-scroll::-webkit-scrollbar-thumb{background:#d3d9e2;border-radius:5px;border:2px solid transparent;background-clip:padding-box}
         .tt-row:hover td{background:#f8fafb}
@@ -764,12 +804,12 @@ export default function App() {
         @keyframes ttfade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
         .tt-fade{animation:ttfade .25s ease}
         @keyframes ttslide{from{transform:translateX(-100%)}to{transform:none}}
-        @media print{.tt-noprint{display:none!important}.tt-printarea{box-shadow:none!important;border:none!important}body{background:#fff!important}.tt-printtitle{display:block!important}}
+        @media print{.tt-noprint{display:none!important}.tt-printarea{box-shadow:none!important;border:none!important}body{background:#fff!important}.tt-printtitle{display:block!important}.tt-printhead{display:flex!important}.tt-vh{box-shadow:none!important;background:#fff!important}}
       `}</style>
 
       <header className="tt-noprint" style={{ background: `linear-gradient(115deg, ${TH.g2}, ${TH.g1})`, color: "#fff", padding: mobile ? "12px 14px" : "15px 22px", display: "flex", alignItems: "center", gap: mobile ? 10 : 16, position: "sticky", top: 0, zIndex: 30, flexWrap: "wrap", boxShadow: "0 2px 14px rgba(10,79,85,.25)" }}>
         <button className="tt-btn" onClick={() => setMenuOpen(true)} aria-label="Menu" style={{ border: "1px solid rgba(255,255,255,.28)", background: "rgba(255,255,255,.14)", color: "#fff", width: 40, height: 40, borderRadius: 10, fontSize: 20, lineHeight: 1, display: "grid", placeItems: "center", flexShrink: 0 }}>☰</button>
-        <div style={{ width: 40, height: 40, borderRadius: 11, background: "rgba(255,255,255,.16)", border: "1px solid rgba(255,255,255,.25)", color: "#fff", display: "grid", placeItems: "center", fontWeight: 800, fontSize: 16, letterSpacing: -0.5 }}>TT</div>
+        {cfg.logo ? <div style={{ width: mobile ? 40 : 46, height: mobile ? 40 : 46, borderRadius: 12, background: "#fff", display: "grid", placeItems: "center", padding: 3, boxShadow: "0 2px 10px rgba(0,0,0,.22)", flexShrink: 0 }}><img src={cfg.logo} alt="School logo" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} /></div> : <div style={{ width: 40, height: 40, borderRadius: 11, background: "rgba(255,255,255,.16)", border: "1px solid rgba(255,255,255,.25)", color: "#fff", display: "grid", placeItems: "center", fontWeight: 800, fontSize: 16, letterSpacing: -0.5 }}>TT</div>}
         <div style={{ marginRight: "auto" }}>
           <div style={{ fontSize: 16.5, fontWeight: 800, letterSpacing: -0.3 }}>TIME TABLE</div>
           {!mobile && <div style={{ fontSize: 12, color: "rgba(255,255,255,.8)", marginTop: 1, fontWeight: 500 }}>{cfg.school} · {cfg.classes.length} classes · {cfg.singles.length} teachers · {cfg.days.length} days</div>}
@@ -780,21 +820,13 @@ export default function App() {
         <button className="tt-btn" onClick={() => askPw("MASTER RESET  -  permanently delete EVERYTHING (all classes, teachers, subjects, mapping, combined subjects, rules, standard periods, and the whole timetable) and start from a blank app? This cannot be undone.", () => update((n) => { n.classes = []; n.singles = []; n.subjects = []; n.combined = []; n.bkey = {}; n.classTeacher = {}; n.grid = {}; n.stdPeriods = {}; n.rules = {}; n.twice = {}; n.classRules = {}; n.locked = {}; n.commonPeriods = []; n.teacherDays = {}; }))} style={{ ...headerBtn, border: "1px solid rgba(255,255,255,.5)", background: "rgba(214,69,69,.35)" }}>Master reset</button>
       </header>
 
-      {!mobile && <nav className="tt-noprint tt-scroll" style={{ display: "flex", gap: 4, padding: "11px 18px", background: C.surface, borderBottom: `1px solid ${C.line}`, overflowX: "auto" }}>
-        {TABS.map(([k, label]) => (
-          <div key={k} className="tt-tab" onClick={() => setView(k)} style={{
-            padding: "8px 15px", fontSize: 13, fontWeight: 600, borderRadius: 9, whiteSpace: "nowrap",
-            color: view === k ? "#fff" : C.sub, background: view === k ? TH.accent : "transparent",
-          }}><span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><Icon name={k} size={15} />{label}</span></div>
-        ))}
-      </nav>}
-
-      {mobile && (
-        <div className="tt-noprint" style={{ padding: "9px 14px", background: C.surface, borderBottom: `1px solid ${C.line}`, fontSize: 13.5, fontWeight: 700, color: TH.accent }}>
-          <span style={{ color: C.sub, fontWeight: 600 }}>Section: </span>{(TABS.find((t) => t[0] === view) || ["", ""])[1]}
-        </div>
-      )}
-      <NavDrawer open={menuOpen} onClose={() => setMenuOpen(false)} view={view} setView={setView} TH={TH} school={cfg.school} theme={theme} setTheme={persistTheme} onSignOut={handleSignOut} />
+      <NavTabs view={view} setView={setView} status={tabStatus} TH={TH} mobile={mobile} />
+      <NavDrawer open={menuOpen} onClose={() => setMenuOpen(false)} view={view} setView={setView} TH={TH} school={cfg.school} logo={cfg.logo} status={tabStatus} theme={theme} setTheme={persistTheme} onSignOut={handleSignOut} />
+      <div className="tt-printhead" style={{ display: "none", alignItems: "center", gap: 12, borderBottom: `3px solid ${TH.g1}`, padding: "0 0 8px", margin: "0 0 10px" }}>
+        {cfg.logo && <img src={cfg.logo} alt="" style={{ height: 52, width: 52, objectFit: "contain" }} />}
+        <div><div style={{ fontSize: 19, fontWeight: 800, color: TH.g2, textTransform: "uppercase", letterSpacing: 0.6 }}>{cfg.school}</div><div style={{ fontSize: 11, fontWeight: 800, color: C.accent, letterSpacing: 2.2, textTransform: "uppercase" }}>{(TABS.find((t) => t[0] === view) || ["", ""])[1]}</div></div>
+        <div style={{ marginLeft: "auto", fontSize: 11, color: C.sub }}>Printed {new Date().toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" })}</div>
+      </div>
       <main style={{ display: "flex", alignItems: "flex-start", flexDirection: mobile ? "column" : "row" }}>
         {!mobile && (view === "classes" || view === "edit" || view === "bkey") && (
           <Sidebar title="Classes" items={cfg.classes} sel={safeCls} onSel={setCls} sub={(x) => "CT " + (cfg.classTeacher[x] || "—")} />
@@ -816,6 +848,7 @@ export default function App() {
           {view === "setup" && <SetupView {...ctx} />}
         </section>
       </main>
+      {cfg.logo && cfg.wmApp !== false && <div aria-hidden="true" className="tt-noprint" style={{ position: "fixed", inset: 0, pointerEvents: "none", zIndex: 5, backgroundImage: `url(${cfg.logo})`, backgroundRepeat: "no-repeat", backgroundPosition: "center 60%", backgroundSize: mobile ? "72vw" : "min(40vw, 440px)", opacity: 0.05 }} />}
       {showClashes && <ClashListModal list={clashList} onFix={doFixAll} fixMsg={fixMsg} onClose={() => { setShowClashes(false); setFixMsg(""); }} onOpen={(x) => { setShowClashes(false); if (x.kind === "blocks") setView("combined"); else { if (x.cls) setCls(x.cls); setView("edit"); } }} />}
       {pwState && <PwModal msg={pwState.msg} pwHash={cfg.adminPw} onSetPw={(h) => update((n) => { n.adminPw = h; })} onCancel={() => setPwState(null)} onDone={() => { const f = pwState.onYes; setPwState(null); f(); }} />}
       {confirmState && <ConfirmModal msg={confirmState.msg} onYes={() => { confirmState.onYes(); setConfirmState(null); }} onNo={() => setConfirmState(null)} />}
@@ -965,22 +998,59 @@ function Icon({ name, size = 16 }) {
   );
 }
 
-function ViewHeader({ title, note, right }) {
+function ViewHeader({ title, note, right, meta, icon }) {
+  const th = CUR_TH || THEMES.teal, ic = icon || CUR_VIEW;
   return (
-    <div style={{ display: "flex", alignItems: "flex-end", marginBottom: 14, gap: 14, flexWrap: "wrap" }}>
-      <div>
-        <h1 style={{ margin: 0, fontSize: 21, fontWeight: 700, letterSpacing: -0.4 }}>{title}</h1>
-        {note && <div style={{ fontSize: 13, color: C.sub, marginTop: 3 }}>{note}</div>}
+    <div className="tt-vh" style={{ position: "relative", display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap", marginBottom: 16, padding: "16px 18px 16px 22px", borderRadius: 16, background: `linear-gradient(118deg, #ffffff 52%, ${th.accent}14)`, border: `1px solid ${C.line}`, boxShadow: C.shadow, overflow: "hidden" }}>
+      <span aria-hidden="true" style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 5, background: `linear-gradient(180deg, ${th.g1}, ${th.g2})` }} />
+      <span aria-hidden="true" className="tt-noprint" style={{ width: 48, height: 48, borderRadius: 14, display: "grid", placeItems: "center", background: `linear-gradient(135deg, ${th.g1}, ${th.g2})`, color: "#fff", boxShadow: `0 6px 14px ${th.accent}40`, flexShrink: 0 }}><Icon name={ic} size={22} /></span>
+      <div style={{ minWidth: 0, flex: "1 1 260px" }}>
+        {SCHOOL_NAME && <div style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: 1.6, textTransform: "uppercase", color: th.accent, marginBottom: 2 }}>{SCHOOL_NAME}</div>}
+        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 800, letterSpacing: -0.4, color: C.ink, lineHeight: 1.2 }}>{title}</h1>
+        {note && <div style={{ fontSize: 13, color: C.sub, marginTop: 5, lineHeight: 1.55, maxWidth: 860 }}>{note}</div>}
+        {meta && meta.length > 0 && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 9 }}>
+            {meta.map(([k, v, tone], i) => (
+              <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, padding: "3px 10px", borderRadius: 20, background: tone === "ok" ? C.freeSoft : tone === "warn" ? C.warnSoft : "#fff", border: `1px solid ${tone === "ok" ? "#bfe6cf" : tone === "warn" ? "#f0dcae" : C.line}` }}>
+                <span style={{ color: C.sub, fontWeight: 600 }}>{k}</span>
+                <b style={{ color: tone === "ok" ? C.free : tone === "warn" ? C.warn : C.ink, fontFamily: mono }}>{v}</b>
+              </span>
+            ))}
+          </div>
+        )}
       </div>
-      <div className="tt-noprint" style={{ marginLeft: "auto", display: "flex", gap: 8 }}>{right}</div>
+      {right && <div className="tt-noprint" style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>{right}</div>}
     </div>
   );
 }
-function Panelhead({ text, count, tone }) {
+const PB_ICON = {
+  print: "M6 9V3h12v6M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2M6 14h12v7H6z",
+  pdf: "M14 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V8zM14 3v5h5M9 13h6M9 17h4",
+  download: "M12 3v12M7 10l5 5 5-5M5 21h14",
+};
+function PrintBtn({ onClick, label = "Print / PDF", sub, icon = "print", light }) {
+  const th = CUR_TH || THEMES.teal;
   return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "11px 14px", borderBottom: `1px solid ${C.line}` }}>
-      <span style={{ fontSize: 13, fontWeight: 700 }}>{text}</span>
-      {count != null && <span style={{ fontSize: 12, fontWeight: 700, padding: "2px 9px", borderRadius: 20, background: tone === "free" ? C.freeSoft : C.primarySoft, color: tone === "free" ? C.free : C.primary }}>{count}</span>}
+    <button className="tt-btn tt-printbtn" onClick={onClick} style={{ display: "inline-flex", alignItems: "center", gap: 10, cursor: "pointer", padding: "7px 15px 7px 8px", borderRadius: 12, textAlign: "left", fontSize: 13, fontWeight: 700,
+      border: light ? `1.5px solid ${th.accent}55` : "none", color: light ? th.g2 : "#fff", background: light ? "#fff" : `linear-gradient(135deg, ${th.g1}, ${th.g2})`, boxShadow: light ? "0 1px 3px rgba(22,33,58,.08)" : `0 4px 12px ${th.accent}45` }}>
+      <span style={{ width: 30, height: 30, borderRadius: 9, flexShrink: 0, display: "grid", placeItems: "center", background: light ? `${th.accent}14` : "rgba(255,255,255,.18)" }}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d={PB_ICON[icon] || PB_ICON.print} /></svg>
+      </span>
+      <span>
+        <span style={{ display: "block", lineHeight: 1.2 }}>{label}</span>
+        {sub && <span style={{ display: "block", fontSize: 10.5, fontWeight: 600, opacity: 0.8, marginTop: 1 }}>{sub}</span>}
+      </span>
+    </button>
+  );
+}
+function Panelhead({ text, count, tone }) {
+  const th = CUR_TH || THEMES.teal;
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "12px 16px", borderBottom: `1px solid ${C.line}`, background: "linear-gradient(180deg, #fbfcfd, #f4f6f9)" }}>
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 9, fontSize: 13.5, fontWeight: 800, color: C.ink, letterSpacing: -0.1 }}>
+        <span aria-hidden="true" style={{ width: 4, height: 16, borderRadius: 3, background: `linear-gradient(180deg, ${th.g1}, ${th.g2})`, flexShrink: 0 }} />{text}
+      </span>
+      {count != null && <span style={{ fontSize: 11.5, fontWeight: 700, padding: "2px 10px", borderRadius: 20, whiteSpace: "nowrap", background: tone === "free" ? C.freeSoft : `${th.accent}14`, color: tone === "free" ? C.free : th.accent }}>{count}</span>}
     </div>
   );
 }
@@ -1000,11 +1070,13 @@ function Seg({ label, options, val, onChange }) {
 /* ---------------- Class timetable ---------------- */
 function ClassView({ cfg, cls, expand, clashTokens, combinedByBase }) {
   const ct = cfg.classTeacher[cls];
+  let nPer = 0; const subs = new Set();
+  for (const d of cfg.days) for (const sl of cfg.grid[cls]?.[d] || []) if (sl && sl[0]) { nPer++; subs.add(sl[1]); }
+  const nSub = subs.size;
   return (
     <div>
-      <ViewHeader title={`Class ${cls}`} note={`Class teacher: ${ct || "—"}`} right={<button className="tt-btn" onClick={printNow} style={ghostBtn}>Print / PDF</button>} />
+      <ViewHeader title={`Class ${cls}`} meta={[["Class teacher", ct || "—"], ["Periods / week", nPer], ["Subjects", nSub]]} right={<PrintBtn onClick={() => exportClassesPDF(cfg, "A4", [cls])} sub="A4 landscape · with letterhead" />} />
       <div className="tt-printarea" style={card}>
-        <div className="tt-printtitle" style={{ display: "none", fontWeight: 700, fontSize: 15, padding: "10px 12px" }}>{cfg.school} · Class {cls} · Class teacher {ct || "—"}</div>
         <GridTable cfg={cfg} render={(d, pi) => {
           if (pi >= classPeriods(cfg, cls)) return { bg: "#eef0f3" };
           const [t, s] = cfg.grid[cls][d][pi];
@@ -1032,9 +1104,8 @@ function TeacherView({ cfg, tch, occupancy, teacherLoad, combinedByBase }) {
   const freeCount = teacherCap(cfg, tch) - placed;
   return (
     <div>
-      <ViewHeader title={`Teacher ${tch}`} note={`${placed} periods placed · ${freeCount} free · mapping target ${ld.target}`} right={<button className="tt-btn" onClick={printNow} style={ghostBtn}>Print / PDF</button>} />
+      <ViewHeader title={`Teacher ${tch}`} meta={[["Placed", placed], ["Free", freeCount, "ok"], ["Mapping target", ld.target, ld.target > placed ? "warn" : undefined]]} right={<PrintBtn onClick={() => exportTeachersPDF(cfg, "A4", [tch])} sub="A4 landscape · with letterhead" />} />
       <div className="tt-printarea" style={card}>
-        <div className="tt-printtitle" style={{ display: "none", fontWeight: 700, fontSize: 15, padding: "10px 12px" }}>{cfg.school} · Teacher {tch}</div>
         <GridTable cfg={cfg} render={(d, pi) => {
           const r = lookup(d, pi);
           if (!r) return { free: true, bg: C.freeSoft };
@@ -1060,22 +1131,163 @@ function MobilePicker({ label, items, value, onChange }) {
   );
 }
 
-function NavDrawer({ open, onClose, view, setView, TH, school, theme, setTheme, onSignOut }) {
+function tabTone(tone, TH) {
+  if (tone === "ok") return { bg: C.freeSoft, fg: C.free };
+  if (tone === "warn") return { bg: C.warnSoft, fg: C.warn };
+  if (tone === "bad") return { bg: C.clashSoft, fg: C.clash };
+  return { bg: `${TH.accent}14`, fg: TH.accent };
+}
+function NavTabs({ view, setView, status, TH, mobile }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!mobile || !ref.current) return;
+    try { const el = ref.current.querySelector("[aria-selected='true']"); if (el) ref.current.scrollTo({ left: Math.max(0, el.offsetLeft - 14), behavior: "smooth" }); } catch (e) { /* ignore */ }
+  }, [view, mobile]);
+  return (
+    <nav ref={ref} role="tablist" className="tt-noprint tt-scroll" style={mobile
+      ? { display: "flex", gap: 8, padding: "10px 12px", background: C.surface, borderBottom: `1px solid ${C.line}`, overflowX: "auto", WebkitOverflowScrolling: "touch" }
+      : { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(176px, 1fr))", gap: 10, padding: "14px 18px", background: C.surface, borderBottom: `1px solid ${C.line}` }}>
+      {TABS.map(([k, label]) => {
+        const on = view === k, st = status[k] || {}, tn = tabTone(st.tone, TH);
+        return (
+          <button key={k} role="tab" aria-selected={on} className="tt-btn tt-navcard" onClick={() => setView(k)} title={label}
+            style={{ textAlign: "left", display: "flex", alignItems: "center", gap: 10, padding: mobile ? "7px 10px" : "9px 11px", borderRadius: 13, cursor: "pointer", minWidth: mobile ? 158 : 0, flexShrink: 0,
+              border: `2px solid ${on ? TH.accent : C.line}`, background: on ? `${TH.accent}10` : "#fff", boxShadow: on ? `0 6px 16px ${TH.accent}2e` : "0 1px 2px rgba(22,33,58,.05)" }}>
+            <span style={{ flexShrink: 0, width: mobile ? 32 : 38, height: mobile ? 32 : 38, borderRadius: 11, display: "grid", placeItems: "center", background: on ? `linear-gradient(135deg, ${TH.g1}, ${TH.g2})` : "#f1f4f7", color: on ? "#fff" : TH.accent, boxShadow: on ? `0 3px 8px ${TH.accent}44` : "none" }}><Icon name={k} size={mobile ? 16 : 18} /></span>
+            <span style={{ minWidth: 0, display: "block" }}>
+              <span style={{ display: "block", fontSize: mobile ? 12.5 : 13.2, fontWeight: 800, color: on ? TH.g2 : C.ink, lineHeight: 1.2, whiteSpace: mobile ? "nowrap" : "normal" }}>{label}</span>
+              {st.text && <span style={{ display: "inline-block", marginTop: 4, fontSize: 10.5, fontWeight: 700, padding: "1px 8px", borderRadius: 20, background: tn.bg, color: tn.fg, whiteSpace: "nowrap", maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis" }}>{st.text}</span>}
+            </span>
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
+
+/* ---------------- School logo ---------------- */
+function logoBBox(img) {
+  const W = img.naturalWidth || img.width, H = img.naturalHeight || img.height;
+  const s = Math.min(1, 600 / Math.max(W, H)), w = Math.max(1, Math.round(W * s)), h = Math.max(1, Math.round(H * s));
+  const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+  const x = cv.getContext("2d"); x.drawImage(img, 0, 0, w, h);
+  let d; try { d = x.getImageData(0, 0, w, h).data; } catch (e) { return { sx: 0, sy: 0, sw: W, sh: H }; }
+  let x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (let yy = 0; yy < h; yy++) for (let xx = 0; xx < w; xx++) {
+    const i = (yy * w + xx) * 4;
+    if (d[i + 3] > 12 && !(d[i] > 246 && d[i + 1] > 246 && d[i + 2] > 246)) { if (xx < x0) x0 = xx; if (xx > x1) x1 = xx; if (yy < y0) y0 = yy; if (yy > y1) y1 = yy; }
+  }
+  if (x1 < 0) return { sx: 0, sy: 0, sw: W, sh: H };
+  return { sx: x0 / s, sy: y0 / s, sw: (x1 - x0 + 1) / s, sh: (y1 - y0 + 1) / s };
+}
+function logoCanvas(img, box, size, square, pad) {
+  const r = box.sw / box.sh;
+  const cv = document.createElement("canvas");
+  if (!square) {
+    const w = r >= 1 ? size : Math.round(size * r), h = r >= 1 ? Math.round(size / r) : size;
+    cv.width = w; cv.height = h;
+    const x = cv.getContext("2d"); x.imageSmoothingQuality = "high"; x.drawImage(img, box.sx, box.sy, box.sw, box.sh, 0, 0, w, h);
+    return cv;
+  }
+  cv.width = size; cv.height = size;
+  const x = cv.getContext("2d"); x.fillStyle = "#ffffff"; x.fillRect(0, 0, size, size);
+  const inner = size * (1 - 2 * pad), w = r >= 1 ? inner : inner * r, h = r >= 1 ? inner / r : inner;
+  x.imageSmoothingQuality = "high"; x.drawImage(img, box.sx, box.sy, box.sw, box.sh, (size - w) / 2, (size - h) / 2, w, h);
+  return cv;
+}
+function loadImg(src) { return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error("This image could not be read.")); i.src = src; }); }
+function downloadCanvas(cv, name) {
+  try {
+    const a = document.createElement("a"); a.href = cv.toDataURL("image/png"); a.download = name;
+    document.body.appendChild(a); a.click(); setTimeout(() => a.remove(), 200);
+  } catch (e) { alert("Couldn't download: " + ((e && e.message) || e)); }
+}
+function LogoCard({ cfg, update }) {
+  const [msg, setMsg] = useState(null);
+  const onFile = (e) => {
+    const f = e.target.files && e.target.files[0]; e.target.value = "";
+    if (!f) return;
+    if (!/^image\//.test(f.type)) { setMsg({ ok: false, text: "Please choose an image file (PNG, JPG or WEBP)." }); return; }
+    setMsg({ ok: true, text: "Processing the logo…" });
+    const rd = new FileReader();
+    rd.onerror = () => setMsg({ ok: false, text: "Couldn't read this file." });
+    rd.onload = async () => {
+      try {
+        const img = await loadImg(rd.result), box = logoBBox(img);
+        const big = logoCanvas(img, box, 480, false, 0);
+        let logo = big.toDataURL("image/webp", 0.86);
+        if (!/^data:image\/webp/.test(logo)) logo = big.toDataURL("image/png");
+        const icon = logoCanvas(img, box, 180, true, 0.08).toDataURL("image/png");
+        update((n) => { n.logo = logo; n.logoIcon = icon; });
+        setMsg({ ok: true, text: "Logo saved. It now shows in the header, as the browser icon, as a watermark in the app and on every PDF." });
+      } catch (er) { setMsg({ ok: false, text: (er && er.message) || "Couldn't use this image." }); }
+    };
+    rd.readAsDataURL(f);
+  };
+  const dlIcons = async () => {
+    try {
+      const img = await loadImg(cfg.logo), box = { sx: 0, sy: 0, sw: img.naturalWidth, sh: img.naturalHeight };
+      downloadCanvas(logoCanvas(img, box, 192, true, 0.08), "icon-192.png");
+      setTimeout(() => downloadCanvas(logoCanvas(img, box, 512, true, 0.08), "icon-512.png"), 400);
+    } catch (e) { setMsg({ ok: false, text: (e && e.message) || "Couldn't make the icons." }); }
+  };
+  const chk = { display: "inline-flex", alignItems: "center", gap: 7, fontSize: 13, fontWeight: 600, color: C.ink, cursor: "pointer" };
+  return (
+    <div style={{ ...card, marginBottom: 16 }}>
+      <Panelhead text="School logo — header, app icon & watermark" count={cfg.logo ? "uploaded" : "not set"} tone={cfg.logo ? "free" : undefined} />
+      <div style={{ padding: 14, display: "flex", gap: 18, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ width: 112, height: 112, borderRadius: 16, border: `2px dashed ${cfg.logo ? C.primary : C.line}`, background: cfg.logo ? "#fff" : "#f7f9fb", display: "grid", placeItems: "center", padding: 8, flexShrink: 0 }}>
+          {cfg.logo ? <img src={cfg.logo} alt="School logo" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} /> : <span style={{ fontSize: 12, color: C.sub, textAlign: "center" }}>No logo yet</span>}
+        </div>
+        <div style={{ flex: 1, minWidth: 240 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+            <label className="tt-btn" style={{ ...solidBtn, display: "inline-block" }}>
+              {cfg.logo ? "Change logo" : "Upload logo"}
+              <input type="file" accept="image/*" onChange={onFile} style={{ display: "none" }} />
+            </label>
+            {cfg.logo && <button className="tt-btn" onClick={dlIcons} style={ghostBtn}>Download app icons (192 & 512)</button>}
+            {cfg.logo && <button className="tt-btn" onClick={() => update((n) => { delete n.logo; delete n.logoIcon; })} style={{ ...ghostBtn, color: C.clash }}>Remove logo</button>}
+          </div>
+          {cfg.logo && (
+            <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginBottom: 8 }}>
+              <label style={chk}><input type="checkbox" checked={cfg.wmApp !== false} onChange={(e) => update((n) => { n.wmApp = e.target.checked; })} /> Watermark in the app</label>
+              <label style={chk}><input type="checkbox" checked={cfg.wmPdf !== false} onChange={(e) => update((n) => { n.wmPdf = e.target.checked; })} /> Watermark on PDFs</label>
+            </div>
+          )}
+          <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.55 }}>PNG with a transparent background looks best. Empty borders are trimmed automatically. The logo is saved with your timetable, so every device sees it. For the installed phone/desktop app icon, put the two downloaded icons in the <b>public</b> folder of the project and redeploy.</div>
+          {msg && <div style={{ marginTop: 8, fontSize: 12.5, fontWeight: 600, color: msg.ok ? C.free : C.clash }}>{msg.text}</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NavDrawer({ open, onClose, view, setView, TH, school, logo, status = {}, theme, setTheme, onSignOut }) {
   if (!open) return null;
   return (
     <div onClick={onClose} className="tt-noprint" style={{ position: "fixed", inset: 0, background: "rgba(16,25,40,.45)", zIndex: 90 }}>
       <div onClick={(e) => e.stopPropagation()} style={{ position: "absolute", top: 0, left: 0, bottom: 0, width: 280, maxWidth: "84%", background: "#fff", boxShadow: "2px 0 24px rgba(0,0,0,.25)", display: "flex", flexDirection: "column", animation: "ttslide .2s ease" }}>
         <div style={{ background: `linear-gradient(115deg, ${TH.g2}, ${TH.g1})`, color: "#fff", padding: "18px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div>
+          {logo && <div style={{ width: 44, height: 44, borderRadius: 12, background: "#fff", display: "grid", placeItems: "center", padding: 3, marginRight: 10, flexShrink: 0 }}><img src={logo} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} /></div>}
+          <div style={{ marginRight: "auto" }}>
             <div style={{ fontWeight: 800, fontSize: 15 }}>TIME TABLE</div>
             <div style={{ fontSize: 11.5, color: "rgba(255,255,255,.8)" }}>{school}</div>
           </div>
           <button className="tt-btn" onClick={onClose} aria-label="Close" style={{ border: "none", background: "transparent", color: "#fff", fontSize: 24, cursor: "pointer", lineHeight: 1 }}>×</button>
         </div>
         <div style={{ overflowY: "auto", padding: "8px 0", flex: 1 }}>
-          {TABS.map(([k, label]) => (
-            <div key={k} onClick={() => { setView(k); onClose(); }} style={{ padding: "13px 20px", fontSize: 14.5, fontWeight: view === k ? 700 : 500, color: view === k ? TH.accent : C.ink, background: view === k ? `${TH.accent}14` : "transparent", borderLeft: view === k ? `4px solid ${TH.accent}` : "4px solid transparent", cursor: "pointer", display: "flex", alignItems: "center", gap: 12 }}><Icon name={k} size={18} />{label}</div>
-          ))}
+          {TABS.map(([k, label]) => {
+            const on = view === k, st = status[k] || {}, tn = tabTone(st.tone, TH);
+            return (
+              <div key={k} onClick={() => { setView(k); onClose(); }} style={{ margin: "3px 10px", padding: "8px 10px", borderRadius: 12, display: "flex", alignItems: "center", gap: 11, cursor: "pointer", border: `2px solid ${on ? TH.accent : "transparent"}`, background: on ? `${TH.accent}10` : "transparent" }}>
+                <span style={{ flexShrink: 0, width: 34, height: 34, borderRadius: 10, display: "grid", placeItems: "center", background: on ? `linear-gradient(135deg, ${TH.g1}, ${TH.g2})` : "#f1f4f7", color: on ? "#fff" : TH.accent }}><Icon name={k} size={17} /></span>
+                <span style={{ minWidth: 0 }}>
+                  <span style={{ display: "block", fontSize: 14, fontWeight: on ? 800 : 700, color: on ? TH.g2 : C.ink }}>{label}</span>
+                  {st.text && <span style={{ display: "inline-block", marginTop: 2, fontSize: 10.5, fontWeight: 700, padding: "1px 8px", borderRadius: 20, background: tn.bg, color: tn.fg }}>{st.text}</span>}
+                </span>
+              </div>
+            );
+          })}
         </div>
         {onSignOut && (
           <div style={{ borderTop: `1px solid ${C.line}`, padding: "12px 18px" }}>
@@ -1470,7 +1682,7 @@ function BKeyView({ cfg, cls, setCls, update, expand, teacherLoad, mobile, ask, 
             <button className="tt-btn" onClick={() => setCopyTargets(cfg.classes.filter((c) => c !== cls && stdOf(c) === std))} style={ghostBtn}>Select all Std {std}</button>
             <button className="tt-btn" onClick={doCopy} style={solidBtn}>Copy to selected ({copyTargets.length})</button>
           </div>
-          <div style={{ fontSize: 12, color: C.sub, marginTop: 8, lineHeight: 1.6 }}>Set one class fully (subjects + teachers), then copy it to the classes that share the same setup and tweak only what differs. Copying replaces the target classes' mapping.</div>
+          <div className="tt-callout" style={{ marginTop: 10 }}>Set one class fully (subjects + teachers), then copy it to the classes that share the same setup and tweak only what differs. Copying replaces the target classes' mapping.</div>
         </div>
       </div>
       </>}
@@ -1542,7 +1754,7 @@ function StandardPeriods({ cfg, update, highlightStd, mobile, ask }) {
           );
         })}
       </div>
-      <div style={{ padding: "0 14px 12px", fontSize: 12, color: C.sub, lineHeight: 1.6 }}>Standards don't have to match  -  give each its own subjects and periods. Remove a subject with ×, add one from the dropdown. "Auto-fill subjects" uses each standard's own list. New standards appear here automatically when you add their classes in Setup.</div>
+      <div className="tt-callout" style={{ margin: "0 14px 14px" }}>Standards don't have to match  -  give each its own subjects and periods. Remove a subject with ×, add one from the dropdown. "Auto-fill subjects" uses each standard's own list. New standards appear here automatically when you add their classes in Setup.</div>
     </div>
   );
 }
@@ -1654,7 +1866,7 @@ function TeacherLoadSection({ cfg, teacherLoad }) {
             </tbody>
           </table>
         </div>
-        <div style={{ padding: "8px 14px", fontSize: 12, color: C.sub, lineHeight: 1.6 }}>Mapped = weekly periods this teacher is given in the mapping (combined subjects counted once). Free = periods left in that teacher’s week (their working days × periods) after that. Placed = periods actually in the generated timetable. Tap a teacher to see their classes.</div>
+        <div className="tt-note">Mapped = weekly periods this teacher is given in the mapping (combined subjects counted once). Free = periods left in that teacher’s week (their working days × periods) after that. Placed = periods actually in the generated timetable. Tap a teacher to see their classes.</div>
       </div>
     </div>
   );
@@ -2095,7 +2307,7 @@ function RulesView({ cfg, update }) {
       <CommonPeriodsPanel cfg={cfg} update={update} />
       <ClassRulesPanel cfg={cfg} update={update} />
       <TwicePanel cfg={cfg} update={update} />
-      <p style={{ fontSize: 12.5, color: C.sub, marginTop: 12, lineHeight: 1.6 }}>
+      <p className="tt-callout" style={{ marginTop: 12 }}>
         “Once per day” (no subject twice in a day for a class) is always enforced. Combined subjects follow the same rules via their subject. After changing rules, go to Assign timetable → Auto-generate all to rebuild.
       </p>
     </div>
@@ -2124,7 +2336,7 @@ function TwicePanel({ cfg, update }) {
           </tbody>
         </table>
       </div>
-      <div style={{ padding: "9px 14px", fontSize: 12, color: C.sub, lineHeight: 1.6 }}>
+      <div className="tt-note">
         Turn on for a subject in a standard when it has more weekly periods than working days (e.g. English 6 periods across 5 days). The generator may then place it twice on one weekday for classes in that standard, spread as evenly as possible. Off means at most once per day.
       </div>
     </div>
@@ -2253,7 +2465,7 @@ function CTDaysPanel({ cfg, update }) {
             </tr>); })}</tbody>
         </table>
       </div>
-      <div style={{ padding: "8px 14px", fontSize: 12, color: C.sub, lineHeight: 1.6 }}>On the other days, the class teacher is kept out of P1 in that class, so P1 is free for IT, PET, LB and others. The generator picks which days; to fix exact days for a class, use Class-specific period rules below.</div>
+      <div className="tt-note">On the other days, the class teacher is kept out of P1 in that class, so P1 is free for IT, PET, LB and others. The generator picks which days; to fix exact days for a class, use Class-specific period rules below.</div>
     </div>
   );
 }
@@ -2316,7 +2528,7 @@ function ClassRulesPanel({ cfg, update }) {
           );
         })}
       </div>
-      <div style={{ padding: "0 14px 14px", fontSize: 12, color: C.sub, lineHeight: 1.6 }}>
+      <div className="tt-callout" style={{ margin: "0 14px 14px" }}>
         Pick how many days a week the ruled period applies (e.g. class teacher in P1 on 3 days) and the generator chooses the days — or tick exact days. On the other days that period is left free for other subjects. “Class teacher” means whatever subject the class teacher takes in {cls}. These are placed first, before other lessons.
       </div>
     </div>
@@ -2360,7 +2572,7 @@ function CommonPeriodsPanel({ cfg, update }) {
             ))}
           </div>
         )}
-        <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.6 }}>
+        <div className="tt-callout">
           Each class gets the subject at that period with its own mapped teacher (or with no teacher, for activities like assembly). One teacher can't be in several classes at once — if the same teacher teaches this subject to many of the selected classes, make it a Combined subject instead. Common periods are placed before everything else, and count towards the subject's weekly periods.
         </div>
       </div>
@@ -2458,7 +2670,7 @@ ${buildContext(cfg, teacherLoad)}`;
           <button className="tt-btn" onClick={send} disabled={busy} style={{ ...solidBtn, opacity: busy ? 0.6 : 1 }}>Send</button>
         </div>
       </div>
-      <p style={{ fontSize: 12, color: C.sub, marginTop: 10 }}>The assistant can read the whole timetable and make edits on request. Review changes in the Class or Assign views — use Reset if an edit isn't what you wanted.</p>
+      <p className="tt-callout" style={{ marginTop: 12 }}>The assistant can read the whole timetable and make edits on request. Review changes in the Class or Assign views — use Reset if an edit isn't what you wanted.</p>
     </div>
   );
 }
@@ -2669,7 +2881,7 @@ function CombinedView({ cfg, update, ask, mobile, occupancy, teacherLoad }) {
         </div>
       )}
       {sessions.length > 0 && !overlap.live.length && (overlap.tCross.length > 0 || overlap.dCross.length > 0) && (
-        <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.6, margin: "-4px 0 14px", padding: "8px 12px", background: "#f6f8fa", borderRadius: 9 }}>
+        <div className="tt-callout" style={{ margin: "-4px 0 14px" }}>
           ⓘ In more than one session (this is fine — they always get different times, nothing to do):{" "}
           {overlap.dCross.length > 0 && <>classes <b style={{ fontFamily: mono }}>{overlap.dCross.map((x) => x.k).sort(cmpClass).join(", ")}</b></>}
           {overlap.dCross.length > 0 && overlap.tCross.length > 0 && "; "}
@@ -3017,7 +3229,7 @@ function ImportPanel({ cfg, update, ask }) {
   return (
     <div style={{ ...card, padding: 18 }}>
       <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 4 }}>Import a timetable</div>
-      <div style={{ fontSize: 12.5, color: C.sub, marginBottom: 12, lineHeight: 1.6 }}>
+      <div className="tt-callout" style={{ marginBottom: 12 }}>
         Bring in a timetable made somewhere else and check it for clashes before using it. Paste cells copied from Excel / Google Sheets, or choose a CSV file. Two layouts work:
         <br /><b>Grid</b>: <code style={{ fontFamily: mono }}>Class, Day, P1, P2, …</code> — one row per class per day; cells like <code style={{ fontFamily: mono }}>ENG/DN</code>, <code style={{ fontFamily: mono }}>ENG DN</code> or a combined session name.
         <br /><b>List</b>: <code style={{ fontFamily: mono }}>Class, Day, Period, Subject, Teacher</code> — one row per period.
@@ -3075,9 +3287,14 @@ function ImportPanel({ cfg, update, ask }) {
 function ExportView({ cfg, update, ask }) {
   const [paper, setPaper] = useState("A4");
   const [ov, setOv] = useState({ paper: "A3", orient: "landscape", cper: 40, tper: 24 });
-  const Card = ({ title, desc, actions }) => (
-    <div style={{ ...card, padding: 18 }}>
-      <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 4 }}>{title}</div>
+  const th = CUR_TH || THEMES.teal;
+  const Card = ({ title, desc, actions, icon }) => (
+    <div style={{ ...card, padding: 18, position: "relative" }}>
+      <span aria-hidden="true" style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 4, background: `linear-gradient(180deg, ${th.g1}, ${th.g2})` }} />
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
+        <span style={{ width: 40, height: 40, borderRadius: 12, display: "grid", placeItems: "center", background: `${th.accent}14`, color: th.accent, flexShrink: 0 }}><Icon name={icon || "export"} size={19} /></span>
+        <div style={{ fontSize: 15.5, fontWeight: 800, color: C.ink }}>{title}</div>
+      </div>
       <div style={{ fontSize: 12.5, color: C.sub, marginBottom: 14, lineHeight: 1.6 }}>{desc}</div>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>{actions}</div>
     </div>
@@ -3093,11 +3310,11 @@ function ExportView({ cfg, update, ask }) {
       } />
       <div style={{ display: "grid", gap: 16 }}>
         <ImportPanel cfg={cfg} update={update} ask={ask} />
-        <Card title="Class timetables" desc="One page per class (landscape) - periods across the top, weekdays down the side, subject + teacher in each cell."
-          actions={<button className="tt-btn" onClick={() => exportClassesPDF(cfg, paper)} style={solidBtn}>Export all class timetables ({paper})</button>} />
-        <Card title="Teacher timetables" desc="One page per teacher (landscape) - the class and subject they take each period."
-          actions={<button className="tt-btn" onClick={() => exportTeachersPDF(cfg, paper)} style={solidBtn}>Export all teacher timetables ({paper})</button>} />
-        <Card title="Compact overview sheets" desc="Many small timetables on each sheet. Choose how many go on one sheet, the paper size and the direction — the size of each small timetable is worked out to fit."
+        <Card icon="classes" title="Class timetables" desc="One page per class (landscape) - periods across the top, weekdays down the side, subject + teacher in each cell."
+          actions={<PrintBtn onClick={() => exportClassesPDF(cfg, paper)} icon="pdf" label={<>Export all class timetables ({paper})</>} />} />
+        <Card icon="teachers" title="Teacher timetables" desc="One page per teacher (landscape) - the class and subject they take each period."
+          actions={<PrintBtn onClick={() => exportTeachersPDF(cfg, paper)} icon="pdf" label={<>Export all teacher timetables ({paper})</>} />} />
+        <Card icon="analysis" title="Compact overview sheets" desc="Many small timetables on each sheet. Choose how many go on one sheet, the paper size and the direction — the size of each small timetable is worked out to fit."
           actions={<div style={{ display: "grid", gap: 10, width: "100%" }}>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", fontSize: 12.5, color: C.sub }}>
               <label>Paper&nbsp;<select className="tt-sel" style={{ width: 90, display: "inline-block" }} value={ov.paper} onChange={(e) => setOv({ ...ov, paper: e.target.value })}><option>A3</option><option>A4</option><option>Letter</option><option>Legal</option></select></label>
@@ -3105,19 +3322,19 @@ function ExportView({ cfg, update, ask }) {
             </div>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", fontSize: 12.5, color: C.sub }}>
               <label>Classes per sheet&nbsp;<input className="tt-in" type="number" min={1} max={80} style={{ width: 70, display: "inline-block", textAlign: "center" }} value={ov.cper} onChange={(e) => setOv({ ...ov, cper: e.target.value })} /></label>
-              <button className="tt-btn" onClick={() => exportClassesOverviewPDF(cfg, { per: +ov.cper || 40, paper: ov.paper, orient: ov.orient })} style={solidBtn}>All classes ({ov.paper}, {ov.cper}/sheet)</button>
+              <PrintBtn onClick={() => exportClassesOverviewPDF(cfg, { per: +ov.cper || 40, paper: ov.paper, orient: ov.orient })} icon="pdf" label={<>All classes ({ov.paper}, {ov.cper}/sheet)</>} />
             </div>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", fontSize: 12.5, color: C.sub }}>
               <label>Teachers per sheet&nbsp;<input className="tt-in" type="number" min={1} max={80} style={{ width: 70, display: "inline-block", textAlign: "center" }} value={ov.tper} onChange={(e) => setOv({ ...ov, tper: e.target.value })} /></label>
-              <button className="tt-btn" onClick={() => exportTeachersOverviewPDF(cfg, { per: +ov.tper || 24, paper: ov.paper, orient: ov.orient })} style={solidBtn}>All teachers ({ov.paper}, {ov.tper}/sheet)</button>
+              <PrintBtn onClick={() => exportTeachersOverviewPDF(cfg, { per: +ov.tper || 24, paper: ov.paper, orient: ov.orient })} icon="pdf" label={<>All teachers ({ov.paper}, {ov.tper}/sheet)</>} />
             </div>
           </div>} />
-        <Card title="Data backup" desc="Download all your setup and timetable (classes, teachers, mapping, rules, combined subjects, timetable) as one file. Keep it as a backup, or share it when asking for help."
-          actions={<button className="tt-btn" onClick={() => exportJSON(cfg)} style={ghostBtn}>Download data backup (.json)</button>} />
-        <Card title="Leisure / free periods" desc="Either a grid marking exactly which periods each teacher is free (green dot) — all teachers on one A3 page — or a simple count per day."
+        <Card icon="setup" title="Data backup" desc="Download all your setup and timetable (classes, teachers, mapping, rules, combined subjects, timetable) as one file. Keep it as a backup, or share it when asking for help."
+          actions={<PrintBtn onClick={() => exportJSON(cfg)} icon="download" light label={<>Download data backup (.json)</>} />} />
+        <Card icon="free" title="Leisure / free periods" desc="Either a grid marking exactly which periods each teacher is free (green dot) — all teachers on one A3 page — or a simple count per day."
           actions={<>
-            <button className="tt-btn" onClick={() => exportFreeSlotsPDF(cfg, paper)} style={solidBtn}>Free periods by period (A3 PDF)</button>
-            <button className="tt-btn" onClick={() => exportFreeReportPDF(cfg, paper)} style={ghostBtn}>Free-period counts per day ({paper})</button>
+            <PrintBtn onClick={() => exportFreeSlotsPDF(cfg, paper)} icon="pdf" label={<>Free periods by period (A3 PDF)</>} />
+            <PrintBtn onClick={() => exportFreeReportPDF(cfg, paper)} icon="pdf" light label={<>Free-period counts per day ({paper})</>} />
           </>} />
       </div>
     </div>
@@ -3144,7 +3361,7 @@ function TeacherAssignments({ cfg }) {
           <tbody>{rows.length ? rows.map((r, i) => (<tr key={i}><td style={{ ...cellTd, textAlign: "left", paddingLeft: 12, fontFamily: mono, fontWeight: 700, height: 32 }}>{r.c}</td><td style={{ ...cellTd, textAlign: "left", height: 32 }}>{r.sub}</td><td style={{ ...cellTd, height: 32, fontFamily: mono }}>{r.per}</td></tr>)) : <tr><td colSpan={3} style={{ ...cellTd, color: C.sub, height: 40 }}>Not assigned to any class.</td></tr>}</tbody>
         </table>
       </div>
-      <div style={{ padding: "8px 14px", fontSize: 12.5, color: C.sub }}>{t}: {rows.length} class assignment(s), {tot} periods/week.</div>
+      <div className="tt-note">{t}: {rows.length} class assignment(s), {tot} periods/week.</div>
     </div>
   );
 }
@@ -3194,12 +3411,12 @@ function AnalysisView({ cfg, teacherLoad, mobile }) {
   const Cell = { ...cellTd, height: 34, fontFamily: mono };
   return (
     <div>
-      <ViewHeader title="Analysis & pre-generation checks" note="Calculations and feasibility checks. Run these before Auto-generate." right={<button className="tt-btn" onClick={printNow} style={ghostBtn}>Print / PDF</button>} />
+      <ViewHeader title="Analysis & pre-generation checks" note="Calculations and feasibility checks. Run these before Auto-generate." right={<PrintBtn onClick={printNow} label="Print / PDF" sub="This page, with letterhead" />} />
 
       <div style={{ ...card, marginBottom: 16, padding: 14, display: "flex", flexWrap: "wrap", gap: 10 }}>
-        <button className="tt-btn" onClick={() => exportClassesPDF(cfg)} style={solidBtn}>Export all class timetables (A4 PDF)</button>
-        <button className="tt-btn" onClick={() => exportTeachersPDF(cfg)} style={solidBtn}>Export all teacher timetables (A4 PDF)</button>
-        <button className="tt-btn" onClick={() => exportFreeReportPDF(cfg)} style={ghostBtn}>Export teacher leisure report (A4 PDF)</button>
+        <PrintBtn onClick={() => exportClassesPDF(cfg)} icon="pdf" label="All class timetables" sub="A4 landscape · one class per page" />
+        <PrintBtn onClick={() => exportTeachersPDF(cfg)} icon="pdf" label="All teacher timetables" sub="A4 landscape · one teacher per page" />
+        <PrintBtn onClick={() => exportFreeReportPDF(cfg)} icon="pdf" light label="Teacher free-period report" sub="A4 portrait · counts & period numbers" />
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "repeat(4,1fr)", gap: 12, marginBottom: 16 }}>
@@ -3231,7 +3448,7 @@ function AnalysisView({ cfg, teacherLoad, mobile }) {
             </tbody>
           </table>
         </div>
-        <div style={{ padding: "10px 14px", fontSize: 12, color: C.sub, lineHeight: 1.6 }}>
+        <div className="tt-note">
           “Available” = weekly slots ({cap}) minus the periods that subject is forbidden from (e.g. PET not in P1 removes {cfg.days.length} slots per forbidden period). A negative difference means that teacher can’t fit all their periods under the current rules — reduce restrictions, or combine classes for that subject to cut the requirement.
         </div>
       </div>
@@ -3284,32 +3501,57 @@ function Stat({ label, value, tone }) {
 }
 
 function TeacherFreeReport({ cfg }) {
+  const [paper, setPaper] = useState("A4");
+  const [orient, setOrient] = useState("portrait");
+  const [showP, setShowP] = useState(true);
+  const data = useMemo(() => cfg.singles.map((t) => ({ t, days: cfg.days.map((d) => freeOf(cfg, t, d)) })), [cfg]);
+  const toneOf = (n) => n === 0 ? [C.clashSoft, C.clash] : n === 1 ? [C.warnSoft, C.warn] : [C.freeSoft, C.free];
+  const dayTot = cfg.days.map((_, i) => data.reduce((a, r) => a + (r.days[i] ? r.days[i].length : 0), 0));
   return (
     <div className="tt-printarea" style={{ ...card, marginTop: 16 }}>
-      <Panelhead text="Teacher free-period report — free periods per day" />
+      <Panelhead text="Teacher free-period report — free periods per day" count={`${cfg.singles.length} teachers`} />
+      <div className="tt-noprint" style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", padding: "10px 14px", borderBottom: `1px solid ${C.line}`, background: "#fafbfc" }}>
+        <select className="tt-sel" value={paper} onChange={(e) => setPaper(e.target.value)} style={{ width: 90 }}>{["A4", "A3", "Letter", "Legal"].map((x) => <option key={x}>{x}</option>)}</select>
+        <select className="tt-sel" value={orient} onChange={(e) => setOrient(e.target.value)} style={{ width: 118 }}><option value="portrait">Portrait</option><option value="landscape">Landscape</option></select>
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}><input type="checkbox" checked={showP} onChange={(e) => setShowP(e.target.checked)} /> Show free period numbers</label>
+        <span style={{ marginLeft: "auto" }}><PrintBtn onClick={() => exportFreeReportPDF(cfg, paper, { showP, orient })} icon="download" label="Download PDF" sub={`${paper} · ${orient}`} /></span>
+      </div>
       <div className="tt-scroll" style={{ overflowX: "auto" }}>
-        <table style={{ ...tbl, minWidth: 120 + cfg.days.length * 70 }}>
+        <table style={{ ...tbl, minWidth: 130 + cfg.days.length * 92 }}>
           <thead><tr>
             <th style={{ ...th, textAlign: "left", paddingLeft: 12 }}>Teacher</th>
             {cfg.days.map((d) => <th key={d} style={th}>{DAY_FULL[d].slice(0, 3)}</th>)}
             <th style={th}>Total free</th>
           </tr></thead>
           <tbody>
-            {cfg.singles.map((t) => {
-              const freeDay = cfg.days.map((d) => { if (isOffDay(cfg, t, d)) return null; let f = 0; for (let p = 0; p < cfg.periods.length; p++) if (!teacherAt(cfg, t, d, p)) f++; return f; });
-              const totalFree = freeDay.reduce((a, f) => a + (f || 0), 0);
+            {data.map(({ t, days }) => {
+              const totalFree = days.reduce((a, f) => a + (f ? f.length : 0), 0);
               return (
-                <tr key={t}>
-                  <td style={{ ...cellTd, height: 32, textAlign: "left", paddingLeft: 12, fontFamily: mono, fontWeight: 700 }}>{t}</td>
-                  {freeDay.map((f, i) => <td key={i} style={{ ...cellTd, height: 32, fontFamily: mono, color: f === null ? C.sub : f === 0 ? C.clash : C.ink, background: f === null ? "#f4f5f7" : undefined }}>{f === null ? "off" : f}</td>)}
-                  <td style={{ ...cellTd, height: 32, fontFamily: mono, fontWeight: 700, color: C.free }}>{totalFree}</td>
+                <tr key={t} className="tt-row">
+                  <td style={{ ...cellTd, height: 34, textAlign: "left", paddingLeft: 12, fontFamily: mono, fontWeight: 700 }}>{t}</td>
+                  {days.map((f, i) => {
+                    if (f === null) return <td key={i} style={{ ...cellTd, height: 34, color: C.sub, background: "#f1f3f6", fontSize: 11, fontWeight: 700 }}>OFF</td>;
+                    const [bg, fg] = toneOf(f.length);
+                    return (
+                      <td key={i} style={{ ...cellTd, height: 34, padding: "3px 4px" }}>
+                        <span style={{ display: "inline-block", minWidth: 24, padding: "1px 7px", borderRadius: 10, background: bg, color: fg, fontWeight: 800, fontFamily: mono, fontSize: 12.5 }}>{f.length}</span>
+                        {showP && <span style={{ display: "block", fontSize: 10.5, color: C.sub, fontWeight: 600, marginTop: 2, fontFamily: mono }}>{f.length ? "P" + f.join(" P") : "—"}</span>}
+                      </td>
+                    );
+                  })}
+                  <td style={{ ...cellTd, height: 34, fontFamily: mono, fontWeight: 800, color: C.free, background: C.freeSoft }}>{totalFree}</td>
                 </tr>
               );
             })}
+            <tr>
+              <td style={{ ...cellTd, textAlign: "left", paddingLeft: 12, fontWeight: 800, background: C.accentSoft }}>All teachers</td>
+              {dayTot.map((x, i) => <td key={i} style={{ ...cellTd, fontWeight: 800, fontFamily: mono, background: C.accentSoft }}>{x}</td>)}
+              <td style={{ ...cellTd, fontWeight: 800, fontFamily: mono, background: C.accentSoft }}>{dayTot.reduce((a, b) => a + b, 0)}</td>
+            </tr>
           </tbody>
         </table>
       </div>
-      <div style={{ padding: "8px 14px", fontSize: 12, color: C.sub }}>Numbers are free (leisure) periods that day, counting combined subjects too. "off" = the teacher doesn't work that day. Use Print / PDF above to export this report.</div>
+      <div className="tt-note">The coloured number is how many free (leisure) periods the teacher has that day; below it are the free period numbers. Combined subjects are counted. OFF = the teacher doesn't work that day.</div>
     </div>
   );
 }
@@ -3537,6 +3779,7 @@ function SetupView({ cfg, update, ask, mobile }) {
           <input className="tt-in" style={{ maxWidth: 380, fontSize: 14, padding: "9px 11px" }} value={cfg.school} onChange={(e) => update((n) => { n.school = e.target.value; })} placeholder="Your school name" />
         </div>
       </div>
+      <LogoCard cfg={cfg} update={update} />
 
       <div style={{ ...card, marginBottom: 16 }}>
         <Panelhead text="Working days" />
@@ -3676,17 +3919,19 @@ function exportJSON(cfg) {
 
 function esc(x) { return String(x == null ? "" : x).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 
+var SCHOOL_LOGO = "", SCHOOL_WM = true;
 function openPrint(title, css, bodyHtml) {
   var w = window.open("", "_blank");
   if (!w) { alert("Please allow pop-ups for this site so the PDF can open, then choose 'Save as PDF' and paper size A4."); return; }
-  w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>' + title + '</title><style>' + css + '</style></head><body>' + bodyHtml + '<scr' + 'ipt>window.onload=function(){setTimeout(function(){window.print();},350);};<\/scr' + 'ipt></body></html>');
+  var wm = SCHOOL_LOGO && SCHOOL_WM ? '<img class="tt-wm" src="' + SCHOOL_LOGO + '" alt="">' : '';
+  var wmCss = wm ? ' .tt-wm{position:fixed;top:50%;left:50%;width:56%;max-width:150mm;max-height:62%;object-fit:contain;transform:translate(-50%,-50%);opacity:.09;z-index:9999;pointer-events:none;mix-blend-mode:multiply}' : '';
+  w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>' + title + '</title>' + (SCHOOL_LOGO ? '<link rel="icon" href="' + SCHOOL_LOGO + '">' : '') + '<style>' + css + wmCss + '</style></head><body>' + wm + bodyHtml + '<scr' + 'ipt>window.onload=function(){setTimeout(function(){window.print();},350);};<\/scr' + 'ipt></body></html>');
   w.document.close();
 }
 
 function subTint(sub) { var hex = SUBJECT_BAR[sub]; if (!hex) return "#ffffff"; var nn = parseInt(hex.slice(1), 16); return "rgba(" + ((nn >> 16) & 255) + "," + ((nn >> 8) & 255) + "," + (nn & 255) + ",0.16)"; }
 function subCol(sub) { return SUBJECT_BAR[sub] || "#444"; }
 
-function gridCss(paper) { return "@page{size:" + (paper || "A4") + " landscape;margin:1cm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact} html,body{margin:0;height:100%} .page{page-break-after:always;height:190mm;box-sizing:border-box;display:flex;flex-direction:column} .page:last-child{page-break-after:auto} h2{font-size:20px;margin:0 0 6px;text-align:center;background:#0e6b73;color:#fff;padding:8px;border-radius:6px} .sub{font-size:13px;color:#0a4f55;margin:0 0 8px;text-align:center;font-weight:700} table{border-collapse:collapse;width:100%;height:100%;table-layout:fixed;flex:1;border:2px solid #0e6b73} th,td{border:1px solid #a9c6c6;text-align:center;padding:3px;font-size:14px} tr>*:first-child{width:64px;font-weight:800;background:#e1f0f0;color:#0a4f55} thead th{background:#0e6b73;color:#fff;font-weight:700} td .t{font-weight:800;font-size:16px} td .s{font-size:12px;font-weight:700} td{word-break:break-word;overflow-wrap:anywhere;line-height:1.2}"; }
 
 function gridHead(cfg) {
   var head = "<tr><th>Day / Period</th>";
@@ -3711,41 +3956,71 @@ function teacherAt(cfg, t, d, p) {
 }
 function isOffDay(cfg, t, d) { var a = (cfg.teacherDays || {})[t]; return !!(a && a.length && a.indexOf(d) < 0); }
 
-function exportClassesPDF(cfg, paper) {
-  var head = gridHead(cfg), pages = "";
-  for (var ci = 0; ci < cfg.classes.length; ci++) {
-    var c = cfg.classes[ci], body = "";
+function pdfLetterhead(cfg, kind, title, sub) {
+  return '<div class="lh">' + (cfg.logo ? '<img src="' + cfg.logo + '" alt="">' : '') + '<div class="lt"><div class="ls">' + esc(cfg.school || "") + '</div><div class="lk">' + esc(kind) + '</div></div><div class="lr"><div class="lti">' + esc(title) + '</div>' + (sub ? '<div class="lsu">' + sub + '</div>' : '') + '</div></div>';
+}
+function pdfFooter(left, sigs) {
+  var d = new Date().toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
+  return '<div class="ft"><div class="gen">' + left + '<br>Generated ' + esc(d) + '</div>' + sigs.map(function (s) { return '<div class="sig">' + esc(s) + '</div>'; }).join("") + '</div>';
+}
+function gridCss(paper) {
+  var ph = { A3: 277, Letter: 196, Legal: 196 }[paper] || 190;
+  return "@page{size:" + (paper || "A4") + " landscape;margin:1cm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact;box-sizing:border-box} html,body{margin:0;height:100%} body{font-family:Arial,Helvetica,sans-serif;color:#16213a}" +
+    " .page{page-break-after:always;height:" + ph + "mm;display:flex;flex-direction:column} .page:last-child{page-break-after:auto}" +
+    " h2{font-size:20px;margin:0 0 6px;text-align:center;background:#0e6b73;color:#fff;padding:8px;border-radius:6px} .sub{font-size:13px;color:#0a4f55;margin:0 0 8px;text-align:center;font-weight:700}" +
+    " .lh{display:flex;align-items:center;gap:12px;border-bottom:3px solid #0e6b73;padding-bottom:7px;margin-bottom:8px} .lh img{height:58px;width:58px;object-fit:contain}" +
+    " .ls{font-size:21px;font-weight:800;color:#0a4f55;letter-spacing:.6px;text-transform:uppercase;line-height:1.1} .lk{font-size:11px;font-weight:800;color:#d98a2b;letter-spacing:2.5px;text-transform:uppercase;margin-top:3px}" +
+    " .lr{margin-left:auto;text-align:right} .lti{display:inline-block;font-size:22px;font-weight:800;background:linear-gradient(115deg,#0a4f55,#0e6b73);color:#fff;padding:5px 16px;border-radius:8px} .lsu{font-size:12.5px;color:#0a4f55;font-weight:700;margin-top:4px}" +
+    " table{border-collapse:collapse;width:100%;height:100%;table-layout:fixed;flex:1;border:2px solid #0e6b73} th,td{border:1px solid #a9c6c6;text-align:center;padding:3px;font-size:14px}" +
+    " tr>*:first-child{width:96px;font-weight:800;background:#e1f0f0;color:#0a4f55} thead th{background:#0e6b73;color:#fff;font-weight:700;height:30px} td .t{font-weight:800;font-size:16px} td .s{font-size:12px;font-weight:700} td{word-break:break-word;overflow-wrap:anywhere;line-height:1.2}" +
+    " .sm{display:flex;flex-wrap:wrap;gap:4px 6px;margin-top:6px} .sm span{font-size:10.5px;border:1px solid #cfdede;border-radius:10px;padding:1px 8px;background:#f6fafa;color:#33415c} .sm b{margin-right:4px}" +
+    " .ft{display:flex;align-items:flex-end;gap:16mm;margin-top:9mm} .gen{margin-right:auto;font-size:10px;color:#647189;line-height:1.4} .sig{border-top:1.2px solid #16213a;width:50mm;text-align:center;padding-top:3px;font-size:11px;font-weight:700;color:#16213a}";
+}
+function exportClassesPDF(cfg, paper, only) {
+  var head = gridHead(cfg), pages = "", list = only && only.length ? only : cfg.classes;
+  for (var ci = 0; ci < list.length; ci++) {
+    var c = list[ci], body = "", sum = {}, order = [];
     for (var di = 0; di < cfg.days.length; di++) {
       var d = cfg.days[di], row = "<tr><th>" + esc(DAY_FULL[d]) + "</th>";
       for (var p = 0; p < cfg.periods.length; p++) {
         var slot = (cfg.grid[c] && cfg.grid[c][d] && cfg.grid[c][d][p]) || [null, null];
         var cs = (cfg.combined || []).find(function (x) { return x.name === slot[0]; }); var who = cs ? cs.teachers.join(" ") : slot[0];
         if (p >= classPeriods(cfg, c)) { row += '<td style="background:#e4e6ea"></td>'; continue; }
+        if (slot[0]) { var key = slot[1] + "|" + who; if (!sum[key]) { sum[key] = { sub: slot[1], who: who, n: 0 }; order.push(key); } sum[key].n++; }
         row += slot[0] ? ('<td style="background:' + subTint(slot[1]) + ';border-left:5px solid ' + subCol(slot[1]) + '"><span class="t" style="color:' + subCol(slot[1]) + '">' + esc(slot[1]) + '</span><br><span class="s">' + esc(who) + '</span></td>') : "<td></td>";
       }
       body += row + "</tr>";
     }
-    pages += '<div class="page"><h2>' + esc(cfg.school) + " &mdash; Class " + esc(c) + '</h2><p class="sub">Class teacher: ' + esc(cfg.classTeacher[c] || "-") + '</p><table><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>';
+    var strip = order.map(function (k) { var x = sum[k]; return '<span><b style="color:' + subCol(x.sub) + '">' + esc(x.sub) + '</b>' + esc(x.who) + ' &times;' + x.n + '</span>'; }).join("");
+    var total = order.reduce(function (a, k) { return a + sum[k].n; }, 0);
+    pages += '<div class="page">' + pdfLetterhead(cfg, "Class Time Table", "Class " + c, "Class teacher: " + esc(cfg.classTeacher[c] || "-") + " &middot; " + total + " periods / week") +
+      '<table><thead>' + head + '</thead><tbody>' + body + '</tbody></table>' + (strip ? '<div class="sm">' + strip + '</div>' : '') +
+      pdfFooter(esc(cfg.school || "") + " &middot; Class " + esc(c), ["Class Teacher", "Headmaster"]) + '</div>';
   }
-  openPrint(esc(cfg.school) + " - Class timetables", gridCss(paper), pages);
+  openPrint(esc(cfg.school) + (list.length === 1 ? " - Class " + esc(list[0]) : " - Class timetables"), gridCss(paper), pages);
 }
 
-function exportTeachersPDF(cfg, paper) {
-  var head = gridHead(cfg), pages = "";
-  for (var ti = 0; ti < cfg.singles.length; ti++) {
-    var t = cfg.singles[ti], body = "";
+function exportTeachersPDF(cfg, paper, only) {
+  var head = gridHead(cfg), pages = "", list = only && only.length ? only : cfg.singles;
+  for (var ti = 0; ti < list.length; ti++) {
+    var t = list[ti], body = "", placed = 0, cls = {};
     for (var di = 0; di < cfg.days.length; di++) {
-      var d = cfg.days[di], row = "<tr><th>" + esc(DAY_FULL[d]) + "</th>";
+      var d = cfg.days[di], row = "<tr><th>" + esc(DAY_FULL[d]) + "</th>", off = isOffDay(cfg, t, d);
       for (var p = 0; p < cfg.periods.length; p++) {
         var r = teacherAt(cfg, t, d, p);
-        row += r ? ('<td style="background:' + subTint(r.sub) + ';border-left:5px solid ' + subCol(r.sub) + '"><span class="t">' + esc(r.c) + '</span><br><span class="s" style="color:' + subCol(r.sub) + '">' + esc(r.sub) + '</span></td>') : "<td></td>";
+        if (r) { placed++; String(r.c).split(", ").forEach(function (x) { cls[x] = 1; }); }
+        row += r ? ('<td style="background:' + subTint(r.sub) + ';border-left:5px solid ' + subCol(r.sub) + '"><span class="t">' + esc(r.c) + '</span><br><span class="s" style="color:' + subCol(r.sub) + '">' + esc(r.sub) + (r.combined ? " &middot; combined" : "") + '</span></td>') : (off ? '<td style="background:#e4e6ea;color:#8a93a3;font-size:11px">off</td>' : "<td></td>");
       }
       body += row + "</tr>";
     }
-    pages += '<div class="page"><h2>' + esc(cfg.school) + " &mdash; Teacher " + esc(t) + '</h2><table><thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>';
+    var free = teacherCap(cfg, t) - placed, cl = Object.keys(cls).sort(cmpClass);
+    pages += '<div class="page">' + pdfLetterhead(cfg, "Teacher Time Table", t, placed + " periods / week &middot; " + free + " free") +
+      '<table><thead>' + head + '</thead><tbody>' + body + '</tbody></table>' + (cl.length ? '<div class="sm"><span><b>Classes</b>' + esc(cl.join(", ")) + '</span></div>' : '') +
+      pdfFooter(esc(cfg.school || "") + " &middot; Teacher " + esc(t), ["Teacher", "Headmaster"]) + '</div>';
   }
-  openPrint(esc(cfg.school) + " - Teacher timetables", gridCss(paper), pages);
+  openPrint(esc(cfg.school) + (list.length === 1 ? " - " + esc(list[0]) : " - Teacher timetables"), gridCss(paper), pages);
 }
+
 
 
 function exportFreeSlotsPDF(cfg, paper) {
@@ -3830,21 +4105,45 @@ function exportTeachersOverviewPDF(cfg, o) {
   openPrint(esc(cfg.school) + " - All teachers", out.css, out.body);
 }
 
-function exportFreeReportPDF(cfg, paper) {
-  var css = "@page{size:" + (paper || "A4") + " portrait;margin:1cm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#111} h2{font-size:20px;margin:0 0 12px;text-align:center} table{border-collapse:collapse;width:100%;border:2px solid #111} th,td{border:1px solid #333;padding:8px 9px;text-align:center;font-size:13.5px} th{background:#e6e6e6;font-weight:700} td:first-child,th:first-child{text-align:left}";
+function freeOf(cfg, t, d) {
+  if (isOffDay(cfg, t, d)) return null;
+  var out = [];
+  for (var p = 0; p < cfg.periods.length; p++) if (!teacherAt(cfg, t, d, p)) out.push(p + 1);
+  return out;
+}
+function exportFreeReportPDF(cfg, paper, o) {
+  o = o || {};
+  var showP = o.showP !== false, orient = o.orient || "portrait";
+  var nT = cfg.singles.length, big = (paper === "A3") || orient === "landscape";
+  var fs = nT > 50 ? 10 : nT > 36 ? 11 : 12.5; if (big) fs += 1;
+  var css = "@page{size:" + (paper || "A4") + " " + orient + ";margin:1cm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact;box-sizing:border-box} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#16213a}" +
+    " .hd{display:flex;align-items:center;gap:14px;background:linear-gradient(115deg,#0a4f55,#0e6b73);color:#fff;padding:10px 16px;border-radius:10px;margin-bottom:10px}" +
+    " .hd img{height:54px;width:54px;object-fit:contain;background:#fff;border-radius:10px;padding:3px} .hd .s{font-size:12px;opacity:.85;font-weight:700;letter-spacing:.5px;text-transform:uppercase} .hd .t{font-size:19px;font-weight:800} .hd .d{margin-left:auto;font-size:11px;text-align:right;opacity:.9}" +
+    " table{border-collapse:collapse;width:100%;border:2px solid #0e6b73} th,td{border:1px solid #b9d3d3;padding:3px 5px;font-size:" + fs + "px;text-align:center;vertical-align:middle}" +
+    " thead th{background:#0e6b73;color:#fff;font-weight:800;padding:6px 4px} tbody tr:nth-child(even) td.n{background:#eef6f6} td.n{text-align:left;font-weight:800;color:#0a4f55;background:#fff;white-space:nowrap}" +
+    " .c{display:inline-block;min-width:22px;padding:1px 6px;border-radius:10px;font-weight:800} .p{display:block;font-size:" + (fs - 2.5) + "px;color:#3c4a60;font-weight:700;margin-top:1px;letter-spacing:.2px}" +
+    " td.off{background:#eceff3!important;color:#8a93a3;font-weight:700;font-size:" + (fs - 2) + "px} td.tot{background:#e3f5ec;color:#1f7a47;font-weight:800} tr.sum td{background:#fbeeda!important;font-weight:800;color:#7a4a10;border-top:2px solid #0e6b73}" +
+    " .lg{margin-top:8px;font-size:10.5px;color:#4b5870;display:flex;gap:12px;flex-wrap:wrap;align-items:center} .lg span.c{font-size:10px} thead{display:table-header-group} tr{page-break-inside:avoid}";
+  var tone = function (n) { return n === 0 ? "background:#fbe0dd;color:#b3261e" : n === 1 ? "background:#fbefd5;color:#94620b" : n <= 3 ? "background:#e3f5ec;color:#1f7a47" : "background:#c9ecd8;color:#126236"; };
   var head = "<tr><th style='text-align:left'>Teacher</th>";
-  for (var di = 0; di < cfg.days.length; di++) head += "<th>" + esc(DAY_FULL[cfg.days[di]].slice(0, 3)) + "</th>";
+  for (var di = 0; di < cfg.days.length; di++) head += "<th>" + esc(DAY_FULL[cfg.days[di]]) + "</th>";
   head += "<th>Total free</th></tr>";
-  var rows = "";
+  var rows = "", dayTot = cfg.days.map(function () { return 0; }), grand = 0;
   for (var ti = 0; ti < cfg.singles.length; ti++) {
     var t = cfg.singles[ti], total = 0, cells = "";
     for (var di2 = 0; di2 < cfg.days.length; di2++) {
-      var d = cfg.days[di2], free = 0;
-      if (isOffDay(cfg, t, d)) { cells += "<td style='color:#888'>off</td>"; continue; }
-      for (var p = 0; p < cfg.periods.length; p++) if (!teacherAt(cfg, t, d, p)) free++;
-      total += free; cells += "<td>" + free + "</td>";
+      var fr = freeOf(cfg, t, cfg.days[di2]);
+      if (fr === null) { cells += "<td class='off'>OFF</td>"; continue; }
+      total += fr.length; dayTot[di2] += fr.length;
+      cells += "<td><span class='c' style='" + tone(fr.length) + "'>" + fr.length + "</span>" + (showP ? "<span class='p'>" + (fr.length ? "P" + fr.join(" P") : "&mdash;") + "</span>" : "") + "</td>";
     }
-    rows += "<tr><td style='text-align:left'><b>" + esc(t) + "</b></td>" + cells + "<td><b>" + total + "</b></td></tr>";
+    grand += total;
+    rows += "<tr><td class='n'>" + esc(t) + "</td>" + cells + "<td class='tot'>" + total + "</td></tr>";
   }
-  openPrint(esc(cfg.school) + " - Teacher leisure report", css, "<h2>" + esc(cfg.school) + " &mdash; Teacher free (leisure) periods per day</h2><table><thead>" + head + "</thead><tbody>" + rows + "</tbody></table>");
+  var foot = "<tr class='sum'><td style='text-align:left'>All teachers</td>" + dayTot.map(function (x) { return "<td>" + x + "</td>"; }).join("") + "<td>" + grand + "</td></tr>";
+  var logo = cfg.logo ? "<img src='" + cfg.logo + "' alt=''>" : "";
+  var now = new Date(), stamp = now.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
+  var hdr = "<div class='hd'>" + logo + "<div><div class='s'>" + esc(cfg.school || "") + "</div><div class='t'>Teacher free-period report &mdash; free periods per day</div></div><div class='d'>" + nT + " teachers &middot; " + cfg.days.length + " days &middot; " + cfg.periods.length + " periods<br>" + esc(stamp) + "</div></div>";
+  var legend = "<div class='lg'><b>Key:</b><span><span class='c' style='" + tone(0) + "'>0</span> no free period</span><span><span class='c' style='" + tone(1) + "'>1</span> one free</span><span><span class='c' style='" + tone(2) + "'>2</span> two or three</span><span><span class='c' style='" + tone(4) + "'>4</span> four or more</span>" + (showP ? "<span>P2 P5 = the free period numbers</span>" : "") + "<span>OFF = not working that day</span><span>Combined subjects are counted.</span></div>";
+  openPrint(esc(cfg.school) + " - Teacher free-period report", css, hdr + "<table><thead>" + head + "</thead><tbody>" + rows + foot + "</tbody></table>" + legend);
 }
