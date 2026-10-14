@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App.jsx";
+import TeacherPage from "./TeacherPage.jsx";
 import { supabase, supabaseReady } from "./supabaseClient";
 
 const sans = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif";
@@ -8,6 +9,20 @@ const sans = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Ar
 // Staff log in with a username; we attach this fixed domain behind the scenes.
 // When you create users in Supabase, use  <username>@amups.local  as the email.
 const LOGIN_DOMAIN = "amups.local";
+
+// Teacher links: …/?t=CODE opens that teacher's read-only page without login.
+// A phone that opened a teacher link before goes straight back to it; …/?admin=1 always shows the staff login.
+function teacherToken() {
+  try {
+    const q = new URLSearchParams(window.location.search);
+    if (q.get("admin")) { localStorage.removeItem("tt_my_token"); return null; }
+    const t = q.get("t");
+    if (t) return t;
+    // a browser where a staff member is signed in never jumps to a remembered teacher page
+    for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i) || ""; if (k.startsWith("sb-") && k.endsWith("-auth-token")) return null; }
+    return localStorage.getItem("tt_my_token");
+  } catch { return null; }
+}
 
 function Login() {
   const [user, setUser] = useState("");
@@ -43,8 +58,8 @@ function ConfigNeeded() {
     <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "linear-gradient(120deg,#0a4f55,#0e6b73)", fontFamily: sans, padding: 20 }}>
       <div style={{ background: "#fff", borderRadius: 16, padding: 28, width: 440, maxWidth: "92vw", boxShadow: "0 18px 50px rgba(0,0,0,.25)" }}>
         <h1 style={{ margin: "0 0 8px", fontSize: 19, color: "#16213a" }}>Almost there - add your Supabase keys</h1>
-        <p style={{ fontSize: 13.5, color: "#48607a", lineHeight: 1.6, margin: "0 0 12px" }}>This app cannot find its database keys, so the login screen is off. In your Vercel project open <b>Settings > Environment Variables</b>, add both of these for <b>Production</b>, then <b>Redeploy</b>:</p>
-        <pre style={{ background: "#f3f5f8", padding: "12px 14px", borderRadius: 10, fontSize: 12.5, color: "#16213a", overflowX: "auto", whiteSpace: "pre-wrap" }}>VITE_SUPABASE_URL = https://YOUR-ID.supabase.co\nVITE_SUPABASE_ANON_KEY = your publishable / anon key</pre>
+        <p style={{ fontSize: 13.5, color: "#48607a", lineHeight: 1.6, margin: "0 0 12px" }}>This app cannot find its database keys, so the login screen is off. In your Vercel project open <b>Settings &gt; Environment Variables</b>, add both of these for <b>Production</b>, then <b>Redeploy</b>:</p>
+        <pre style={{ background: "#f3f5f8", padding: "12px 14px", borderRadius: 10, fontSize: 12.5, color: "#16213a", overflowX: "auto", whiteSpace: "pre-wrap" }}>VITE_SUPABASE_URL = https://YOUR-ID.supabase.co{"\n"}VITE_SUPABASE_ANON_KEY = your publishable / anon key</pre>
         <p style={{ fontSize: 12.5, color: "#647189", margin: "10px 0 0" }}>After redeploying, this becomes your staff login screen.</p>
       </div>
     </div>
@@ -64,4 +79,5 @@ function Root() {
   return <App />;
 }
 
-createRoot(document.getElementById("root")).render(<Root />);
+const TOKEN = teacherToken();
+createRoot(document.getElementById("root")).render(TOKEN ? <TeacherPage token={TOKEN} /> : <Root />);

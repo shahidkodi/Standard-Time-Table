@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { SEED } from "./seed";
-import { loadConfig, saveConfig, subscribeConfig } from "./storage";
+import { loadConfig, saveConfig, subscribeConfig, acceptRemote, publishTeacherPages } from "./storage";
 import { supabase } from "./supabaseClient";
 
 /* ============================================================
@@ -12,7 +12,7 @@ import { supabase } from "./supabaseClient";
    ============================================================ */
 
 const STORE_KEY = "tt_cfg_v2";
-const APP_VERSION = "2026-10-14 b";
+const APP_VERSION = "2026-10-15 a";
 
 const WEEK_ORDER = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const DAY_FULL = { MON: "Monday", TUE: "Tuesday", WED: "Wednesday", THU: "Thursday", FRI: "Friday", SAT: "Saturday", SUN: "Sunday" };
@@ -47,7 +47,7 @@ const THEMES = {
 var CUR_TH = null, CUR_VIEW = "classes", SCHOOL_NAME = "";
 
 const TABS = [
-  ["classes", "Class timetables"], ["teachers", "Teacher timetables"], ["free", "Free & substitution"],
+  ["classes", "Class timetables"], ["teachers", "Teacher timetables"], ["free", "Free & substitution"], ["subs", "Daily substitution"],
   ["bkey", "Mapping"], ["edit", "Assign timetable"], ["rules", "Scheduling rules"],
   ["combined", "Combined subjects"], ["analysis", "Analysis & checks"], ["export", "Import / Export"], ["assistant", "AI assistant"], ["setup", "Classes & setup"],
 ];
@@ -109,6 +109,14 @@ function teacherWorkDays(cfg, t) { const a = (cfg.teacherDays || {})[t]; return 
 function teacherCap(cfg, t) { return teacherWorkDays(cfg, t).length * cfg.periods.length; }
 
 function autoSchedule(cfg, mode = "all", onlyClass = null, opts = {}) {
+  const res = autoScheduleCore(cfg, mode, onlyClass, opts);
+  const pr = qualityPrefs(cfg);
+  if (res && pr.on && !opts.noPolish) {
+    try { const pol = polishGrid(cfg, res.grid, polishMovable(cfg, mode, onlyClass), opts.polishMs || 900); res.grid = pol.grid; res.polished = pol.moves; } catch (e) { /* keep the unpolished timetable */ }
+  }
+  return res;
+}
+function autoScheduleCore(cfg, mode = "all", onlyClass = null, opts = {}) {
   const singles = new Set(cfg.singles);
   const combined = (cfg.combined || []).filter((s) => s && s.name);
   const cByBase = {}; combined.forEach((s) => (cByBase[s.name] = s));
@@ -140,19 +148,26 @@ function autoSchedule(cfg, mode = "all", onlyClass = null, opts = {}) {
   const extraOK = {};  // c|sub -> how many extra same-day periods are unavoidable (periods - days)
   for (const k in autoLim) { const [c, sub] = k.split("|"); const n = autoNotesDays[k]; extraOK[k] = Math.max(0, pf(c, sub) - n); }
   const mappedTeacher = (c, sub) => { const row = (cfg.bkey[c] || []).find((r) => r.sub === sub && r.teacher && !isC(r.teacher)); return row ? row.teacher : null; };
+  const ROOMS = roomsOf(cfg), ROOMCAP = {}; ROOMS.forEach((rm) => (ROOMCAP["#room:" + rm.name] = rm.cap));
+  const roomTok = (sub) => ROOMS.filter((rm) => rm.subjects.includes(sub)).map((rm) => "#room:" + rm.name);
+  const tOfL = (l) => tOf(l.teacher).concat(roomTok(l.sub));
+  const QP = qualityPrefs(cfg), CORE = new Set(QP.on ? QP.core : []), HALF = Math.ceil(P / 2);
+  const mkBusy = () => { const m = new Map(); return { has: (t) => (m.get(t) || 0) >= (ROOMCAP[t] || 1), add: (t) => m.set(t, (m.get(t) || 0) + 1), delete: (t) => { const n = (m.get(t) || 0) - 1; if (n > 0) m.set(t, n); else m.delete(t); } }; };
 
   const gen = (seed) => {
     const r = makeRng(seed);
     const issues = [];
     const grid = {}; cfg.classes.forEach((c) => (grid[c] = Array.from({ length: D }, () => Array.from({ length: P }, () => [null, null]))));
-    const tbusy = Array.from({ length: D }, () => Array.from({ length: P }, () => new Set()));
+    const tbusy = Array.from({ length: D }, () => Array.from({ length: P }, () => mkBusy()));
+    // teacher tokens + room tokens of a cell (a combined session takes its room once, however many divisions)
+    const cellToks = (c, d, p, code, sub) => { const base = tOf(code), rt = roomTok(sub); if (!rt.length) return base; if (isC(code) && cfg.classes.some((c2) => c2 !== c && grid[c2] && grid[c2][d][p][0] === code)) return base; return base.concat(rt); };
     const subDay = {}, subPer = {};
     const fixed = new Set();           // cells placed by a rule or kept from before - never moved by repair
     const key = (c, d, p) => c + "|" + d + "|" + p;
     const extraUsed = {};
     const mark = (c, sub, d, p, k) => { const kd = `${c}|${sub}|${d}`, before = subDay[kd] || 0; if (k > 0 && before >= 1) extraUsed[c + "|" + sub] = (extraUsed[c + "|" + sub] || 0) + 1; if (k < 0 && before >= 2) extraUsed[c + "|" + sub] = (extraUsed[c + "|" + sub] || 0) - 1; subDay[kd] = before + k; subPer[`${c}|${sub}|${p}`] = (subPer[`${c}|${sub}|${p}`] || 0) + k; };
     const tcls = Array.from({ length: D }, () => Array.from({ length: P }, () => new Map()));
-    const put = (c, d, p, code, sub) => { grid[c][d][p] = [code, sub]; const comb = isC(code); tOf(code).forEach((t) => { tbusy[d][p].add(t); if (!comb) tcls[d][p].set(t, c); }); mark(c, sub, d, p, 1); };
+    const put = (c, d, p, code, sub) => { const tk = cellToks(c, d, p, code, sub); grid[c][d][p] = [code, sub]; const comb = isC(code); tk.forEach((t) => { tbusy[d][p].add(t); if (!comb) tcls[d][p].set(t, c); }); mark(c, sub, d, p, 1); };
 
     // 1. keep what must stay: locked cells always; in fill modes, everything already placed
     const frozen = new Set();
@@ -180,13 +195,13 @@ function autoSchedule(cfg, mode = "all", onlyClass = null, opts = {}) {
         for (let d = 0; d < D; d++) for (let p = 0; p < P; p++) if (grid[c][d][p][0] === row.teacher && grid[c][d][p][1] === row.sub) extra++;
         for (let d = D - 1; d >= 0 && extra > 0; d--) for (let p = P - 1; p >= 0 && extra > 0; p--) {
           const k = key(c, d, p);
-          if (grid[c][d][p][0] === row.teacher && grid[c][d][p][1] === row.sub && !frozen.has(k)) { const [code, sub] = grid[c][d][p]; tOf(code).forEach((t) => { tbusy[d][p].delete(t); if (tcls[d][p].get(t) === c) tcls[d][p].delete(t); }); mark(c, sub, d, p, -1); grid[c][d][p] = [null, null]; fixed.delete(k); extra--; }
+          if (grid[c][d][p][0] === row.teacher && grid[c][d][p][1] === row.sub && !frozen.has(k)) { const [code, sub] = grid[c][d][p]; cellToks(c, d, p, code, sub).forEach((t) => { tbusy[d][p].delete(t); if (tcls[d][p].get(t) === c) tcls[d][p].delete(t); }); mark(c, sub, d, p, -1); grid[c][d][p] = [null, null]; fixed.delete(k); extra--; }
         }
       }
     }
     const tOK = (toks, d, p) => toks.every((t) => !tbusy[d][p].has(t) && availT(t, d));
     const book = (c, d, p, code, sub, isFixed) => { put(c, d, p, code, sub); if (isFixed) fixed.add(key(c, d, p)); };
-    const unbook = (c, d, p) => { const [code, sub] = grid[c][d][p]; if (!code) return; tOf(code).forEach((t) => { tbusy[d][p].delete(t); if (tcls[d][p].get(t) === c) tcls[d][p].delete(t); }); mark(c, sub, d, p, -1); grid[c][d][p] = [null, null]; };
+    const unbook = (c, d, p) => { const [code, sub] = grid[c][d][p]; if (!code) return; cellToks(c, d, p, code, sub).forEach((t) => { tbusy[d][p].delete(t); if (tcls[d][p].get(t) === c) tcls[d][p].delete(t); }); mark(c, sub, d, p, -1); grid[c][d][p] = [null, null]; };
     const okSoft = (c, sub, d, p) => { if (!dayOK(c, sub, d)) return false; if (R(sub).distinct && subPer[`${c}|${sub}|${p}`]) return false; return true; };
     const extraLeft = (c, sub) => twiceOK(c, sub) || extraOK[c + "|" + sub] === undefined || (extraUsed[c + "|" + sub] || 0) < extraOK[c + "|" + sub];
     const dayOK = (c, sub, d) => { const n = subDay[`${c}|${sub}|${d}`] || 0; if (n >= limOf(c, sub)) return false; if (n >= 1 && !twiceOK(c, sub) && !extraLeft(c, sub)) return false; return true; };
@@ -203,7 +218,7 @@ function autoSchedule(cfg, mode = "all", onlyClass = null, opts = {}) {
           if (grid[c][d][p][1] === cp.sub) { fixed.add(key(c, d, p)); continue; }
           if (!free(c, d, p)) { issues.push(`Common ${cp.sub}: ${c} ${dayCode} P${pn} is already taken`); continue; }
           const t = mappedTeacher(c, cp.sub);
-          if (t && !tOK(tOf(t), d, p)) { issues.push(`Common ${cp.sub}: ${t} (${c}) is busy or off on ${dayCode} P${pn}`); continue; }
+          if (t && !tOK(tOf(t).concat(roomTok(cp.sub)), d, p)) { issues.push(`Common ${cp.sub}: ${t} (${c}) is busy or off on ${dayCode} P${pn}`); continue; }
           book(c, d, p, t || cp.sub, cp.sub, true);
         }
       }
@@ -267,7 +282,7 @@ function autoSchedule(cfg, mode = "all", onlyClass = null, opts = {}) {
       const divs = [...new Set(sessions.flatMap((sx) => sx.divisions.filter((c) => grid[c])))];
       if (!divs.some((c) => writable.has(c))) continue;
       const need = Math.max(...sessions.map((sx) => Number(sx.perWeek) || pf(sx.divisions[0] || cfg.classes[0], sx.sub)));
-      const teach = [...new Set(sessions.flatMap((sx) => sx.teachers.filter((t) => singles.has(t))))];
+      const teach = [...new Set(sessions.flatMap((sx) => sx.teachers.filter((t) => singles.has(t)).concat(roomTok(sx.sub))))];
       const isRunning = (d, p) => divs.every((c) => sessions.some((sx) => grid[c][d][p][0] === sx.name));
       let placed = 0; const usedD = new Set();
       for (let d = 0; d < D; d++) for (let p = 0; p < P; p++) if (isRunning(d, p)) { placed++; usedD.add(d); }
@@ -327,9 +342,9 @@ function autoSchedule(cfg, mode = "all", onlyClass = null, opts = {}) {
     lessons.sort((a, b) => { const pa = R(a.sub).pin ? 0 : 1, pb = R(b.sub).pin ? 0 : 1; if (pa !== pb) return pa - pb; return tight(b) - tight(a); });
     const unplacedList = [];
     for (const l of lessons) {
-      const toks = tOf(l.teacher); const band = R(l.sub).band;
+      const toks = tOfL(l); const band = R(l.sub).band;
       const cand = shuf(slots(), r).filter(([d, p]) => allowed(l.sub, p));
-      if (band === "early") cand.sort((a, b) => a[1] - b[1]); else if (band === "late") cand.sort((a, b) => b[1] - a[1]);
+      if (band === "early") cand.sort((a, b) => a[1] - b[1]); else if (band === "late") cand.sort((a, b) => b[1] - a[1]); else if (CORE.has(l.sub)) cand.sort((a, b) => (a[1] >= HALF ? 1 : 0) - (b[1] >= HALF ? 1 : 0));
       const tries = [
         ([d, p]) => !av(l.c, l.sub, l.teacher, p) && okSoft(l.c, l.sub, d, p),
         ([d, p]) => !av(l.c, l.sub, l.teacher, p) && dayOK(l.c, l.sub, d),
@@ -344,14 +359,14 @@ function autoSchedule(cfg, mode = "all", onlyClass = null, opts = {}) {
     for (let pass = 0; pass < 3 && remaining.length; pass++) {
       const still = [];
       for (const l of remaining) {
-        const toks = tOf(l.teacher); let fixedIt = false;
+        const toks = tOfL(l); let fixedIt = false;
         const cand = shuf(slots(), r).filter(([d, p]) => allowed(l.sub, p) && tOK(toks, d, p) && dayOK(l.c, l.sub, d) && !av(l.c, l.sub, l.teacher, p));
         cand.sort((a, b) => a[1] - b[1]);
         for (const [d, p] of cand) {
           if (free(l.c, d, p)) { book(l.c, d, p, l.teacher, l.sub, false); fixedIt = true; break; }
           if (!writable.has(l.c) || frozen.has(key(l.c, d, p)) || fixed.has(key(l.c, d, p))) continue;
           const [oc, os] = grid[l.c][d][p]; if (!oc || isC(oc)) continue;
-          const otoks = tOf(oc);
+          const otoks = tOf(oc).concat(roomTok(os));
           unbook(l.c, d, p);
           let moved = null;
           const rel = [];
@@ -379,7 +394,7 @@ function autoSchedule(cfg, mode = "all", onlyClass = null, opts = {}) {
     let budget = 0;
     const place = (l, depth, tabu) => {
       if (--budget < 0) return false;
-      const toks = tOf(l.teacher);
+      const toks = tOfL(l);
       const cand = [];
       for (let d = 0; d < D; d++) {
         if (!toks.every((t) => availT(t, d))) continue;
@@ -422,7 +437,7 @@ function autoSchedule(cfg, mode = "all", onlyClass = null, opts = {}) {
       let best = snap(); const tabu = new Map(); let it = 0, fails = 0;
       while (pool.length && Date.now() < wEnd && fails < (opts.walkFails || 4000)) {
         it++;
-        const li = Math.floor(r() * pool.length); const l = pool[li]; const toks = tOf(l.teacher);
+        const li = Math.floor(r() * pool.length); const l = pool[li]; const toks = tOfL(l);
         const cands = [];
         for (let d = 0; d < D; d++) {
           if (!toks.every((t) => availT(t, d))) continue;
@@ -461,7 +476,7 @@ function autoSchedule(cfg, mode = "all", onlyClass = null, opts = {}) {
 
     const missing = {};
     const why = (l) => {
-      const toks = tOf(l.teacher); let tFree = 0, both = 0;
+      const toks = tOfL(l); let tFree = 0, both = 0;
       for (let d = 0; d < D; d++) for (let p = 0; p < P; p++) { if (!allowed(l.sub, p) || !toks.every((t) => availT(t, d))) continue; if (toks.every((t) => !tbusy[d][p].has(t))) { tFree++; if (!grid[l.c][d][p][0]) both++; } }
       if (!tFree) return "teacher has no free allowed slot";
       if (!both) return "class and teacher are never free together";
@@ -623,6 +638,7 @@ export default function App() {
       if (Array.isArray(next.classes)) next.classes.sort(cmpClass);
       setCfg(next);
       lastSaved.current = JSON.stringify(next);
+      schedulePublish(next);
       if (wasEmpty) { try { await saveConfig(next); } catch {} }
     })();
     const ch = subscribeConfig((remote) => { if (!remote) return; const js = JSON.stringify(remote); if (js === lastSaved.current) return; lastSaved.current = js; if (Array.isArray(remote.classes)) remote.classes.sort(cmpClass); setCfg(remote); setSaved("synced"); });
@@ -630,14 +646,57 @@ export default function App() {
   }, []);
 
   const lastSaved = useRef("");
+  const [pubState, setPubState] = useState(null);
+  const [conflict, setConflict] = useState(null);
+  const pubTimer = useRef(null);
+  const publishRows = async (rows) => { try { const r = await publishTeacherPages(rows); setPubState({ ...r, at: Date.now() }); } catch (e) { setPubState({ ok: false, error: String((e && e.message) || e), at: Date.now() }); } };
+  const schedulePublish = (c) => {
+    if (!c || !c.teacherLinks || !c.teacherLinks.on) return;
+    clearTimeout(pubTimer.current);
+    pubTimer.current = setTimeout(() => { try { publishRows(buildTeacherPages(c)); } catch (e) { setPubState({ ok: false, error: String((e && e.message) || e), at: Date.now() }); } }, 3000);
+  };
   const saveTimer = useRef(null);
   const persist = (next) => {
     setSaved("saving…");
     lastSaved.current = JSON.stringify(next);
     clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(async () => { try { await saveConfig(next); setSaved("saved"); } catch { setSaved("offline · saved on device"); } }, 600);
+    saveTimer.current = setTimeout(async () => {
+      try { await saveConfig(next); setSaved("saved"); schedulePublish(next); }
+      catch (e) { if (e && e.conflict) { setConflict({ remote: e.remote, stamp: e.remoteStamp, mine: next }); setSaved("not saved"); } else setSaved("offline · saved on device"); }
+    }, 600);
   };
-  const update = (fn) => setCfg((prev) => { const next = clone(prev); fn(next); if (Array.isArray(next.classes)) next.classes.sort(cmpClass); persist(next); return next; });
+  const histRef = useRef({ past: [], future: [], lastAt: 0 });
+  const [histN, setHistN] = useState([0, 0]);
+  const syncHist = () => setHistN([histRef.current.past.length, histRef.current.future.length]);
+  const snapPending = useRef(false);
+  const addAutoSnap = (prev, why) => {
+    if (snapPending.current) return; snapPending.current = true;
+    const hint = SNAP_HINT.text && Date.now() - SNAP_HINT.at < 90000 ? SNAP_HINT.text : "";
+    SNAP_HINT = { text: "", at: 0 };
+    makeSnapshot(prev, (hint ? `Before ${hint}` : "Before a big change") + ` — ${why}`, "auto").then((rec) => {
+      setCfg((cur) => { if (!cur) return cur; const n = { ...cur, snapshots: pruneSnaps([...(cur.snapshots || []), rec]) }; persist(n); return n; });
+    }).catch(() => {}).finally(() => { snapPending.current = false; });
+  };
+  const update = (fn) => setCfg((prev) => {
+    const next = clone(prev); fn(next); if (Array.isArray(next.classes)) next.classes.sort(cmpClass);
+    const why = bigChange(prev, next), h = histRef.current, now = Date.now();
+    if (why || now - h.lastAt > 1200) { h.past.push(prev); if (h.past.length > 40) h.past.shift(); }
+    h.lastAt = now; h.future = [];
+    if (why) addAutoSnap(prev, why);
+    setTimeout(syncHist, 0);
+    persist(next); return next;
+  });
+  const keepLive = (target, cur) => { const n = { ...target }; if (cur.snapshots !== undefined) n.snapshots = cur.snapshots; else delete n.snapshots; return n; };
+  const undo = () => setCfg((cur) => { const h = histRef.current; if (!cur || !h.past.length) return cur; const prev = h.past.pop(); h.future.push(cur); h.lastAt = 0; const n = keepLive(prev, cur); persist(n); setTimeout(syncHist, 0); return n; });
+  const redo = () => setCfg((cur) => { const h = histRef.current; if (!cur || !h.future.length) return cur; const nx = h.future.pop(); h.past.push(cur); h.lastAt = 0; const n = keepLive(nx, cur); persist(n); setTimeout(syncHist, 0); return n; });
+  useEffect(() => {
+    const onKey = (e) => {
+      const tg = e.target && e.target.tagName; if (tg === "INPUT" || tg === "TEXTAREA" || tg === "SELECT") return;
+      if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) { e.preventDefault(); if (e.shiftKey) redo(); else undo(); }
+      else if ((e.ctrlKey || e.metaKey) && (e.key === "y" || e.key === "Y")) { e.preventDefault(); redo(); }
+    };
+    window.addEventListener("keydown", onKey); return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const singlesSet = useMemo(() => new Set(cfg?.singles || []), [cfg]);
   const combinedByBase = useMemo(() => {
@@ -746,6 +805,11 @@ export default function App() {
     return t;
   }, [cfg, combinedByBase]);
 
+  useEffect(() => {
+    if (!cfg || !cfg.teacherLinks || !cfg.teacherLinks.on) return;
+    const tk = cfg.teacherLinks.tokens || {}; const miss = cfg.singles.filter((t) => !tk[t]);
+    if (miss.length) update((n) => { const nt = { ...((n.teacherLinks || {}).tokens || {}) }; miss.forEach((t) => { if (!nt[t]) nt[t] = newToken(); }); n.teacherLinks = { ...(n.teacherLinks || {}), tokens: nt }; });
+  }, [cfg && cfg.singles, cfg && cfg.teacherLinks && cfg.teacherLinks.on]);
   const tabStatus = useMemo(() => {
     if (!cfg) return {};
     const cov = combCover(cfg);
@@ -764,7 +828,8 @@ export default function App() {
       rules: { text: nRules ? pl(nRules, "rule") + " set" : "no rules", tone: "info" },
       combined: { text: pl((cfg.combined || []).length, "session"), tone: "info" },
       analysis: { text: totalClashes ? pl(totalClashes, "clash").replace("clashs", "clashes") : "no clashes", tone: totalClashes ? "bad" : "ok" },
-      export: { text: "PDF · CSV", tone: "info" },
+      export: { text: "PDF · CSV · backup", tone: "info" },
+      subs: (() => { const t = isoToday(), nd = subsNeeds(cfg, t), a = ((cfg.subs || {})[t] || {}).assign || {}, ab = Object.keys(((cfg.subs || {})[t] || {}).absent || {}).length, cv = nd.filter((x) => a[x.key]).length; return ab ? { text: `${ab} absent · ${cv}/${nd.length} covered`, tone: cv === nd.length ? "ok" : "warn" } : { text: "no absence today", tone: "info" }; })(),
       assistant: { text: "ask for help", tone: "info" },
       setup: { text: `${cfg.days.length} days · ${cfg.periods.length} periods`, tone: "info" },
     };
@@ -776,7 +841,8 @@ export default function App() {
   const safeFday = cfg.days.includes(fday) ? fday : cfg.days[0];
 
   SCHOOL_LOGO = cfg.logo || ""; SCHOOL_WM = cfg.wmPdf !== false; SCHOOL_NAME = cfg.school || ""; CUR_TH = TH; CUR_VIEW = view;
-  const ctx = { cfg, update, expand, occupancy, clashTokens, teacherLoad, ask, askPw, isCombined, combinedByBase, mobile };
+  const publishNow = (rows) => { if (rows) publishRows(rows); else if (cfg.teacherLinks && cfg.teacherLinks.on) publishRows(buildTeacherPages(cfg)); };
+  const ctx = { pubState, publishNow, cfg, update, expand, occupancy, clashTokens, teacherLoad, ask, askPw, isCombined, combinedByBase, mobile };
 
   return (
     <div style={{ fontFamily: sans, color: C.ink, background: TH.bg, minHeight: "100vh" }}>
@@ -816,6 +882,10 @@ export default function App() {
           <div style={{ fontSize: 16.5, fontWeight: 800, letterSpacing: -0.3 }}>TIME TABLE</div>
           {!mobile && <div style={{ fontSize: 12, color: "rgba(255,255,255,.8)", marginTop: 1, fontWeight: 500 }}>{cfg.school} · {cfg.classes.length} classes · {cfg.singles.length} teachers · {cfg.days.length} days</div>}
         </div>
+        <span style={{ display: "inline-flex", gap: 4 }}>
+          <button className="tt-btn" onClick={undo} disabled={!histN[0]} title="Undo (Ctrl+Z)" aria-label="Undo" style={{ ...headerBtn, padding: "6px 10px", fontSize: 15, opacity: histN[0] ? 1 : 0.45 }}>↶</button>
+          <button className="tt-btn" onClick={redo} disabled={!histN[1]} title="Redo (Ctrl+Y)" aria-label="Redo" style={{ ...headerBtn, padding: "6px 10px", fontSize: 15, opacity: histN[1] ? 1 : 0.45 }}>↷</button>
+        </span>
         <ClashBadge n={totalClashes} onClick={() => setShowClashes(true)} />
         <span style={{ fontSize: 12, color: "rgba(255,255,255,.85)", minWidth: 56, textAlign: "right", fontWeight: 500 }}>{saved}</span>
         <button className="tt-btn" onClick={() => askPw("Reset — clear ALL class timetables to blank? Your mapping, classes, teachers and rules are kept.", () => update((n) => { for (const c of n.classes) for (const d of n.days) n.grid[c][d] = emptyDay(n.periods.length); n.locked = {}; }))} style={headerBtn}>Reset</button>
@@ -839,6 +909,7 @@ export default function App() {
           {mobile && cfg.singles.length > 0 && view === "teachers" && <MobilePicker label="Teacher" items={cfg.singles} value={safeTch} onChange={setTch} />}
           {view === "classes" && (cfg.classes.length ? <ClassView {...ctx} cls={safeCls} /> : <EmptyState msg="No classes yet. Add classes in Classes & setup, then set up your Mapping." onGo={() => setView("setup")} />)}
           {view === "teachers" && (cfg.singles.length ? <TeacherView {...ctx} tch={safeTch} /> : <EmptyState msg="No teachers yet. Add teachers in Classes & setup (or import them with a mapping CSV)." onGo={() => setView("setup")} />)}
+          {view === "subs" && <SubsView {...ctx} />}
           {view === "free" && <FreeView {...ctx} fday={safeFday} setFday={setFday} fper={fper} setFper={setFper} />}
           {view === "bkey" && (cfg.classes.length ? <BKeyView {...ctx} cls={safeCls} setCls={setCls} /> : <EmptyState msg="No classes yet. Add classes in Classes & setup first, then map subjects and teachers here." onGo={() => setView("setup")} />)}
           {view === "edit" && (cfg.classes.length ? <EditView {...ctx} cls={safeCls} /> : <EmptyState msg="No classes yet. Add classes and set up the Mapping before generating a timetable." onGo={() => setView("setup")} />)}
@@ -850,10 +921,20 @@ export default function App() {
           {view === "setup" && <SetupView {...ctx} />}
         </section>
       </main>
+      {conflict && (
+        <div className="tt-noprint" style={{ position: "fixed", left: 12, right: 12, bottom: 12, zIndex: 95, maxWidth: 720, margin: "0 auto", background: "#fff", border: `2px solid ${C.warn}`, borderRadius: 14, boxShadow: "0 12px 34px rgba(0,0,0,.25)", padding: 14, display: "grid", gap: 10 }}>
+          <div style={{ fontSize: 14, fontWeight: 800, color: "#7a5310" }}>⚠ Someone else changed the timetable at the same time</div>
+          <div style={{ fontSize: 12.5, color: C.sub, lineHeight: 1.5 }}>Your last change was <b>not saved</b> yet, so nobody's work is lost. Choose which version to keep. (Whichever you don't choose is kept as a safety copy.)</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button className="tt-btn" onClick={() => { const c = conflict; setConflict(null); if (c.remote) { makeSnapshot(c.mine, "My unsaved change (before loading the other version)", "auto").then((rec) => { setCfg((cur) => { const n = { ...cur, snapshots: pruneSnaps([...(cur.snapshots || []), rec]) }; persist(n); return n; }); }).catch(() => {}); acceptRemote(c.stamp); lastSaved.current = JSON.stringify(c.remote); setCfg(c.remote); setSaved("loaded the other version"); } }} style={solidBtn}>Load their version</button>
+            <button className="tt-btn" onClick={async () => { const c = conflict; setConflict(null); try { if (c.remote) { const rec = await makeSnapshot(c.remote, "The other person's version (overwritten)", "auto"); c.mine = { ...c.mine, snapshots: pruneSnaps([...(c.mine.snapshots || []), rec]) }; setCfg(c.mine); } await saveConfig(c.mine, { force: true }); setSaved("saved"); schedulePublish(c.mine); } catch (e) { setSaved("offline · saved on device"); } }} style={ghostBtn}>Keep mine</button>
+          </div>
+        </div>
+      )}
       {cfg.logo && cfg.wmApp !== false && <div aria-hidden="true" className="tt-noprint" style={{ position: "fixed", inset: 0, pointerEvents: "none", zIndex: 5, backgroundImage: `url(${cfg.logo})`, backgroundRepeat: "no-repeat", backgroundPosition: "center 60%", backgroundSize: mobile ? "72vw" : "min(40vw, 440px)", opacity: 0.05 }} />}
       {showClashes && <ClashListModal list={clashList} onFix={doFixAll} fixMsg={fixMsg} onClose={() => { setShowClashes(false); setFixMsg(""); }} onOpen={(x) => { setShowClashes(false); if (x.kind === "blocks") setView("combined"); else { if (x.cls) setCls(x.cls); setView("edit"); } }} />}
-      {pwState && <PwModal msg={pwState.msg} pwHash={cfg.adminPw} onSetPw={(h) => update((n) => { n.adminPw = h; })} onCancel={() => setPwState(null)} onDone={() => { const f = pwState.onYes; setPwState(null); f(); }} />}
-      {confirmState && <ConfirmModal msg={confirmState.msg} onYes={() => { confirmState.onYes(); setConfirmState(null); }} onNo={() => setConfirmState(null)} />}
+      {pwState && <PwModal msg={pwState.msg} pwHash={cfg.adminPw} onSetPw={(h) => update((n) => { n.adminPw = h; })} onCancel={() => setPwState(null)} onDone={() => { const f = pwState.onYes; setSnapHint(pwState.msg); setPwState(null); f(); }} />}
+      {confirmState && <ConfirmModal msg={confirmState.msg} onYes={() => { setSnapHint(confirmState.msg); confirmState.onYes(); setConfirmState(null); }} onNo={() => setConfirmState(null)} />}
     </div>
   );
 }
@@ -985,6 +1066,7 @@ function Icon({ name, size = 16 }) {
     classes: "M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z",
     teachers: "M12 11a4 4 0 100-8 4 4 0 000 8zM4 21a8 8 0 0116 0",
     free: "M12 7v5l3 2M12 3a9 9 0 100 18 9 9 0 000-18z",
+    subs: "M16 3l4 4-4 4M20 7H9M8 21l-4-4 4-4M4 17h11",
     bkey: "M14 8a4 4 0 10-3.9 4H11l-1.5 1.5L11 15l-1.5 1.5L11 18H8l-2-2v-2h2l2.1-2.1A4 4 0 0114 8z",
     edit: "M4 5h16M4 12h16M4 19h16M9 5v14",
     rules: "M4 7h16M4 17h16M9 4v6M17 14v6",
@@ -1106,7 +1188,7 @@ function TeacherView({ cfg, tch, occupancy, teacherLoad, combinedByBase }) {
   const freeCount = teacherCap(cfg, tch) - placed;
   return (
     <div>
-      <ViewHeader title={`Teacher ${tch}`} meta={[["Placed", placed], ["Free", freeCount, "ok"], ["Mapping target", ld.target, ld.target > placed ? "warn" : undefined]]} right={<PrintBtn onClick={() => exportTeachersPDF(cfg, "A4", [tch])} sub="A4 landscape · with letterhead" />} />
+      <ViewHeader title={`Teacher ${tch}`} meta={[["Placed", placed], ["Free", freeCount, "ok"], ["Mapping target", ld.target, ld.target > placed ? "warn" : undefined]]} right={<><ShareLinkButton cfg={cfg} t={tch} /><PrintBtn onClick={() => exportTeachersPDF(cfg, "A4", [tch])} sub="A4 landscape · with letterhead" /></>} />
       <div className="tt-printarea" style={card}>
         <GridTable cfg={cfg} render={(d, pi) => {
           const r = lookup(d, pi);
@@ -1240,87 +1322,133 @@ function processStamp(img, removeWhite, maxW) {
   return url;
 }
 const HM_TITLES = ["Headmaster", "Headmistress", "Head Teacher", "Principal", "Vice Principal", "Manager"];
-function StampCard({ cfg, update }) {
+function StampCard({ cfg, update, mobile }) {
   const [msg, setMsg] = useState(null);
   const [clean, setClean] = useState(true);
-  const load = (field, label, maxW) => (e) => {
-    const f = e.target.files && e.target.files[0]; e.target.value = "";
+  const [busy, setBusy] = useState("");
+  const [drag, setDrag] = useState("");
+  const th = CUR_TH || THEMES.teal;
+  const hmTitle = cfg.hmTitle || "Headmaster";
+  const [customT, setCustomT] = useState(!!cfg.hmTitle && !HM_TITLES.includes(cfg.hmTitle));
+  const handle = (field, label, maxW, f) => {
     if (!f) return;
     if (!/^image\//.test(f.type)) { setMsg({ ok: false, text: "Please choose an image file (PNG, JPG or WEBP)." }); return; }
+    setBusy(field); setMsg(null);
     const rd = new FileReader();
-    rd.onerror = () => setMsg({ ok: false, text: "Couldn't read this file." });
-    rd.onload = async () => {
+    rd.onerror = () => { setBusy(""); setMsg({ ok: false, text: "Couldn't read this file." }); };
+    rd.onload = () => setTimeout(async () => {
       try {
         const img = await loadImg(rd.result);
         const data = processStamp(img, clean, maxW);
         update((n) => { n[field] = data; });
-        setMsg({ ok: true, text: `${label} saved. It will print on the ${cfg.signOnClass === false && cfg.signOnTeacher === false ? "(switched off) " : ""}class and teacher timetable PDFs.` });
+        setMsg({ ok: true, text: `${label} added — see the preview below.` });
       } catch (er) { setMsg({ ok: false, text: (er && er.message) || "Couldn't use this image." }); }
-    };
+      setBusy("");
+    }, 30);
     rd.readAsDataURL(f);
   };
-  const chk = { display: "inline-flex", alignItems: "center", gap: 7, fontSize: 13, fontWeight: 600, color: C.ink, cursor: "pointer" };
-  const checker = "repeating-conic-gradient(#f1f3f6 0 25%, #ffffff 0 50%) 0 0 / 16px 16px";
-  const Tile = ({ field, label, hint, maxW }) => (
-    <div style={{ flex: "1 1 240px", border: `1px solid ${C.line}`, borderRadius: 14, padding: 12, display: "grid", gap: 10 }}>
-      <div style={{ fontSize: 13, fontWeight: 800 }}>{label} <span style={{ fontSize: 11.5, fontWeight: 600, color: C.sub }}>{hint}</span></div>
-      <div style={{ height: 120, borderRadius: 10, border: `2px dashed ${cfg[field] ? C.primary : C.line}`, background: checker, display: "grid", placeItems: "center", padding: 8 }}>
-        {cfg[field] ? <img src={cfg[field]} alt={label} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} /> : <span style={{ fontSize: 12, color: C.sub }}>Not uploaded</span>}
-      </div>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <label className="tt-btn" style={{ ...solidBtn, display: "inline-block" }}>
-          {cfg[field] ? "Change" : "Upload"}
-          <input type="file" accept="image/*" onChange={load(field, label, maxW)} style={{ display: "none" }} />
-        </label>
-        {cfg[field] && <button className="tt-btn" onClick={() => update((n) => { delete n[field]; })} style={{ ...ghostBtn, color: C.clash }}>Remove</button>}
-      </div>
-    </div>
-  );
-  const hmTitle = cfg.hmTitle || "Headmaster";
-  const [customT, setCustomT] = useState(!!cfg.hmTitle && !HM_TITLES.includes(cfg.hmTitle));
-  return (
-    <div style={{ ...card, marginBottom: 16 }}>
-      <Panelhead text="Headmaster signature & school seal — printed on timetables" count={cfg.hmSign || cfg.seal ? [cfg.hmSign && "signature", cfg.seal && "seal"].filter(Boolean).join(" + ") : "not set"} tone={cfg.hmSign || cfg.seal ? "free" : undefined} />
-      <div style={{ padding: 14, display: "grid", gap: 14 }}>
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-          <Tile field="hmSign" label="HM signature" hint="sign on white paper, photo or scan" maxW={700} />
-          <Tile field="seal" label="School seal" hint="stamp on white paper, photo or scan" maxW={520} />
-          <div style={{ flex: "1 1 260px", display: "grid", gap: 10, alignContent: "start" }}>
-            <label style={{ display: "grid", gap: 4, fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4 }}>Title under the signature
-              <select className="tt-sel" value={customT ? "__custom" : hmTitle} onChange={(e) => { if (e.target.value === "__custom") { setCustomT(true); } else { setCustomT(false); update((n) => { n.hmTitle = e.target.value; }); } }}>
-                {HM_TITLES.map((x) => <option key={x}>{x}</option>)}
-                <option value="__custom">Custom title…</option>
-              </select>
-            </label>
-            {customT && <label style={{ display: "grid", gap: 4, fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4 }}>Your title
-              <input className="tt-in" autoFocus value={cfg.hmTitle && !HM_TITLES.includes(cfg.hmTitle) ? cfg.hmTitle : ""} onChange={(e) => update((n) => { if (e.target.value.trim()) n.hmTitle = e.target.value; else delete n.hmTitle; })} style={{ fontFamily: sans, fontSize: 13 }} />
-            </label>}
-            <label style={{ display: "grid", gap: 4, fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4 }}>Name (optional)
-              <input className="tt-in" value={cfg.hmName || ""} style={{ fontFamily: sans, fontSize: 13 }} onChange={(e) => update((n) => { if (e.target.value) n.hmName = e.target.value; else delete n.hmName; })} />
-            </label>
-            <label style={chk}><input type="checkbox" checked={cfg.signOnClass !== false} onChange={(e) => update((n) => { n.signOnClass = e.target.checked; })} /> Print on class timetables</label>
-            <label style={chk}><input type="checkbox" checked={cfg.signOnTeacher !== false} onChange={(e) => update((n) => { n.signOnTeacher = e.target.checked; })} /> Print on teacher timetables</label>
-            <label style={chk}><input type="checkbox" checked={clean} onChange={(e) => setClean(e.target.checked)} /> Remove white paper background on upload</label>
+  const checker = "repeating-conic-gradient(#eef1f5 0 25%, #ffffff 0 50%) 0 0 / 14px 14px";
+  const Drop = ({ field, label, hint, maxW, icon }) => {
+    const has = !!cfg[field], working = busy === field;
+    return (
+      <div style={{ minWidth: 0, border: `1.5px solid ${has ? `${th.accent}55` : C.line}`, borderRadius: 16, overflow: "hidden", background: "#fff", display: "flex", flexDirection: "column" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderBottom: `1px solid ${C.line}`, background: "#fafbfc" }}>
+          <span style={{ width: 32, height: 32, borderRadius: 10, display: "grid", placeItems: "center", flexShrink: 0, background: has ? `linear-gradient(135deg, ${th.g1}, ${th.g2})` : "#eef1f5", color: has ? "#fff" : th.accent, fontSize: 16 }}>{icon}</span>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ fontSize: 13.5, fontWeight: 800, color: C.ink }}>{label}</div>
+            <div style={{ fontSize: 11.5, color: C.sub }}>{hint}</div>
           </div>
+          <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 9px", borderRadius: 20, whiteSpace: "nowrap", background: has ? C.freeSoft : "#f1f3f6", color: has ? C.free : C.sub }}>{has ? "✓ Added" : "Not added"}</span>
         </div>
-        {(cfg.hmSign || cfg.seal) && (
-          <div>
-            <div style={{ fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 6 }}>Preview — bottom of a timetable page</div>
-            <div style={{ display: "flex", alignItems: "flex-end", gap: 48, padding: "14px 22px 12px", border: `1px solid ${C.line}`, borderRadius: 12, background: "#fff" }}>
-              <div style={{ marginRight: "auto", fontSize: 11, color: C.sub }}>{cfg.school} · Class 5 A<br />Generated today</div>
-              <div style={{ width: 190, textAlign: "center" }}><div style={{ height: 58 }} /><div style={{ borderTop: `1.5px solid ${C.ink}`, paddingTop: 3, fontSize: 12, fontWeight: 700 }}>Class Teacher</div></div>
-              <div style={{ width: 190, textAlign: "center" }}>
-                <div style={{ height: 58, position: "relative", display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
-                  {cfg.seal && <img src={cfg.seal} alt="" style={{ position: "absolute", left: -48, bottom: -16, height: 88, width: 88, objectFit: "contain", opacity: 0.9, mixBlendMode: "multiply" }} />}
-                  {cfg.hmSign && <img src={cfg.hmSign} alt="" style={{ position: "relative", maxHeight: 56, maxWidth: 176, objectFit: "contain", mixBlendMode: "multiply" }} />}
-                </div>
-                <div style={{ borderTop: `1.5px solid ${C.ink}`, paddingTop: 3, fontSize: 12, fontWeight: 700 }}>{hmTitle}{cfg.hmName && <div style={{ fontSize: 11, fontWeight: 600, color: C.sub }}>{cfg.hmName}</div>}</div>
-              </div>
-            </div>
+        <label onDragOver={(e) => { e.preventDefault(); setDrag(field); }} onDragLeave={() => setDrag("")} onDrop={(e) => { e.preventDefault(); setDrag(""); handle(field, label, maxW, e.dataTransfer.files && e.dataTransfer.files[0]); }}
+          style={{ display: "grid", placeItems: "center", height: mobile ? 130 : 140, margin: 10, borderRadius: 12, cursor: "pointer", border: `2px dashed ${drag === field ? th.accent : has ? "transparent" : "#c9d1dc"}`, background: has ? checker : drag === field ? `${th.accent}10` : "#f8fafc", padding: 10, overflow: "hidden" }}>
+          <input type="file" accept="image/*" onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; handle(field, label, maxW, f); }} style={{ display: "none" }} />
+          {working ? <span style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5, color: th.accent, fontWeight: 700 }}><span className="tt-spin" />Cleaning the image…</span>
+            : has ? <img src={cfg[field]} alt={label} style={{ display: "block", maxWidth: "100%", maxHeight: (mobile ? 130 : 140) - 24, width: "auto", height: "auto", objectFit: "contain" }} />
+            : <span style={{ textAlign: "center", color: C.sub, fontSize: 12.5, lineHeight: 1.5 }}>
+                <span style={{ display: "grid", placeItems: "center", width: 40, height: 40, margin: "0 auto 6px", borderRadius: 12, background: `${th.accent}14`, color: th.accent }}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 16V4M7 9l5-5 5 5M5 20h14" /></svg>
+                </span>
+                <b style={{ color: C.ink }}>{mobile ? "Tap to take a photo or choose" : "Click or drop an image here"}</b><br />PNG, JPG or a phone photo
+              </span>}
+        </label>
+        {has && (
+          <div style={{ display: "flex", gap: 8, padding: "0 10px 10px" }}>
+            <label className="tt-btn" style={{ ...ghostBtn, flex: 1, textAlign: "center", cursor: "pointer" }}>
+              Replace<input type="file" accept="image/*" onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; handle(field, label, maxW, f); }} style={{ display: "none" }} />
+            </label>
+            <button className="tt-btn" onClick={() => update((n) => { delete n[field]; })} style={{ ...ghostBtn, flex: 1, color: C.clash }}>Remove</button>
           </div>
         )}
-        <div className="tt-callout">Sign (or stamp) on plain white paper, take a clear photo from straight above in good light, and upload it. The white paper is removed automatically and the empty edges are trimmed, so only the ink prints. The images are saved with your timetable, so every device prints them.</div>
+      </div>
+    );
+  };
+  const seg = (val, opts, set) => (
+    <div style={{ display: "inline-flex", border: `1px solid ${C.line}`, borderRadius: 10, overflow: "hidden", background: "#fff" }}>
+      {opts.map(([k, l]) => <button key={k} className="tt-btn" onClick={() => set(k)} style={{ border: "none", padding: "6px 12px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", background: val === k ? th.accent : "transparent", color: val === k ? "#fff" : C.sub }}>{l}</button>)}
+    </div>
+  );
+  const lab = { display: "grid", gap: 5, fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4, minWidth: 0 };
+  const chk = { display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 600, color: C.ink, cursor: "pointer" };
+  const g = stampGeom(cfg), px = mobile ? 3.3 : 3.6;
+  return (
+    <div style={{ ...card, marginBottom: 16 }}>
+      <Panelhead text="Headmaster signature & school seal" count={cfg.hmSign || cfg.seal ? [cfg.hmSign && "signature", cfg.seal && "seal"].filter(Boolean).join(" + ") : "not set"} tone={cfg.hmSign || cfg.seal ? "free" : undefined} />
+      <div style={{ padding: mobile ? 12 : 14, display: "grid", gap: 14 }}>
+        <div className="tt-callout">Sign or stamp on plain white paper and take a photo from straight above in good light. The paper is removed and the edges trimmed automatically, so only the ink prints on the class and teacher timetables.</div>
+        <div style={{ display: "grid", gridTemplateColumns: mobile ? "minmax(0, 1fr)" : "repeat(2, minmax(0, 1fr))", gap: 12 }}>
+          <Drop field="hmSign" label="HM signature" hint="Signed on white paper" maxW={700} icon="✍" />
+          <Drop field="seal" label="School seal" hint="Stamped on white paper" maxW={520} icon="◉" />
+        </div>
+        <label style={{ ...chk, fontSize: 12.5, color: C.sub }}><input type="checkbox" checked={clean} onChange={(e) => setClean(e.target.checked)} /> Remove the white paper background when uploading (untick for a ready-made transparent PNG)</label>
         {msg && <div style={{ fontSize: 12.5, fontWeight: 600, color: msg.ok ? C.free : C.clash }}>{msg.text}</div>}
+
+        <div style={{ display: "grid", gridTemplateColumns: mobile ? "minmax(0, 1fr)" : "repeat(2, minmax(0, 1fr))", gap: 14, padding: 12, borderRadius: 14, background: "#f8fafc", border: `1px solid ${C.line}` }}>
+          <label style={lab}>Title under the signature
+            <select className="tt-sel" style={{ fontFamily: sans, fontSize: 13, height: 36 }} value={customT ? "__custom" : hmTitle} onChange={(e) => { if (e.target.value === "__custom") setCustomT(true); else { setCustomT(false); update((n) => { n.hmTitle = e.target.value; }); } }}>
+              {HM_TITLES.map((x) => <option key={x}>{x}</option>)}
+              <option value="__custom">Custom title…</option>
+            </select>
+          </label>
+          {customT ? (
+            <label style={lab}>Your title
+              <input className="tt-in" autoFocus value={cfg.hmTitle && !HM_TITLES.includes(cfg.hmTitle) ? cfg.hmTitle : ""} onChange={(e) => update((n) => { if (e.target.value.trim()) n.hmTitle = e.target.value; else delete n.hmTitle; })} style={{ fontFamily: sans, fontSize: 13, height: 36 }} />
+            </label>
+          ) : (
+            <label style={lab}>Name (optional)
+              <input className="tt-in" value={cfg.hmName || ""} style={{ fontFamily: sans, fontSize: 13, height: 36 }} onChange={(e) => update((n) => { if (e.target.value) n.hmName = e.target.value; else delete n.hmName; })} />
+            </label>
+          )}
+          {customT && (
+            <label style={lab}>Name (optional)
+              <input className="tt-in" value={cfg.hmName || ""} style={{ fontFamily: sans, fontSize: 13, height: 36 }} onChange={(e) => update((n) => { if (e.target.value) n.hmName = e.target.value; else delete n.hmName; })} />
+            </label>
+          )}
+          <div style={lab}>Signature size {seg(cfg.signSize || "M", [["S", "Small"], ["M", "Medium"], ["L", "Large"]], (v) => update((n) => { n.signSize = v; }))}</div>
+          <div style={lab}>Seal size {seg(cfg.sealSize || "M", [["S", "Small"], ["M", "Medium"], ["L", "Large"]], (v) => update((n) => { n.sealSize = v; }))}</div>
+          <div style={lab}>Seal position {seg(cfg.sealPos || "left", [["left", "Left"], ["over", "On the sign"], ["right", "Right"]], (v) => update((n) => { n.sealPos = v; }))}</div>
+          <div style={{ display: "grid", gap: 8, alignContent: "start" }}>
+            <label style={chk}><input type="checkbox" checked={cfg.signOnClass !== false} onChange={(e) => update((n) => { n.signOnClass = e.target.checked; })} /> Print on class timetables</label>
+            <label style={chk}><input type="checkbox" checked={cfg.signOnTeacher !== false} onChange={(e) => update((n) => { n.signOnTeacher = e.target.checked; })} /> Print on teacher timetables</label>
+          </div>
+        </div>
+
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 6 }}>Preview — bottom of a printed timetable (actual proportions)</div>
+          <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "flex-end", gap: mobile ? 0 : 40, padding: mobile ? "18px 14px 12px" : "18px 26px 14px", border: `1px solid ${C.line}`, borderRadius: 12, background: "#fff", overflow: "hidden", boxShadow: "inset 0 -3px 0 #0e6b7322" }}>
+            {!mobile && <div style={{ marginRight: "auto", fontSize: 11, color: C.sub, lineHeight: 1.5 }}>{cfg.school} · Class 5 A<br />Generated today</div>}
+            {!mobile && <div style={{ width: 52 * px, textAlign: "center", flexShrink: 0 }}><div style={{ height: g.boxH * px }} /><div style={{ borderTop: `1.5px solid ${C.ink}`, paddingTop: 3, fontSize: 12, fontWeight: 700 }}>Class Teacher</div></div>}
+            <div style={{ width: 52 * px, maxWidth: "100%", textAlign: "center", flexShrink: 0, margin: mobile ? "0 auto" : 0 }}>
+              <div style={{ height: g.boxH * px, position: "relative", display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
+                {cfg.seal && <img src={cfg.seal} alt="" style={{ position: "absolute", width: g.sd * px, height: g.sd * px, objectFit: "contain", opacity: 0.9, mixBlendMode: "multiply",
+                  ...(g.pos === "over" ? { left: "50%", marginLeft: (-g.sd / 2) * px, bottom: -g.sd * 0.04 * px } : g.pos === "right" ? { right: -6 * px, bottom: -g.sd * 0.2 * px } : { left: mobile ? -8 * px : -15 * px, bottom: -g.sd * 0.2 * px }) }} />}
+                {cfg.hmSign ? <img src={cfg.hmSign} alt="" style={{ position: "relative", maxHeight: g.sh * px, maxWidth: 50 * px, objectFit: "contain", mixBlendMode: "multiply" }} />
+                  : !cfg.seal && <span style={{ fontSize: 11.5, color: C.sub, alignSelf: "center" }}>Upload a signature or seal to see it here</span>}
+              </div>
+              <div style={{ borderTop: `1.5px solid ${C.ink}`, paddingTop: 3, fontSize: 12, fontWeight: 700, position: "relative" }}>{hmTitle}{cfg.hmName && <div style={{ fontSize: 11, fontWeight: 600, color: C.sub }}>{cfg.hmName}</div>}</div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -2057,7 +2185,8 @@ function versionStats(cfg, grid) {
   }
   let gaps = 0;
   for (const t of Object.keys(busy)) for (const d of Object.keys(busy[t])) { const ps = [...busy[t][d]].sort((a, b) => a - b); gaps += ps[ps.length - 1] - ps[0] + 1 - ps.length; }
-  return { filled, total, ctP1, doubles, gaps };
+  let q = 0; try { q = qualityReport(cfg, grid).score; } catch (e) { /* ignore */ }
+  return { filled, total, ctP1, doubles, gaps, q };
 }
 
 function gridDiff(cfg, g1, g2) {
@@ -2065,7 +2194,7 @@ function gridDiff(cfg, g1, g2) {
   for (const c of cfg.classes) { const lim = classPeriods(cfg, c); for (const d of cfg.days) for (let p = 0; p < lim; p++) { tot++; if ((g1?.[c]?.[d]?.[p]?.[0] || "") !== (g2?.[c]?.[d]?.[p]?.[0] || "")) diff++; } }
   return tot ? diff / tot : 0;
 }
-function versionScore(st) { return st.filled * 100 + st.ctP1 * 3 - st.doubles * 2 - st.gaps; }
+function versionScore(st) { return st.filled * 100 + (st.q || 0) * 4 + st.ctP1 * 3 - st.doubles * 2 - st.gaps * 0.3; }
 function versionsCSV(cfg, list) {
   const q = (x) => (/[",\n]/.test(x) ? `"${x.replace(/"/g, '""')}"` : x);
   const L = [["Version", "Class", "Day", ...cfg.periods.map((p) => "P" + p)].join(",")];
@@ -2180,13 +2309,13 @@ function VersionsPanel({ cfg, update, ask, opts }) {
             <div className="tt-scroll" style={{ overflowX: "auto" }}>
               <table style={{ ...tbl, minWidth: 1080 }}>
                 <thead><tr>
-                  <th style={{ ...th, width: 120 }}>Version</th><th style={th} title="Periods placed">Filled</th><th style={th} title="Days the class teacher takes P1">Class teacher P1</th><th style={th} title="Times a subject comes twice on one day">Twice a day</th><th style={th} title="Empty periods between a teacher's lessons">Teacher gaps</th><th style={th} title="How much it differs from the timetable you have now">Different from now</th><th style={th}>Actions</th>
+                  <th style={{ ...th, width: 120 }}>Version</th><th style={th} title="Periods placed">Filled</th><th style={th} title="Days the class teacher takes P1">Class teacher P1</th><th style={th} title="Times a subject comes twice on one day">Twice a day</th><th style={th} title="Empty periods between a teacher's lessons">Teacher gaps</th><th style={th} title="Teaching-quality score from your preferences">Quality</th><th style={th} title="How much it differs from the timetable you have now">Different from now</th><th style={th}>Actions</th>
                 </tr></thead>
                 <tbody>{shown.map((x) => (
                   <tr key={x.id} style={{ background: view.id === x.id ? C.primarySoft : "transparent" }}>
                     <td style={{ ...cellTd, height: 36, fontWeight: 800 }}>{x.name.replace("Version ", "#")}{x.score === bestScore && list.length > 1 && <span style={{ marginLeft: 6, fontSize: 10.5, padding: "1px 7px", borderRadius: 10, background: C.freeSoft, color: C.free }}>★ best</span>}</td>
                     <td style={{ ...cellTd, height: 36, fontFamily: mono, color: x.unplaced ? C.warn : C.free, fontWeight: 700 }}>{x.st.filled}/{x.st.total}</td>
-                    {num(x.st.ctP1, "ctP1", 1)}{num(x.st.doubles, "doubles", -1)}{num(x.st.gaps, "gaps", -1)}
+                    {num(x.st.ctP1, "ctP1", 1)}{num(x.st.doubles, "doubles", -1)}{num(x.st.gaps, "gaps", -1)}{num(x.st.q || 0, "q", 1)}
                     <td style={{ ...cellTd, height: 36, fontFamily: mono }}>{Math.round(x.diffNow * 100)}%</td>
                     <td style={{ ...cellTd, height: 36, minWidth: 380 }}>{actions(x, false)}</td>
                   </tr>))}
@@ -2231,7 +2360,7 @@ function VersionsPanel({ cfg, update, ask, opts }) {
   );
 }
 
-function EditView({ cfg, cls, update, expand, clashTokens, occupancy, ask, askPw }) {
+function EditView({ cfg, cls, update, expand, clashTokens, occupancy, ask, askPw, mobile }) {
   const keys = cfg.bkey[cls] || [];
   const [report, setReport] = useState("");
   const [fzDay, setFzDay] = useState(cfg.days[0]);
@@ -2355,6 +2484,8 @@ function EditView({ cfg, cls, update, expand, clashTokens, occupancy, ask, askPw
         <label title="Spends up to about 25 seconds searching, to place as many periods as possible" style={{ fontSize: 12.5, color: C.sub, display: "inline-flex", alignItems: "center", gap: 5, fontWeight: 600 }}><input type="checkbox" checked={thorough} onChange={(e) => setThorough(e.target.checked)} /> Try harder (max fill)</label>
       </>} />
       {report && <Banner tone="primary">{report}</Banner>}
+      <QualityPanel cfg={cfg} update={update} ask={ask} compact />
+      <SwapBoard cfg={cfg} update={update} cls={cls} mobile={mobile} />
       <VersionsPanel cfg={cfg} update={update} ask={ask} opts={genOpts} />
       <div style={{ ...card, marginBottom: 14, padding: 12, display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
         <span style={{ fontSize: 12.5, fontWeight: 700, color: C.sub }}>Change a teacher after assigning:</span>
@@ -2579,6 +2710,8 @@ function RulesView({ cfg, update, ask }) {
       <ViewHeader title="Scheduling rules" note="Conditions the auto-generator must respect. Set them, then press Auto-generate on the Assign tab." />
       <Banner tone="primary">Rules are applied when you Auto-generate. Each is per subject and applies to every class. If a rule is impossible (e.g. a subject taught by one teacher pinned to the same period for all classes), the generator will leave those lessons unplaced and tell you.</Banner>
       <div style={{ marginBottom: 16 }}><FreezePanel cfg={cfg} update={update} ask={ask} /></div>
+      <QualityPanel cfg={cfg} update={update} ask={ask} />
+      <RoomsPanel cfg={cfg} update={update} ask={ask} />
       <div style={{ ...card, overflowX: "auto" }}>
         <table style={{ ...tbl, minWidth: 920, tableLayout: "auto" }}>
           <thead>
@@ -3608,7 +3741,7 @@ function ImportPanel({ cfg, update, ask }) {
 }
 
 /* ---------------- Export / PDF ---------------- */
-function ExportView({ cfg, update, ask }) {
+function ExportView({ cfg, update, ask, pubState, publishNow, mobile }) {
   const [paper, setPaper] = useState("A4");
   const [ov, setOv] = useState({ paper: "A3", orient: "landscape", cper: 40, tper: 24 });
   const th = CUR_TH || THEMES.teal;
@@ -3655,8 +3788,1111 @@ function ExportView({ cfg, update, ask }) {
           </div>} />
         <Card icon="setup" title="Data backup" desc="Download all your setup and timetable (classes, teachers, mapping, rules, combined subjects, timetable) as one file. Keep it as a backup, or share it when asking for help."
           actions={<PrintBtn onClick={() => exportJSON(cfg)} icon="download" light label={<>Download data backup (.json)</>} />} />
+        <TeacherLinksPanel cfg={cfg} update={update} ask={ask} pubState={pubState} publishNow={publishNow} mobile={mobile} />
+        <ExcelCard cfg={cfg} />
+        <SafetyPanel cfg={cfg} update={update} ask={ask} />
         <Card icon="free" title="Leisure / free periods" desc="Four ways to print who is free. The substitution chart is the quickest to use on a notice board: find the day and period, and every free teacher is listed in that box."
           actions={<LeisureExport cfg={cfg} paper={paper} />} />
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Rooms, teaching quality & period swaps ---------------- */
+function roomsOf(cfg) { return (cfg.rooms || []).filter((r) => r && r.name && (r.subjects || []).length).map((r) => ({ name: r.name, cap: Math.max(1, Number(r.cap) || 1), subjects: r.subjects })); }
+function qualityPrefs(cfg) {
+  const p = cfg.prefs || {};
+  return { on: p.on !== false, maxRun: p.maxRun === undefined ? 3 : Number(p.maxRun) || 0, core: Array.isArray(p.core) ? p.core : [], dailyFree: p.dailyFree !== false, spread: p.spread !== false };
+}
+// state of a timetable used by the quality score, the polish pass and the swap check
+function qState(cfg, grid) {
+  const DAYS = cfg.days, D = DAYS.length, P = cfg.periods.length, singles = new Set(cfg.singles);
+  const cm = {}; (cfg.combined || []).forEach((x) => { if (x && x.name) cm[x.name] = x; });
+  const isC = (code) => !!(code && cm[combName(cm, code)]);
+  const toks = (code) => { if (!code) return []; const s = cm[combName(cm, code)]; if (s) return s.teachers.filter((t) => singles.has(t)); return String(code).split(" ").filter((t) => singles.has(t)); };
+  const ROOMS = roomsOf(cfg), roomsFor = {}; for (const r of ROOMS) for (const s of r.subjects) (roomsFor[s] || (roomsFor[s] = [])).push(r.name);
+  const cap = {}; ROOMS.forEach((r) => (cap[r.name] = r.cap));
+  const tb = {}; cfg.singles.forEach((t) => (tb[t] = Array.from({ length: D }, () => new Array(P).fill(0))));
+  const rc = {}; ROOMS.forEach((r) => (rc[r.name] = Array.from({ length: D }, () => new Array(P).fill(0))));
+  const sdc = {};
+  for (let d = 0; d < D; d++) for (let p = 0; p < P; p++) {
+    const seen = new Set();
+    for (const c of cfg.classes) {
+      const sl = grid[c] && grid[c][DAYS[d]] && grid[c][DAYS[d]][p]; if (!sl || !sl[0]) continue;
+      const k = c + "|" + d + "|" + sl[1]; sdc[k] = (sdc[k] || 0) + 1;
+      if (isC(sl[0])) { if (seen.has(sl[0])) continue; seen.add(sl[0]); }
+      for (const t of toks(sl[0])) if (tb[t]) tb[t][d][p]++;
+      for (const r of roomsFor[sl[1]] || []) rc[r][d][p]++;
+    }
+  }
+  return { DAYS, D, P, cm, isC, toks, roomsFor, cap, tb, rc, sdc };
+}
+function tdPen(arr, pr, P) {
+  let pen = 0, run = 0, busy = 0;
+  for (let p = 0; p <= P; p++) { const b = p < P && arr[p] > 0; if (b) { run++; busy++; } else { if (pr.maxRun && run > pr.maxRun) pen += 3 * (run - pr.maxRun); run = 0; } }
+  if (pr.dailyFree && busy >= P) pen += 4;
+  return pen;
+}
+function spreadPen(cfg, st, c, sub, pr) {
+  if (!pr.spread || !sub) return 0;
+  const days = []; let k = 0;
+  for (let d = 0; d < st.D; d++) { const n = st.sdc[c + "|" + d + "|" + sub] || 0; days.push(n > 0); k += n; }
+  if (!k || k > Math.floor(st.D / 2)) return 0;
+  let pen = 0; for (let d = 1; d < st.D; d++) if (days[d] && days[d - 1]) pen++;
+  return pen;
+}
+function qualityReport(cfg, grid) {
+  const pr = qualityPrefs(cfg), st = qState(cfg, grid), P = st.P, half = Math.ceil(P / 2), core = new Set(pr.core);
+  let runs = 0, noFree = 0, afternoon = 0, spread = 0, lessons = 0, pen = 0, gaps = 0;
+  for (const t of cfg.singles) for (let d = 0; d < st.D; d++) {
+    if (!teacherWorkDays(cfg, t).includes(st.DAYS[d])) continue;
+    const a = st.tb[t][d], tp = tdPen(a, pr, P); pen += tp;
+    let run = 0, busy = 0, over = false, first = -1, last = -1;
+    for (let p = 0; p <= P; p++) { const b = p < P && a[p] > 0; if (b) { run++; busy++; if (first < 0) first = p; last = p; } else { if (pr.maxRun && run > pr.maxRun) over = true; run = 0; } }
+    if (over) runs++; if (pr.dailyFree && busy >= P) noFree++; if (busy) gaps += last - first + 1 - busy;
+  }
+  const subsOf = {};
+  for (const c of cfg.classes) for (let d = 0; d < st.D; d++) for (let p = 0; p < P; p++) {
+    const sl = grid[c] && grid[c][st.DAYS[d]] && grid[c][st.DAYS[d]][p]; if (!sl || !sl[0]) continue;
+    lessons++; (subsOf[c] || (subsOf[c] = new Set())).add(sl[1]);
+    if (core.has(sl[1]) && p >= half) { afternoon++; pen += 1; }
+  }
+  for (const c of Object.keys(subsOf)) for (const s of subsOf[c]) { const sp = spreadPen(cfg, st, c, s, pr); spread += sp; pen += sp; }
+  let tdays = 0; for (const t of cfg.singles) tdays += teacherWorkDays(cfg, t).length;
+  let coreL = 0; for (const c of cfg.classes) for (const dc of cfg.days) for (const sl of (grid[c] && grid[c][dc]) || []) if (sl && sl[0] && core.has(sl[1])) coreL++;
+  const fr = (a, b) => (b ? Math.min(1, a / b) : 0);
+  const parts = { runs: pr.maxRun ? fr(runs, tdays) : 0, noFree: pr.dailyFree ? fr(noFree, tdays) : 0, afternoon: core.size ? fr(afternoon, coreL) : 0, spread: pr.spread ? fr(spread, cfg.classes.length * 2) : 0 };
+  const score = lessons ? Math.max(0, Math.round(100 - 30 * parts.runs - 25 * parts.noFree - 30 * parts.afternoon - 15 * parts.spread)) : 0;
+  return { score, pen, runs, noFree, afternoon, spread, gaps, lessons, coreLessons: coreL, teacherDays: tdays, parts, prefs: pr };
+}
+// which cells the polish pass may move
+function polishMovable(cfg, mode, onlyClass) {
+  const common = new Set(); for (const cp of cfg.commonPeriods || []) for (const c of cp.classes || []) for (const [dc, pn] of cp.slots || []) common.add(c + "|" + dc + "|" + ((+pn) - 1));
+  return (c, dc, p) => {
+    if (mode === "class" && c !== onlyClass) return false;
+    if (p >= classPeriods(cfg, c)) return false;
+    if (cfg.locked && cfg.locked[c + "|" + dc + "|" + p]) return false;
+    if (cfg.classRules && cfg.classRules[c] && cfg.classRules[c][p + 1]) return false;
+    if (common.has(c + "|" + dc + "|" + p)) return false;
+    if (mode === "gaps") { const sl = cfg.grid[c] && cfg.grid[c][dc] && cfg.grid[c][dc][p]; if (sl && sl[0]) return false; }
+    return true;
+  };
+}
+// hard + soft checks for moving lesson x (at da,pa) to (db,pb) while lesson y goes the other way, inside class c
+function moveProblems(cfg, st, c, x, da, pa, y, db, pb) {
+  const hard = [], soft = [];
+  if (!x || !x[0]) return { hard, soft };
+  const R = (cfg.rules || {})[x[1]] || {};
+  if (R.pin && R.pin !== pb + 1) hard.push(`${x[1]} is pinned to P${R.pin}`);
+  if (R.forbid && R.forbid.includes(pb + 1)) hard.push(`${x[1]} is not allowed in P${pb + 1}`);
+  const yt = y && y[0] ? st.toks(y[0]) : [];
+  for (const t of st.toks(x[0])) {
+    if (!teacherWorkDays(cfg, t).includes(st.DAYS[db])) { hard.push(`${t} doesn't work on ${DAY_FULL[st.DAYS[db]] || st.DAYS[db]}`); continue; }
+    const n = (st.tb[t] ? st.tb[t][db][pb] : 0) - (yt.includes(t) && (da !== db || pa !== pb) ? 1 : 0) - (da === db && pa === pb ? 1 : 0);
+    if (n > 0) { let where = ""; for (const c2 of cfg.classes) { if (c2 === c) continue; const s2 = cfg.grid[c2] && cfg.grid[c2][st.DAYS[db]] && cfg.grid[c2][st.DAYS[db]][pb]; if (s2 && s2[0] && st.toks(s2[0]).includes(t)) { where = c2; break; } } hard.push(`${t} is teaching ${where || "another class"} then`); }
+  }
+  for (const r of st.roomsFor[x[1]] || []) { const n = st.rc[r][db][pb] - (y && y[0] && (st.roomsFor[y[1]] || []).includes(r) ? 1 : 0); if (n >= st.cap[r]) hard.push(`${r} is full then`); }
+  if (da !== db && x[1] !== (y && y[1])) {
+    const now = cfg.grid[c] ? cfg.days.map((dc) => (cfg.grid[c][dc] || []).filter((s) => s && s[1] === x[1]).length) : [];
+    const lim = Math.max((cfg.twice && cfg.twice[stdOf(c)] && cfg.twice[stdOf(c)][x[1]]) ? 2 : 1, ...now);
+    if ((st.sdc[c + "|" + db + "|" + x[1]] || 0) + 1 > lim) soft.push(`${x[1]} would come twice on ${DAY_FULL[st.DAYS[db]] || st.DAYS[db]}`);
+  }
+  if (R.distinct) for (let d = 0; d < st.D; d++) { if (d === da || d === db) continue; const s2 = cfg.grid[c] && cfg.grid[c][st.DAYS[d]] && cfg.grid[c][st.DAYS[d]][pb]; if (s2 && s2[1] === x[1]) { soft.push(`${x[1]} is already in P${pb + 1} on another day`); break; } }
+  return { hard, soft };
+}
+function swapCheck(cfg, c, da, pa, db, pb) {
+  const st = qState(cfg, cfg.grid), dA = cfg.days[da], dB = cfg.days[db];
+  const a = cfg.grid[c] && cfg.grid[c][dA] && cfg.grid[c][dA][pa], b = cfg.grid[c] && cfg.grid[c][dB] && cfg.grid[c][dB][pb];
+  const out = { hard: [], soft: [] };
+  const mv = polishMovable(cfg, "all");
+  if (!mv(c, dA, pa) || !mv(c, dB, pb)) out.hard.push("A locked, rule, common or beyond-the-day period can't be moved");
+  if ((a && a[0] && st.isC(a[0])) || (b && b[0] && st.isC(b[0]))) out.hard.push("Combined periods move together — use the Combined subjects tab");
+  if (out.hard.length) return out;
+  const m1 = moveProblems(cfg, st, c, a, da, pa, b, db, pb), m2 = moveProblems(cfg, st, c, b, db, pb, a, da, pa);
+  out.hard.push(...m1.hard, ...m2.hard); out.soft.push(...m1.soft, ...m2.soft);
+  return out;
+}
+// hill-climb: swap lessons inside a class (never breaking a hard rule) to lower the quality penalty
+function polishGrid(cfg, gridIn, movable, ms) {
+  const pr = qualityPrefs(cfg);
+  const grid = JSON.parse(JSON.stringify(gridIn));
+  const work = { ...cfg, grid };
+  const st = qState(work, grid), P = st.P, D = st.D, half = Math.ceil(P / 2), core = new Set(pr.core);
+  const cells = {};
+  for (const c of cfg.classes) { const list = []; for (let d = 0; d < D; d++) for (let p = 0; p < P; p++) { const sl = grid[c] && grid[c][st.DAYS[d]] && grid[c][st.DAYS[d]][p]; if (!sl) continue; if (sl[0] && st.isC(sl[0])) continue; if (movable(c, st.DAYS[d], p)) list.push([d, p]); } if (list.length > 1) cells[c] = list; }
+  const cls = Object.keys(cells); if (!cls.length) return { grid, moves: 0 };
+  const workDay = {}; cfg.singles.forEach((t) => { const w = teacherWorkDays(cfg, t); workDay[t] = st.DAYS.map((dc) => w.includes(dc)); });
+  const tdp = (t, d) => (workDay[t] && workDay[t][d] ? tdPen(st.tb[t][d], pr, P) : 0);
+  const at = (c, d, p) => grid[c][st.DAYS[d]][p];
+  const local = (c, d1, p1, d2, p2, a, b) => {
+    let s = 0; const ts = new Set([...st.toks(a && a[0]), ...st.toks(b && b[0])]);
+    for (const t of ts) { s += tdp(t, d1); if (d2 !== d1) s += tdp(t, d2); }
+    for (const [x, p] of [[at(c, d1, p1), p1], [at(c, d2, p2), p2]]) if (x && x[0] && core.has(x[1]) && p >= half) s += 1;
+    const subs = new Set([a && a[1], b && b[1]].filter(Boolean)); for (const sb of subs) s += spreadPen(work, st, c, sb, pr);
+    return s;
+  };
+  const apply = (c, d1, p1, d2, p2) => {
+    const a = at(c, d1, p1), b = at(c, d2, p2);
+    const mv = (x, df, pf, dt, pt) => { if (!x || !x[0]) return; for (const t of st.toks(x[0])) if (st.tb[t]) { st.tb[t][df][pf]--; st.tb[t][dt][pt]++; } for (const r of st.roomsFor[x[1]] || []) { st.rc[r][df][pf]--; st.rc[r][dt][pt]++; } st.sdc[c + "|" + df + "|" + x[1]]--; st.sdc[c + "|" + dt + "|" + x[1]] = (st.sdc[c + "|" + dt + "|" + x[1]] || 0) + 1; };
+    mv(a, d1, p1, d2, p2); mv(b, d2, p2, d1, p1);
+    grid[c][st.DAYS[d1]][p1] = b || [null, null]; grid[c][st.DAYS[d2]][p2] = a || [null, null];
+  };
+  const rng = makeRng(Date.now() % 100000 + 7);
+  const t0 = Date.now(); let moves = 0, it = 0;
+  while (Date.now() - t0 < ms) {
+    for (let k = 0; k < 200; k++) {
+      it++;
+      const c = cls[Math.floor(rng() * cls.length)], list = cells[c];
+      const [d1, p1] = list[Math.floor(rng() * list.length)], [d2, p2] = list[Math.floor(rng() * list.length)];
+      if (d1 === d2 && p1 === p2) continue;
+      const a = at(c, d1, p1), b = at(c, d2, p2);
+      if ((!a || !a[0]) && (!b || !b[0])) continue;
+      if (a && b && a[0] === b[0] && a[1] === b[1]) continue;
+      const m1 = moveProblems(work, st, c, a, d1, p1, b, d2, p2); if (m1.hard.length || m1.soft.length) continue;
+      const m2 = moveProblems(work, st, c, b, d2, p2, a, d1, p1); if (m2.hard.length || m2.soft.length) continue;
+      const before = local(c, d1, p1, d2, p2, a, b);
+      apply(c, d1, p1, d2, p2);
+      const after = local(c, d1, p1, d2, p2, a, b);
+      if (after < before || (after === before && rng() < 0.04)) { if (after < before) moves++; } else apply(c, d1, p1, d2, p2);
+    }
+  }
+  return { grid, moves, iterations: it };
+}
+function scoreTone(s) { return s >= 80 ? [C.freeSoft, C.free] : s >= 60 ? [C.warnSoft, C.warn] : [C.clashSoft, C.clash]; }
+function QualityPanel({ cfg, update, ask, compact }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const pr = qualityPrefs(cfg);
+  const q = useMemo(() => qualityReport(cfg, cfg.grid), [cfg]);
+  const th = CUR_TH || THEMES.teal;
+  const setP = (k, v) => update((n) => { n.prefs = { ...(n.prefs || {}), [k]: v }; });
+  const improve = () => ask("Improve teaching quality now? Ordinary lessons are swapped inside each class to reach your preferences. Locked, rule, common and combined periods stay where they are, and no clash is ever created. A safety copy is kept automatically.", () => {
+    setBusy(true); setMsg("");
+    setTimeout(() => {
+      try {
+        const before = qualityReport(cfg, cfg.grid).score;
+        const res = polishGrid(cfg, cfg.grid, polishMovable(cfg, "all"), 3500);
+        const after = qualityReport({ ...cfg, grid: res.grid }, res.grid).score;
+        if (res.moves) update((n) => { n.grid = res.grid; });
+        setMsg(res.moves ? `Made ${res.moves} improvement${res.moves === 1 ? "" : "s"} — quality ${before} → ${after}.` : "No better arrangement found without breaking a rule — the timetable is already as good as the rules allow.");
+      } catch (e) { setMsg("Couldn't improve: " + ((e && e.message) || e)); }
+      setBusy(false);
+    }, 40);
+  });
+  const [bg, fg] = scoreTone(q.score);
+  const items = [
+    [pr.maxRun ? `Teacher-days with more than ${pr.maxRun} in a row` : "Periods in a row (off)", pr.maxRun ? q.runs : "—", pr.maxRun ? `of ${q.teacherDays}` : ""],
+    ["Teacher-days with no free period", pr.dailyFree ? q.noFree : "—", pr.dailyFree ? `of ${q.teacherDays}` : ""],
+    [pr.core.length ? `${pr.core.join(", ")} in the afternoon` : "Core subjects in the morning (none chosen)", pr.core.length ? q.afternoon : "—", pr.core.length ? `of ${q.coreLessons}` : ""],
+    ["Short subjects on back-to-back days", pr.spread ? q.spread : "—", ""],
+    ["Gaps between a teacher's lessons", q.gaps, "info"],
+  ];
+  const chip = (on) => ({ padding: "5px 11px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer", border: `1.5px solid ${on ? th.accent : C.line}`, background: on ? th.accent : "#fff", color: on ? "#fff" : C.sub });
+  const ScoreRing = (
+    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+      <div style={{ width: 64, height: 64, borderRadius: "50%", flexShrink: 0, display: "grid", placeItems: "center", background: `conic-gradient(${fg} ${q.score * 3.6}deg, #e9edf2 0deg)` }}>
+        <div style={{ width: 50, height: 50, borderRadius: "50%", background: "#fff", display: "grid", placeItems: "center", fontWeight: 800, fontSize: 18, color: fg }}>{q.score}</div>
+      </div>
+      <div>
+        <div style={{ fontSize: 14, fontWeight: 800, color: C.ink }}>Teaching quality {q.score >= 80 ? "— very good" : q.score >= 60 ? "— good" : "— can be better"}</div>
+        <div style={{ fontSize: 12, color: C.sub }}>Out of 100, from your preferences below. Clash-free is always guaranteed separately.</div>
+      </div>
+    </div>
+  );
+  if (compact) return (
+    <div style={{ ...card, marginBottom: 14, padding: 12, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+      {ScoreRing}
+      <button className="tt-btn" disabled={busy} onClick={improve} style={{ ...solidBtn, marginLeft: "auto" }}>{busy ? "Improving…" : "✦ Improve quality"}</button>
+      {msg && <div style={{ width: "100%", fontSize: 12.5, fontWeight: 600, color: C.free }}>{msg}</div>}
+    </div>
+  );
+  return (
+    <div style={{ ...card, marginBottom: 16 }}>
+      <Panelhead text="Teaching quality — soft preferences" count={pr.on ? `score ${q.score}` : "off"} tone={pr.on && q.score >= 80 ? "free" : undefined} />
+      <div style={{ padding: 14, display: "grid", gap: 14 }}>
+        <div className="tt-callout">These are <b>“try to”</b> rules. The generator never breaks a hard rule or creates a clash for them — after placing everything it swaps lessons inside each class to get closer to these wishes. Turn them off for the old behaviour.</div>
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
+          {ScoreRing}
+          <label style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 13, fontWeight: 700, marginLeft: "auto", cursor: "pointer" }}><input type="checkbox" checked={pr.on} onChange={(e) => setP("on", e.target.checked)} /> Use preferences when generating</label>
+          <button className="tt-btn" disabled={busy || !pr.on} onClick={improve} style={{ ...solidBtn, opacity: pr.on ? 1 : 0.5 }}>{busy ? "Improving…" : "✦ Improve current timetable"}</button>
+        </div>
+        {msg && <div style={{ fontSize: 12.5, fontWeight: 600, color: C.free }}>{msg}</div>}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12, opacity: pr.on ? 1 : 0.55 }}>
+          <div style={{ border: `1px solid ${C.line}`, borderRadius: 12, padding: 12, display: "grid", gap: 8 }}>
+            <div style={{ fontSize: 13, fontWeight: 800 }}>Most periods in a row for a teacher</div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{[[0, "No limit"], [2, "2"], [3, "3"], [4, "4"], [5, "5"]].map(([v, l]) => <button key={v} className="tt-btn" onClick={() => setP("maxRun", v)} style={chip(pr.maxRun === v)}>{l}</button>)}</div>
+            <div style={{ fontSize: 11.5, color: C.sub }}>Gives teachers a break after this many periods.</div>
+          </div>
+          <div style={{ border: `1px solid ${C.line}`, borderRadius: 12, padding: 12, display: "grid", gap: 8 }}>
+            <div style={{ fontSize: 13, fontWeight: 800 }}>Core subjects in the morning</div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{cfg.subjects.map((sb) => { const on = pr.core.includes(sb); return <button key={sb} className="tt-btn" onClick={() => setP("core", on ? pr.core.filter((x) => x !== sb) : [...pr.core, sb])} style={{ ...chip(on), fontFamily: mono, padding: "4px 9px" }}>{sb}</button>; })}</div>
+            <div style={{ fontSize: 11.5, color: C.sub }}>Tap subjects that should come in P1–P{Math.ceil(cfg.periods.length / 2)} where possible.</div>
+          </div>
+          <div style={{ border: `1px solid ${C.line}`, borderRadius: 12, padding: 12, display: "grid", gap: 10 }}>
+            <label style={{ display: "flex", gap: 8, fontSize: 13, fontWeight: 700, cursor: "pointer" }}><input type="checkbox" checked={pr.dailyFree} onChange={(e) => setP("dailyFree", e.target.checked)} /> At least one free period for every teacher each day</label>
+            <label style={{ display: "flex", gap: 8, fontSize: 13, fontWeight: 700, cursor: "pointer" }}><input type="checkbox" checked={pr.spread} onChange={(e) => setP("spread", e.target.checked)} /> Spread short subjects (2–3 a week) over non-adjacent days</label>
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
+          {items.map(([l, v, o]) => (
+            <div key={l} style={{ padding: "9px 12px", borderRadius: 10, background: "#f8fafc", border: `1px solid ${C.line}` }}>
+              <div style={{ fontSize: 11.5, color: C.sub }}>{l}</div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: o === "info" ? C.ink : v === 0 ? C.free : v === "—" ? C.sub : C.warn }}>{v} <span style={{ fontSize: 11.5, color: C.sub, fontWeight: 600 }}>{o !== "info" ? o : ""}</span></div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RoomsPanel({ cfg, update, ask }) {
+  const [name, setName] = useState("");
+  const rooms = cfg.rooms || [];
+  const th = CUR_TH || THEMES.teal;
+  const usage = useMemo(() => {
+    const out = [], st = qState(cfg, cfg.grid);
+    for (const r of roomsOf(cfg)) for (let d = 0; d < st.D; d++) for (let p = 0; p < st.P; p++) if (st.rc[r.name][d][p] > r.cap) {
+      const who = cfg.classes.filter((c) => { const sl = cfg.grid[c]?.[cfg.days[d]]?.[p]; return sl && r.subjects.includes(sl[1]); });
+      out.push({ room: r.name, d: cfg.days[d], p, n: st.rc[r.name][d][p], cap: r.cap, who });
+    }
+    return out;
+  }, [cfg]);
+  const add = () => { const n0 = name.trim(); if (!n0 || rooms.some((r) => r.name.toLowerCase() === n0.toLowerCase())) return; update((n) => { n.rooms = [...(n.rooms || []), { name: n0, cap: 1, subjects: [] }]; }); setName(""); };
+  const setR = (i, k, v) => update((n) => { n.rooms = (n.rooms || []).map((r, j) => (j === i ? { ...r, [k]: v } : r)); });
+  return (
+    <div style={{ ...card, marginBottom: 16 }}>
+      <Panelhead text="Rooms & labs" count={rooms.length ? `${rooms.length} room${rooms.length === 1 ? "" : "s"}${usage.length ? ` · ${usage.length} over` : ""}` : "none"} tone={rooms.length && !usage.length ? "free" : undefined} />
+      <div style={{ padding: 14, display: "grid", gap: 12 }}>
+        <div className="tt-callout">Add a shared room such as the <b>IT lab</b> or <b>playground</b>, say how many classes fit at once, and tap the subjects that use it. The generator then never puts more classes there at the same time — even when different teachers take them.</div>
+        {rooms.map((r, i) => (
+          <div key={i} style={{ border: `1.5px solid ${th.accent}33`, borderRadius: 14, padding: 12, display: "grid", gap: 10, background: "#fbfdfd" }}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <span style={{ width: 36, height: 36, borderRadius: 10, display: "grid", placeItems: "center", background: `linear-gradient(135deg, ${th.g1}, ${th.g2})`, color: "#fff", fontWeight: 800 }}>⌂</span>
+              <input className="tt-in" value={r.name} onChange={(e) => setR(i, "name", e.target.value)} style={{ flex: "1 1 160px", maxWidth: 260, fontFamily: sans, fontWeight: 800, fontSize: 14, height: 36 }} />
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, color: C.sub, fontWeight: 700 }}>Classes at once
+                <select className="tt-sel" value={r.cap || 1} onChange={(e) => setR(i, "cap", +e.target.value)} style={{ width: 64 }}>{[1, 2, 3, 4, 5, 6].map((x) => <option key={x}>{x}</option>)}</select>
+              </label>
+              <button className="tt-btn" onClick={() => ask(`Remove the room "${r.name}"?`, () => update((n) => { n.rooms = (n.rooms || []).filter((_, j) => j !== i); }))} style={{ ...ghostBtn, marginLeft: "auto", color: C.clash, padding: "5px 10px", fontSize: 12 }}>Remove</button>
+            </div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 12, color: C.sub, fontWeight: 700, alignSelf: "center", marginRight: 4 }}>Used for:</span>
+              {cfg.subjects.map((sb) => { const on = (r.subjects || []).includes(sb); return <button key={sb} className="tt-btn" onClick={() => setR(i, "subjects", on ? r.subjects.filter((x) => x !== sb) : [...(r.subjects || []), sb])} style={{ fontFamily: mono, fontWeight: 800, fontSize: 12, padding: "4px 9px", borderRadius: 8, cursor: "pointer", border: `1.5px solid ${on ? th.accent : C.line}`, background: on ? `${th.accent}16` : "#fff", color: on ? th.g2 : C.sub }}>{sb}</button>; })}
+            </div>
+            {!(r.subjects || []).length && <div style={{ fontSize: 12, color: C.warn, fontWeight: 600 }}>Tap at least one subject — until then this room is not used.</div>}
+          </div>
+        ))}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <input className="tt-in" placeholder="Room name, e.g. IT Lab" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} style={{ flex: "1 1 200px", maxWidth: 300, fontFamily: sans, fontSize: 13, height: 36 }} />
+          <button className="tt-btn" onClick={add} style={solidBtn}>+ Add room</button>
+        </div>
+        {rooms.length > 0 && (usage.length ? (
+          <div style={{ border: `1px solid ${C.clash}44`, background: C.clashSoft, borderRadius: 12, padding: 10, fontSize: 12.5 }}>
+            <b style={{ color: C.clash }}>The current timetable over-fills a room {usage.length} time{usage.length === 1 ? "" : "s"}.</b> Generate again (Fill remaining or Regenerate) to fix it.
+            <div style={{ marginTop: 6, display: "grid", gap: 3 }}>{usage.slice(0, 8).map((u, k) => <div key={k}>{u.room}: {DAY_FULL[u.d]} P{u.p + 1} — {u.n} classes ({u.who.join(", ")}), room takes {u.cap}</div>)}{usage.length > 8 && <div>…and {usage.length - 8} more</div>}</div>
+          </div>
+        ) : <div style={{ fontSize: 12.5, color: C.free, fontWeight: 700 }}>✓ The current timetable fits every room.</div>)}
+      </div>
+    </div>
+  );
+}
+
+function SwapBoard({ cfg, update, cls, mobile }) {
+  const [open, setOpen] = useState(false);
+  const [sel, setSel] = useState(null);
+  const [hover, setHover] = useState(null);
+  const [msg, setMsg] = useState(null);
+  const th = CUR_TH || THEMES.teal;
+  const P = cfg.periods.length, lim = classPeriods(cfg, cls);
+  const cm = {}; (cfg.combined || []).forEach((x) => (cm[x.name] = x));
+  const check = (a, b) => (a && b && (a[0] !== b[0] || a[1] !== b[1]) ? swapCheck(cfg, cls, a[0], a[1], b[0], b[1]) : null);
+  const preview = sel && hover ? check(sel, hover) : null;
+  const doSwap = (a, b) => {
+    const r = check(a, b); if (!r) return;
+    if (r.hard.length) { setMsg({ ok: false, text: "Can't swap: " + r.hard.join(" · ") }); return; }
+    const dA = cfg.days[a[0]], dB = cfg.days[b[0]];
+    update((n) => { const x = n.grid[cls][dA][a[1]], y = n.grid[cls][dB][b[1]]; n.grid[cls][dA][a[1]] = y; n.grid[cls][dB][b[1]] = x; });
+    setMsg({ ok: true, text: `Swapped ${DAY_FULL[dA].slice(0, 3)} P${a[1] + 1} and ${DAY_FULL[dB].slice(0, 3)} P${b[1] + 1}.` + (r.soft.length ? " Note: " + r.soft.join(" · ") : "") + " (Undo with ↶ if needed.)" });
+    setSel(null); setHover(null);
+  };
+  const tap = (d, p) => { if (!sel) { setSel([d, p]); setMsg(null); return; } if (sel[0] === d && sel[1] === p) { setSel(null); return; } doSwap(sel, [d, p]); };
+  if (!open) return (
+    <div style={{ ...card, marginBottom: 14, padding: 12, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+      <span style={{ width: 38, height: 38, borderRadius: 11, display: "grid", placeItems: "center", background: `${th.accent}14`, color: th.accent, fontSize: 18, fontWeight: 800 }}>⇄</span>
+      <div style={{ flex: "1 1 220px" }}><div style={{ fontSize: 14, fontWeight: 800 }}>Swap periods in {cls}</div><div style={{ fontSize: 12, color: C.sub }}>{mobile ? "Tap one period, then another." : "Drag a period onto another, or click two."} The app checks clashes before swapping.</div></div>
+      <button className="tt-btn" onClick={() => setOpen(true)} style={solidBtn}>Open swap board</button>
+    </div>
+  );
+  return (
+    <div style={{ ...card, marginBottom: 14 }}>
+      <Panelhead text={`Swap periods · ${cls}`} count={sel ? "pick the second period" : mobile ? "tap a period" : "drag or click"} />
+      <div style={{ padding: 12, display: "grid", gap: 10 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", fontSize: 12, color: C.sub }}>
+          <span><span style={{ display: "inline-block", width: 12, height: 12, borderRadius: 3, background: C.freeSoft, border: `1px solid ${C.free}`, verticalAlign: "middle" }} /> can swap</span>
+          <span><span style={{ display: "inline-block", width: 12, height: 12, borderRadius: 3, background: C.warnSoft, border: `1px solid ${C.warn}`, verticalAlign: "middle" }} /> can swap, with a note</span>
+          <span><span style={{ display: "inline-block", width: 12, height: 12, borderRadius: 3, background: C.clashSoft, border: `1px solid ${C.clash}`, verticalAlign: "middle" }} /> would clash</span>
+          <span>🔒 locked / rule · ◎ combined (can't move here)</span>
+          <button className="tt-btn" onClick={() => { setOpen(false); setSel(null); }} style={{ ...ghostBtn, marginLeft: "auto", padding: "4px 10px", fontSize: 12 }}>Close</button>
+        </div>
+        {msg && <div style={{ fontSize: 12.5, fontWeight: 600, color: msg.ok ? C.free : C.clash }}>{msg.text}</div>}
+        {sel && !mobile && preview && <div style={{ fontSize: 12, color: preview.hard.length ? C.clash : preview.soft.length ? C.warn : C.free, fontWeight: 600 }}>{preview.hard.length ? preview.hard.join(" · ") : preview.soft.length ? preview.soft.join(" · ") : "✓ This swap is fine"}</div>}
+        <div className="tt-scroll" style={{ overflowX: "auto" }}>
+          <table style={{ borderCollapse: "separate", borderSpacing: 4, minWidth: 90 + P * (mobile ? 70 : 92) }}>
+            <thead><tr><th />{cfg.periods.map((p, i) => <th key={i} style={{ fontSize: 11.5, color: C.sub, fontWeight: 800 }}>P{p}</th>)}</tr></thead>
+            <tbody>{cfg.days.map((dc, d) => (
+              <tr key={dc}>
+                <td style={{ fontSize: 12, fontWeight: 800, color: C.sub, paddingRight: 6 }}>{DAY_FULL[dc].slice(0, 3)}</td>
+                {cfg.periods.map((_, p) => {
+                  if (p >= lim) return <td key={p}><div style={{ height: 50, borderRadius: 9, background: "#eef0f3" }} /></td>;
+                  const sl = cfg.grid[cls]?.[dc]?.[p] || [null, null];
+                  const locked = !polishMovable(cfg, "all")(cls, dc, p), comb = sl[0] && cm[combName(cm, sl[0])];
+                  const isSel = sel && sel[0] === d && sel[1] === p;
+                  let tone = null; if (sel && !isSel) { const r = check(sel, [d, p]); tone = !r ? null : r.hard.length ? "bad" : r.soft.length ? "warn" : "ok"; }
+                  const bg = isSel ? th.accent : tone === "ok" ? C.freeSoft : tone === "warn" ? C.warnSoft : tone === "bad" ? C.clashSoft : sl[0] ? (tintOf(SUBJECT_BAR[sl[1]] || "#647189", 0.12)) : "#fafbfc";
+                  const bd = isSel ? th.g2 : tone === "ok" ? C.free : tone === "warn" ? C.warn : tone === "bad" ? `${C.clash}88` : C.line;
+                  const can = !locked && !comb;
+                  return (
+                    <td key={p}>
+                      <div draggable={can && !mobile} onDragStart={(e) => { setSel([d, p]); try { e.dataTransfer.setData("text/plain", d + "," + p); e.dataTransfer.effectAllowed = "move"; } catch (er) { /* ignore */ } }}
+                        onDragOver={(e) => { e.preventDefault(); if (!hover || hover[0] !== d || hover[1] !== p) setHover([d, p]); }} onDrop={(e) => { e.preventDefault(); if (sel) doSwap(sel, [d, p]); }} onDragEnd={() => setHover(null)}
+                        onClick={() => can && tap(d, p)}
+                        style={{ height: 50, borderRadius: 9, border: `1.5px solid ${bd}`, background: bg, color: isSel ? "#fff" : C.ink, display: "grid", placeItems: "center", textAlign: "center", cursor: can ? (mobile ? "pointer" : "grab") : "not-allowed", padding: "2px 3px", userSelect: "none", opacity: can ? 1 : 0.7, lineHeight: 1.15 }}>
+                        {sl[0] ? <span><span style={{ display: "block", fontSize: 11.5, fontWeight: 800, color: isSel ? "#fff" : SUBJECT_BAR[sl[1]] || C.ink }}>{sl[1]}{locked ? " 🔒" : comb ? " ◎" : ""}</span><span style={{ display: "block", fontSize: 10.5, fontFamily: mono, fontWeight: 700, color: isSel ? "#fff" : C.sub, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: mobile ? 62 : 84 }}>{comb ? comb.teachers.join(" ") : sl[0]}</span></span> : <span style={{ fontSize: 11, color: isSel ? "#fff" : "#b4bccb" }}>{locked ? "🔒" : "empty"}</span>}
+                      </div>
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+/* ---------------- Excel (.xlsx) writer — no library needed ---------------- */
+var CRC_T = null;
+function crc32(u) { if (!CRC_T) { CRC_T = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; CRC_T[n] = c >>> 0; } } let c = 0xffffffff; for (let i = 0; i < u.length; i++) c = CRC_T[(c ^ u[i]) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; }
+function zipStore(files) {
+  const enc = new TextEncoder(), parts = [], central = []; let off = 0;
+  const u16 = (v) => [v & 255, (v >>> 8) & 255], u32 = (v) => [v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255];
+  for (const f of files) {
+    const name = enc.encode(f.name), data = typeof f.data === "string" ? enc.encode(f.data) : f.data, crc = crc32(data);
+    const head = [0x50, 0x4b, 0x03, 0x04, ...u16(20), ...u16(0x0800), ...u16(0), ...u16(0), ...u16(0x21), ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(name.length), ...u16(0)];
+    parts.push(new Uint8Array(head), name, data);
+    central.push(new Uint8Array([0x50, 0x4b, 0x01, 0x02, ...u16(20), ...u16(20), ...u16(0x0800), ...u16(0), ...u16(0), ...u16(0x21), ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(name.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(0), ...u32(off)]), name);
+    off += head.length + name.length + data.length;
+  }
+  const cdSize = central.reduce((a, x) => a + x.length, 0);
+  const end = new Uint8Array([0x50, 0x4b, 0x05, 0x06, ...u16(0), ...u16(0), ...u16(files.length), ...u16(files.length), ...u32(cdSize), ...u32(off), ...u16(0)]);
+  return new Blob([...parts, ...central, end], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+}
+function xEsc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, ""); }
+function xCol(i) { let s = ""; i++; while (i > 0) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; }
+// styles: 0 normal · 1 header · 2 title · 3 row head · 4 cell · 5 free · 6 off · 7 note · 8 number · 9 combined cell · 10 sub title
+var XSTYLES = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+  '<fonts count="6"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font><font><b/><sz val="15"/><color rgb="FF0A4F55"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FF0A4F55"/><name val="Calibri"/></font><font><i/><sz val="10"/><color rgb="FF647189"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FFD98A2B"/><name val="Calibri"/></font></fonts>' +
+  '<fills count="8"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF0E6B73"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE1F0F0"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFC9EFD8"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFEEF0F3"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFBF3E4"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF7FAFC"/></patternFill></fill></fills>' +
+  '<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"><color rgb="FFB9D3D3"/></left><right style="thin"><color rgb="FFB9D3D3"/></right><top style="thin"><color rgb="FFB9D3D3"/></top><bottom style="thin"><color rgb="FFB9D3D3"/></bottom><diagonal/></border></borders>' +
+  '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="11">' +
+  '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
+  '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>' +
+  '<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
+  '<xf numFmtId="0" fontId="3" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>' +
+  '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>' +
+  '<xf numFmtId="0" fontId="3" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>' +
+  '<xf numFmtId="0" fontId="0" fillId="5" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>' +
+  '<xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
+  '<xf numFmtId="0" fontId="3" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>' +
+  '<xf numFmtId="0" fontId="0" fillId="6" borderId="1" xfId="0" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>' +
+  '<xf numFmtId="0" fontId="5" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
+  '</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
+function xSheet(sh) {
+  let rows = "";
+  sh.rows.forEach((r, ri) => {
+    if (!r) return;
+    const ht = sh.heights && sh.heights[ri] ? ` ht="${sh.heights[ri]}" customHeight="1"` : "";
+    let cells = "";
+    r.forEach((c, ci) => {
+      if (c == null) return;
+      const o = typeof c === "object" ? c : { v: c }, ref = xCol(ci) + (ri + 1), st = o.s ? ` s="${o.s}"` : "";
+      if (o.v === "" || o.v == null) cells += `<c r="${ref}"${st}/>`;
+      else if (typeof o.v === "number") cells += `<c r="${ref}"${st}><v>${o.v}</v></c>`;
+      else cells += `<c r="${ref}"${st} t="inlineStr"><is><t xml:space="preserve">${xEsc(o.v)}</t></is></c>`;
+    });
+    rows += `<row r="${ri + 1}"${ht}>${cells}</row>`;
+  });
+  const cols = sh.cols ? "<cols>" + sh.cols.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join("") + "</cols>" : "";
+  const merges = sh.merges && sh.merges.length ? `<mergeCells count="${sh.merges.length}">` + sh.merges.map((m) => `<mergeCell ref="${m}"/>`).join("") + "</mergeCells>" : "";
+  const land = '<pageMargins left="0.4" right="0.4" top="0.5" bottom="0.5" header="0.3" footer="0.3"/><pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/>';
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>' +
+    (sh.freeze ? `<sheetViews><sheetView workbookViewId="0"><pane ySplit="${sh.freeze}" topLeftCell="A${sh.freeze + 1}" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>` : "") +
+    '<sheetFormatPr defaultRowHeight="16"/>' + cols + "<sheetData>" + rows + "</sheetData>" + merges + land + "</worksheet>";
+}
+function buildXlsx(sheets) {
+  const used = new Set();
+  const names = sheets.map((sh) => { let n = String(sh.name).replace(/[\[\]:*?\/\\]/g, "-").slice(0, 31) || "Sheet"; let k = 2; const base = n; while (used.has(n.toLowerCase())) n = (base.slice(0, 28) + " " + k++); used.add(n.toLowerCase()); return n; });
+  const files = [
+    { name: "[Content_Types].xml", data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' + sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join("") + "</Types>" },
+    { name: "_rels/.rels", data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>' },
+    { name: "xl/workbook.xml", data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>' + names.map((n, i) => `<sheet name="${xEsc(n)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join("") + "</sheets></workbook>" },
+    { name: "xl/_rels/workbook.xml.rels", data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' + sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join("") + `<Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>` },
+    { name: "xl/styles.xml", data: XSTYLES },
+    ...sheets.map((sh, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: xSheet(sh) })),
+  ];
+  return zipStore(files);
+}
+function ttWorkbook(cfg, o) {
+  o = o || {};
+  const P = cfg.periods.length, days = cfg.days, L = leisureData(cfg);
+  const cm = {}; (cfg.combined || []).forEach((x) => (cm[x.name] = x));
+  const who = (code) => (cm[code] ? cm[code].teachers.join(" ") : code);
+  const stamp = new Date().toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
+  const head = [{ v: "Day", s: 1 }, ...cfg.periods.map((p) => ({ v: "P" + p, s: 1 }))];
+  const cols = [14, ...cfg.periods.map(() => 15)];
+  const classBlock = (c, rows, merges, heights) => {
+    const r0 = rows.length;
+    rows.push([{ v: `Class ${c}`, s: 2 }]); merges.push(`A${r0 + 1}:${xCol(P)}${r0 + 1}`);
+    rows.push([{ v: `Class teacher: ${cfg.classTeacher[c] || "—"}${cfg.year ? " · " + cfg.year : ""}`, s: 7 }]);
+    rows.push(head);
+    for (const d of days) {
+      const r = [{ v: DAY_FULL[d], s: 3 }];
+      for (let p = 0; p < P; p++) { if (p >= classPeriods(cfg, c)) { r.push({ v: "", s: 6 }); continue; } const sl = cfg.grid[c]?.[d]?.[p]; r.push(sl && sl[0] ? { v: `${sl[1]}\n${who(sl[0])}`, s: cm[sl[0]] ? 9 : 4 } : { v: "", s: 4 }); }
+      heights[rows.length] = 32; rows.push(r);
+    }
+  };
+  const teacherBlock = (t, rows, merges, heights) => {
+    const r0 = rows.length; let n = 0;
+    rows.push([{ v: `Teacher ${t}`, s: 2 }]); merges.push(`A${r0 + 1}:${xCol(P)}${r0 + 1}`);
+    const sub = rows.length; rows.push([]); rows.push(head);
+    for (const d of days) {
+      const r = [{ v: DAY_FULL[d], s: 3 }];
+      for (let p = 0; p < P; p++) { const b = L.busy[t] && L.busy[t][d] ? L.busy[t][d][p] : null; if (b === "off") r.push({ v: "off", s: 6 }); else if (!b) r.push({ v: "free", s: 5 }); else { n++; r.push({ v: `${b.c}\n${b.sub}`, s: b.combined ? 9 : 4 }); } }
+      heights[rows.length] = 32; rows.push(r);
+    }
+    rows[sub] = [{ v: `${n} periods a week · ${L.week[t]} free${cfg.year ? " · " + cfg.year : ""}`, s: 7 }];
+  };
+  const sheets = [];
+  // summary
+  { const rows = [[{ v: cfg.school || "School", s: 2 }], [{ v: `Timetable workbook${cfg.year ? " · " + cfg.year : ""} · made ${stamp}`, s: 7 }], [],
+      [{ v: "Classes", s: 3 }, { v: cfg.classes.length, s: 8 }], [{ v: "Teachers", s: 3 }, { v: cfg.singles.length, s: 8 }], [{ v: "Working days", s: 3 }, { v: days.map((d) => DAY_FULL[d].slice(0, 3)).join(", "), s: 4 }], [{ v: "Periods a day", s: 3 }, { v: P, s: 8 }], [],
+      [{ v: "Teacher", s: 1 }, { v: "Periods / week", s: 1 }, { v: "Free / week", s: 1 }, { v: "Working days", s: 1 }, { v: "Classes taught", s: 1 }]];
+    for (const t of cfg.singles) { let n = 0; const cl = new Set(); for (const d of days) for (let p = 0; p < P; p++) { const b = L.busy[t] && L.busy[t][d] ? L.busy[t][d][p] : null; if (b && b !== "off") { n++; String(b.c).split(", ").forEach((x) => cl.add(x)); } } rows.push([{ v: t, s: 3 }, { v: n, s: 8 }, { v: L.week[t], s: 8 }, { v: teacherWorkDays(cfg, t).length, s: 8 }, { v: [...cl].sort(cmpClass).join(", "), s: 4 }]); }
+    sheets.push({ name: "Summary", rows, cols: [22, 16, 14, 14, 60], merges: [] }); }
+  // all classes / all teachers
+  { const rows = [], merges = [], heights = {}; cfg.classes.forEach((c, i) => { if (i) rows.push([]); classBlock(c, rows, merges, heights); }); sheets.push({ name: "All classes", rows, merges, heights, cols }); }
+  { const rows = [], merges = [], heights = {}; cfg.singles.forEach((t, i) => { if (i) rows.push([]); teacherBlock(t, rows, merges, heights); }); sheets.push({ name: "All teachers", rows, merges, heights, cols }); }
+  // free by period (substitution chart)
+  { const rows = [[{ v: "Free teachers by period", s: 2 }], [{ v: "Each box: number free, then the teacher codes", s: 7 }], head], heights = {};
+    for (const d of days) { const r = [{ v: DAY_FULL[d], s: 3 }]; for (let p = 0; p < P; p++) { const l = L.free[d][p]; r.push({ v: `${l.length} free\n${l.join(", ")}`, s: 4 }); } heights[rows.length] = 90; rows.push(r); }
+    sheets.push({ name: "Free by period", rows, heights, cols: [14, ...cfg.periods.map(() => 24)], merges: [`A1:${xCol(P)}1`] }); }
+  if (o.each !== false) {
+    for (const c of cfg.classes) { const rows = [], merges = [], heights = {}; classBlock(c, rows, merges, heights); sheets.push({ name: c, rows, merges, heights, cols }); }
+    for (const t of cfg.singles) { const rows = [], merges = [], heights = {}; teacherBlock(t, rows, merges, heights); sheets.push({ name: "Tr " + t, rows, merges, heights, cols }); }
+  }
+  return sheets;
+}
+function exportXlsx(cfg, o) {
+  const blob = buildXlsx(ttWorkbook(cfg, o));
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `${(cfg.school || "timetable").replace(/[^\w-]+/g, "_")}${cfg.year ? "_" + String(cfg.year).replace(/[^\w-]+/g, "_") : ""}_timetable.xlsx`;
+  document.body.appendChild(a); a.click(); setTimeout(() => { a.remove(); URL.revokeObjectURL(a.href); }, 500);
+}
+function ExcelCard({ cfg }) {
+  const [each, setEach] = useState(true);
+  const [msg, setMsg] = useState("");
+  const th = CUR_TH || THEMES.teal;
+  const n = 4 + (each ? cfg.classes.length + cfg.singles.length : 0);
+  return (
+    <div style={{ ...card, padding: 18, position: "relative" }}>
+      <span aria-hidden="true" style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 4, background: `linear-gradient(180deg, ${th.g1}, ${th.g2})` }} />
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
+        <span style={{ width: 40, height: 40, borderRadius: 12, display: "grid", placeItems: "center", background: "#e3f5ec", color: "#1d7a45", flexShrink: 0, fontWeight: 900, fontSize: 15 }}>X</span>
+        <div style={{ fontSize: 15.5, fontWeight: 800, color: C.ink }}>Excel workbook (.xlsx)</div>
+      </div>
+      <div style={{ fontSize: 12.5, color: C.sub, marginBottom: 12, lineHeight: 1.6 }}>Everything in one Excel file for the office or the education department: a summary with every teacher's load, all class timetables, all teacher timetables, and who is free in each period. Opens in Excel, Google Sheets and LibreOffice.</div>
+      <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 13, fontWeight: 600, cursor: "pointer" }}><input type="checkbox" checked={each} onChange={(e) => setEach(e.target.checked)} /> Also a separate sheet for every class and teacher</label>
+        <span style={{ marginLeft: "auto" }}><PrintBtn onClick={() => { try { exportXlsx(cfg, { each }); setMsg(`Downloaded — ${n} sheets.`); } catch (e) { setMsg("Couldn't make the file: " + ((e && e.message) || e)); } }} icon="download" label="Download Excel file" sub={`${n} sheets`} /></span>
+      </div>
+      {msg && <div style={{ marginTop: 8, fontSize: 12.5, fontWeight: 600, color: C.free }}>{msg}</div>}
+    </div>
+  );
+}
+
+/* ---------------- New academic year ---------------- */
+function nextYearLabel(y) {
+  const m = String(y || "").match(/(\d{4})\s*[-–\/]\s*(\d{2,4})/);
+  if (m) { const a = +m[1] + 1, b = String(+m[2] + 1).slice(-m[2].length); return `${a}–${b.padStart(m[2].length, "0")}`; }
+  const now = new Date(), a = now.getMonth() >= 2 ? now.getFullYear() : now.getFullYear() - 1;
+  return `${a}–${String(a + 1).slice(-2)}`;
+}
+function YearCard({ cfg, update, askPw }) {
+  const [open, setOpen] = useState(false);
+  const [label, setLabel] = useState(nextYearLabel(cfg.year));
+  const [o, setO] = useState({ grid: true, locks: true, subs: true, versions: false, backup: true });
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const th = CUR_TH || THEMES.teal;
+  const start = () => askPw(`Start the new academic year ${label}? The whole ${cfg.year || "current"} year is archived first (Import / Export → Safety copies), then the options you ticked are cleared. Classes, teachers, mapping, rules and combined subjects are kept.`, async () => {
+    setBusy(true); setMsg(null);
+    try {
+      if (o.backup) { try { exportJSON(cfg); } catch (e) { /* ignore */ } }
+      const rec = await makeSnapshot(cfg, `Academic year ${cfg.year || "(before " + label + ")"} — archive`, "archive");
+      update((n) => {
+        n.snapshots = pruneSnaps([...(n.snapshots || []), rec]);
+        n.year = label;
+        if (o.grid) for (const c of n.classes) { n.grid[c] = n.grid[c] || {}; for (const d of n.days) n.grid[c][d] = emptyDay(n.periods.length); }
+        if (o.locks) n.locked = {};
+        if (o.subs) delete n.subs;
+        if (o.versions) n.versions = [];
+      });
+      setMsg({ ok: true, text: `Welcome to ${label}! The old year is archived — restore it any time from Import / Export → Safety copies.` }); setOpen(false);
+    } catch (e) { setMsg({ ok: false, text: "Couldn't start the new year: " + ((e && e.message) || e) }); }
+    setBusy(false);
+  });
+  const chk = { display: "flex", gap: 8, alignItems: "center", fontSize: 13, fontWeight: 600, cursor: "pointer" };
+  return (
+    <div style={{ ...card, marginBottom: 16 }}>
+      <Panelhead text="Academic year" count={cfg.year || "not set"} tone={cfg.year ? "free" : undefined} />
+      <div style={{ padding: 14, display: "grid", gap: 12 }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5, fontWeight: 700, color: C.sub }}>Current year
+            <input className="tt-in" value={cfg.year || ""} onChange={(e) => update((n) => { if (e.target.value.trim()) n.year = e.target.value; else delete n.year; })} style={{ width: 130, fontFamily: sans, fontSize: 13.5, fontWeight: 700, height: 36 }} />
+          </label>
+          <span style={{ fontSize: 12, color: C.sub }}>Printed on PDFs and the Excel file.</span>
+          {!open && <button className="tt-btn" onClick={() => { setLabel(nextYearLabel(cfg.year)); setOpen(true); }} style={{ ...solidBtn, marginLeft: "auto" }}>Start a new academic year…</button>}
+        </div>
+        {msg && <div style={{ fontSize: 12.5, fontWeight: 600, color: msg.ok ? C.free : C.clash }}>{msg.text}</div>}
+        {open && (
+          <div style={{ border: `1.5px solid ${th.accent}44`, borderRadius: 14, padding: 14, display: "grid", gap: 12, background: "#fbfdfd" }}>
+            <div className="tt-callout">Your <b>classes, teachers, mapping, standard periods, rules, combined subjects, logo and signature</b> are kept. The current year is saved as an <b>archive</b> you can restore any time.</div>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5, fontWeight: 700, color: C.sub }}>New year
+              <input className="tt-in" value={label} onChange={(e) => setLabel(e.target.value)} style={{ width: 130, fontFamily: sans, fontSize: 14, fontWeight: 800, height: 36 }} />
+            </label>
+            <div style={{ display: "grid", gap: 8 }}>
+              <label style={chk}><input type="checkbox" checked={o.grid} onChange={(e) => setO({ ...o, grid: e.target.checked })} /> Clear the timetable (start the new year blank)</label>
+              <label style={chk}><input type="checkbox" checked={o.locks} onChange={(e) => setO({ ...o, locks: e.target.checked })} /> Remove frozen periods</label>
+              <label style={chk}><input type="checkbox" checked={o.subs} onChange={(e) => setO({ ...o, subs: e.target.checked })} /> Clear the substitution record</label>
+              <label style={chk}><input type="checkbox" checked={o.versions} onChange={(e) => setO({ ...o, versions: e.target.checked })} /> Delete saved timetable versions</label>
+              <label style={chk}><input type="checkbox" checked={o.backup} onChange={(e) => setO({ ...o, backup: e.target.checked })} /> Also download a backup file of the old year (.json)</label>
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button className="tt-btn" disabled={busy || !label.trim()} onClick={start} style={solidBtn}>{busy ? "Starting…" : `Archive & start ${label}`}</button>
+              <button className="tt-btn" onClick={() => setOpen(false)} style={ghostBtn}>Cancel</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+/* ---------------- Teacher links (read-only page for each teacher) ---------------- */
+/* QR code generator: qrcode-generator 1.4.4 by Kazuhiko Arase, MIT licence (https://github.com/kazuhikoarase/qrcode-generator) */
+var QRGEN=(()=>{var $=(L,T)=>()=>(T||L((T={exports:{}}).exports,T),T.exports);var z=$((V,q)=>{var W=function(){var L=function(x,w){var g=236,l=17,n=x,s=O[w],t=null,r=0,h=null,i=[],v={},_=function(a,f){r=n*4+17,t=function(e){for(var u=new Array(e),o=0;o<e;o+=1){u[o]=new Array(e);for(var d=0;d<e;d+=1)u[o][d]=null}return u}(r),B(0,0),B(r-7,0),B(0,r-7),E(),C(),m(a,f),n>=7&&N(a),h==null&&(h=vr(n,s,i)),U(h,f)},B=function(a,f){for(var e=-1;e<=7;e+=1)if(!(a+e<=-1||r<=a+e))for(var u=-1;u<=7;u+=1)f+u<=-1||r<=f+u||(0<=e&&e<=6&&(u==0||u==6)||0<=u&&u<=6&&(e==0||e==6)||2<=e&&e<=4&&2<=u&&u<=4?t[a+e][f+u]=!0:t[a+e][f+u]=!1)},y=function(){for(var a=0,f=0,e=0;e<8;e+=1){_(!0,e);var u=P.getLostPoint(v);(e==0||a>u)&&(a=u,f=e)}return f},C=function(){for(var a=8;a<r-8;a+=1)t[a][6]==null&&(t[a][6]=a%2==0);for(var f=8;f<r-8;f+=1)t[6][f]==null&&(t[6][f]=f%2==0)},E=function(){for(var a=P.getPatternPosition(n),f=0;f<a.length;f+=1)for(var e=0;e<a.length;e+=1){var u=a[f],o=a[e];if(t[u][o]==null)for(var d=-2;d<=2;d+=1)for(var c=-2;c<=2;c+=1)d==-2||d==2||c==-2||c==2||d==0&&c==0?t[u+d][o+c]=!0:t[u+d][o+c]=!1}},N=function(a){for(var f=P.getBCHTypeNumber(n),e=0;e<18;e+=1){var u=!a&&(f>>e&1)==1;t[Math.floor(e/3)][e%3+r-8-3]=u}for(var e=0;e<18;e+=1){var u=!a&&(f>>e&1)==1;t[e%3+r-8-3][Math.floor(e/3)]=u}},m=function(a,f){for(var e=s<<3|f,u=P.getBCHTypeInfo(e),o=0;o<15;o+=1){var d=!a&&(u>>o&1)==1;o<6?t[o][8]=d:o<8?t[o+1][8]=d:t[r-15+o][8]=d}for(var o=0;o<15;o+=1){var d=!a&&(u>>o&1)==1;o<8?t[8][r-o-1]=d:o<9?t[8][15-o-1+1]=d:t[8][15-o-1]=d}t[r-8][8]=!a},U=function(a,f){for(var e=-1,u=r-1,o=7,d=0,c=P.getMaskFunction(f),p=r-1;p>0;p-=2)for(p==6&&(p-=1);;){for(var b=0;b<2;b+=1)if(t[u][p-b]==null){var D=!1;d<a.length&&(D=(a[d]>>>o&1)==1);var A=c(u,p-b);A&&(D=!D),t[u][p-b]=D,o-=1,o==-1&&(d+=1,o=7)}if(u+=e,u<0||r<=u){u-=e,e=-e;break}}},H=function(a,f){for(var e=0,u=0,o=0,d=new Array(f.length),c=new Array(f.length),p=0;p<f.length;p+=1){var b=f[p].dataCount,D=f[p].totalCount-b;u=Math.max(u,b),o=Math.max(o,D),d[p]=new Array(b);for(var A=0;A<d[p].length;A+=1)d[p][A]=255&a.getBuffer()[A+e];e+=b;var R=P.getErrorCorrectPolynomial(D),I=K(d[p],R.getLength()-1),S=I.mod(R);c[p]=new Array(R.getLength()-1);for(var A=0;A<c[p].length;A+=1){var X=A+S.getLength()-c[p].length;c[p][A]=X>=0?S.getAt(X):0}}for(var Z=0,A=0;A<f.length;A+=1)Z+=f[A].totalCount;for(var J=new Array(Z),Q=0,A=0;A<u;A+=1)for(var p=0;p<f.length;p+=1)A<d[p].length&&(J[Q]=d[p][A],Q+=1);for(var A=0;A<o;A+=1)for(var p=0;p<f.length;p+=1)A<c[p].length&&(J[Q]=c[p][A],Q+=1);return J},vr=function(a,f,e){for(var u=Y.getRSBlocks(a,f),o=G(),d=0;d<e.length;d+=1){var c=e[d];o.put(c.getMode(),4),o.put(c.getLength(),P.getLengthInBits(c.getMode(),a)),c.write(o)}for(var p=0,d=0;d<u.length;d+=1)p+=u[d].dataCount;if(o.getLengthInBits()>p*8)throw"code length overflow. ("+o.getLengthInBits()+">"+p*8+")";for(o.getLengthInBits()+4<=p*8&&o.put(0,4);o.getLengthInBits()%8!=0;)o.putBit(!1);for(;!(o.getLengthInBits()>=p*8||(o.put(g,8),o.getLengthInBits()>=p*8));)o.put(l,8);return H(o,u)};v.addData=function(a,f){f=f||"Byte";var e=null;switch(f){case"Numeric":e=tr(a);break;case"Alphanumeric":e=er(a);break;case"Byte":e=nr(a);break;case"Kanji":e=ar(a);break;default:throw"mode:"+f}i.push(e),h=null},v.isDark=function(a,f){if(a<0||r<=a||f<0||r<=f)throw a+","+f;return t[a][f]},v.getModuleCount=function(){return r},v.make=function(){if(n<1){for(var a=1;a<40;a++){for(var f=Y.getRSBlocks(a,s),e=G(),u=0;u<i.length;u++){var o=i[u];e.put(o.getMode(),4),e.put(o.getLength(),P.getLengthInBits(o.getMode(),a)),o.write(e)}for(var d=0,u=0;u<f.length;u++)d+=f[u].dataCount;if(e.getLengthInBits()<=d*8)break}n=a}_(!1,y())},v.createTableTag=function(a,f){a=a||2,f=typeof f>"u"?a*4:f;var e="";e+='<table style="',e+=" border-width: 0px; border-style: none;",e+=" border-collapse: collapse;",e+=" padding: 0px; margin: "+f+"px;",e+='">',e+="<tbody>";for(var u=0;u<v.getModuleCount();u+=1){e+="<tr>";for(var o=0;o<v.getModuleCount();o+=1)e+='<td style="',e+=" border-width: 0px; border-style: none;",e+=" border-collapse: collapse;",e+=" padding: 0px; margin: 0px;",e+=" width: "+a+"px;",e+=" height: "+a+"px;",e+=" background-color: ",e+=v.isDark(u,o)?"#000000":"#ffffff",e+=";",e+='"/>';e+="</tr>"}return e+="</tbody>",e+="</table>",e},v.createSvgTag=function(a,f,e,u){var o={};typeof arguments[0]=="object"&&(o=arguments[0],a=o.cellSize,f=o.margin,e=o.alt,u=o.title),a=a||2,f=typeof f>"u"?a*4:f,e=typeof e=="string"?{text:e}:e||{},e.text=e.text||null,e.id=e.text?e.id||"qrcode-description":null,u=typeof u=="string"?{text:u}:u||{},u.text=u.text||null,u.id=u.text?u.id||"qrcode-title":null;var d=v.getModuleCount()*a+f*2,c,p,b,D,A="",R;for(R="l"+a+",0 0,"+a+" -"+a+",0 0,-"+a+"z ",A+='<svg version="1.1" xmlns="http://www.w3.org/2000/svg"',A+=o.scalable?"":' width="'+d+'px" height="'+d+'px"',A+=' viewBox="0 0 '+d+" "+d+'" ',A+=' preserveAspectRatio="xMinYMin meet"',A+=u.text||e.text?' role="img" aria-labelledby="'+F([u.id,e.id].join(" ").trim())+'"':"",A+=">",A+=u.text?'<title id="'+F(u.id)+'">'+F(u.text)+"</title>":"",A+=e.text?'<description id="'+F(e.id)+'">'+F(e.text)+"</description>":"",A+='<rect width="100%" height="100%" fill="white" cx="0" cy="0"/>',A+='<path d="',b=0;b<v.getModuleCount();b+=1)for(D=b*a+f,c=0;c<v.getModuleCount();c+=1)v.isDark(b,c)&&(p=c*a+f,A+="M"+p+","+D+R);return A+='" stroke="transparent" fill="black"/>',A+="</svg>",A},v.createDataURL=function(a,f){a=a||2,f=typeof f>"u"?a*4:f;var e=v.getModuleCount()*a+f*2,u=f,o=e-f;return or(e,e,function(d,c){if(u<=d&&d<o&&u<=c&&c<o){var p=Math.floor((d-u)/a),b=Math.floor((c-u)/a);return v.isDark(b,p)?0:1}else return 1})},v.createImgTag=function(a,f,e){a=a||2,f=typeof f>"u"?a*4:f;var u=v.getModuleCount()*a+f*2,o="";return o+="<img",o+=' src="',o+=v.createDataURL(a,f),o+='"',o+=' width="',o+=u,o+='"',o+=' height="',o+=u,o+='"',e&&(o+=' alt="',o+=F(e),o+='"'),o+="/>",o};var F=function(a){for(var f="",e=0;e<a.length;e+=1){var u=a.charAt(e);switch(u){case"<":f+="&lt;";break;case">":f+="&gt;";break;case"&":f+="&amp;";break;case'"':f+="&quot;";break;default:f+=u;break}}return f},sr=function(a){var f=1;a=typeof a>"u"?f*2:a;var e=v.getModuleCount()*f+a*2,u=a,o=e-a,d,c,p,b,D,A={"\u2588\u2588":"\u2588","\u2588 ":"\u2580"," \u2588":"\u2584","  ":" "},R={"\u2588\u2588":"\u2580","\u2588 ":"\u2580"," \u2588":" ","  ":" "},I="";for(d=0;d<e;d+=2){for(p=Math.floor((d-u)/f),b=Math.floor((d+1-u)/f),c=0;c<e;c+=1)D="\u2588",u<=c&&c<o&&u<=d&&d<o&&v.isDark(p,Math.floor((c-u)/f))&&(D=" "),u<=c&&c<o&&u<=d+1&&d+1<o&&v.isDark(b,Math.floor((c-u)/f))?D+=" ":D+="\u2588",I+=a<1&&d+1>=o?R[D]:A[D];I+=`
+`}return e%2&&a>0?I.substring(0,I.length-e-1)+Array(e+1).join("\u2580"):I.substring(0,I.length-1)};return v.createASCII=function(a,f){if(a=a||1,a<2)return sr(f);a-=1,f=typeof f>"u"?a*2:f;var e=v.getModuleCount()*a+f*2,u=f,o=e-f,d,c,p,b,D=Array(a+1).join("\u2588\u2588"),A=Array(a+1).join("  "),R="",I="";for(d=0;d<e;d+=1){for(p=Math.floor((d-u)/a),I="",c=0;c<e;c+=1)b=1,u<=c&&c<o&&u<=d&&d<o&&v.isDark(p,Math.floor((c-u)/a))&&(b=0),I+=b?D:A;for(p=0;p<a;p+=1)R+=I+`
+`}return R.substring(0,R.length-1)},v.renderTo2dContext=function(a,f){f=f||2;for(var e=v.getModuleCount(),u=0;u<e;u++)for(var o=0;o<e;o++)a.fillStyle=v.isDark(u,o)?"black":"white",a.fillRect(u*f,o*f,f,f)},v};L.stringToBytesFuncs={default:function(x){for(var w=[],g=0;g<x.length;g+=1){var l=x.charCodeAt(g);w.push(l&255)}return w}},L.stringToBytes=L.stringToBytesFuncs.default,L.createStringToBytes=function(x,w){var g=function(){for(var n=ir(x),s=function(){var C=n.read();if(C==-1)throw"eof";return C},t=0,r={};;){var h=n.read();if(h==-1)break;var i=s(),v=s(),_=s(),B=String.fromCharCode(h<<8|i),y=v<<8|_;r[B]=y,t+=1}if(t!=w)throw t+" != "+w;return r}(),l=63;return function(n){for(var s=[],t=0;t<n.length;t+=1){var r=n.charCodeAt(t);if(r<128)s.push(r);else{var h=g[n.charAt(t)];typeof h=="number"?(h&255)==h?s.push(h):(s.push(h>>>8),s.push(h&255)):s.push(l)}}return s}};var T={MODE_NUMBER:1,MODE_ALPHA_NUM:2,MODE_8BIT_BYTE:4,MODE_KANJI:8},O={L:1,M:0,Q:3,H:2},k={PATTERN000:0,PATTERN001:1,PATTERN010:2,PATTERN011:3,PATTERN100:4,PATTERN101:5,PATTERN110:6,PATTERN111:7},P=function(){var x=[[],[6,18],[6,22],[6,26],[6,30],[6,34],[6,22,38],[6,24,42],[6,26,46],[6,28,50],[6,30,54],[6,32,58],[6,34,62],[6,26,46,66],[6,26,48,70],[6,26,50,74],[6,30,54,78],[6,30,56,82],[6,30,58,86],[6,34,62,90],[6,28,50,72,94],[6,26,50,74,98],[6,30,54,78,102],[6,28,54,80,106],[6,32,58,84,110],[6,30,58,86,114],[6,34,62,90,118],[6,26,50,74,98,122],[6,30,54,78,102,126],[6,26,52,78,104,130],[6,30,56,82,108,134],[6,34,60,86,112,138],[6,30,58,86,114,142],[6,34,62,90,118,146],[6,30,54,78,102,126,150],[6,24,50,76,102,128,154],[6,28,54,80,106,132,158],[6,32,58,84,110,136,162],[6,26,54,82,110,138,166],[6,30,58,86,114,142,170]],w=1335,g=7973,l=21522,n={},s=function(t){for(var r=0;t!=0;)r+=1,t>>>=1;return r};return n.getBCHTypeInfo=function(t){for(var r=t<<10;s(r)-s(w)>=0;)r^=w<<s(r)-s(w);return(t<<10|r)^l},n.getBCHTypeNumber=function(t){for(var r=t<<12;s(r)-s(g)>=0;)r^=g<<s(r)-s(g);return t<<12|r},n.getPatternPosition=function(t){return x[t-1]},n.getMaskFunction=function(t){switch(t){case k.PATTERN000:return function(r,h){return(r+h)%2==0};case k.PATTERN001:return function(r,h){return r%2==0};case k.PATTERN010:return function(r,h){return h%3==0};case k.PATTERN011:return function(r,h){return(r+h)%3==0};case k.PATTERN100:return function(r,h){return(Math.floor(r/2)+Math.floor(h/3))%2==0};case k.PATTERN101:return function(r,h){return r*h%2+r*h%3==0};case k.PATTERN110:return function(r,h){return(r*h%2+r*h%3)%2==0};case k.PATTERN111:return function(r,h){return(r*h%3+(r+h)%2)%2==0};default:throw"bad maskPattern:"+t}},n.getErrorCorrectPolynomial=function(t){for(var r=K([1],0),h=0;h<t;h+=1)r=r.multiply(K([1,M.gexp(h)],0));return r},n.getLengthInBits=function(t,r){if(1<=r&&r<10)switch(t){case T.MODE_NUMBER:return 10;case T.MODE_ALPHA_NUM:return 9;case T.MODE_8BIT_BYTE:return 8;case T.MODE_KANJI:return 8;default:throw"mode:"+t}else if(r<27)switch(t){case T.MODE_NUMBER:return 12;case T.MODE_ALPHA_NUM:return 11;case T.MODE_8BIT_BYTE:return 16;case T.MODE_KANJI:return 10;default:throw"mode:"+t}else if(r<41)switch(t){case T.MODE_NUMBER:return 14;case T.MODE_ALPHA_NUM:return 13;case T.MODE_8BIT_BYTE:return 16;case T.MODE_KANJI:return 12;default:throw"mode:"+t}else throw"type:"+r},n.getLostPoint=function(t){for(var r=t.getModuleCount(),h=0,i=0;i<r;i+=1)for(var v=0;v<r;v+=1){for(var _=0,B=t.isDark(i,v),y=-1;y<=1;y+=1)if(!(i+y<0||r<=i+y))for(var C=-1;C<=1;C+=1)v+C<0||r<=v+C||y==0&&C==0||B==t.isDark(i+y,v+C)&&(_+=1);_>5&&(h+=3+_-5)}for(var i=0;i<r-1;i+=1)for(var v=0;v<r-1;v+=1){var E=0;t.isDark(i,v)&&(E+=1),t.isDark(i+1,v)&&(E+=1),t.isDark(i,v+1)&&(E+=1),t.isDark(i+1,v+1)&&(E+=1),(E==0||E==4)&&(h+=3)}for(var i=0;i<r;i+=1)for(var v=0;v<r-6;v+=1)t.isDark(i,v)&&!t.isDark(i,v+1)&&t.isDark(i,v+2)&&t.isDark(i,v+3)&&t.isDark(i,v+4)&&!t.isDark(i,v+5)&&t.isDark(i,v+6)&&(h+=40);for(var v=0;v<r;v+=1)for(var i=0;i<r-6;i+=1)t.isDark(i,v)&&!t.isDark(i+1,v)&&t.isDark(i+2,v)&&t.isDark(i+3,v)&&t.isDark(i+4,v)&&!t.isDark(i+5,v)&&t.isDark(i+6,v)&&(h+=40);for(var N=0,v=0;v<r;v+=1)for(var i=0;i<r;i+=1)t.isDark(i,v)&&(N+=1);var m=Math.abs(100*N/r/r-50)/5;return h+=m*10,h},n}(),M=function(){for(var x=new Array(256),w=new Array(256),g=0;g<8;g+=1)x[g]=1<<g;for(var g=8;g<256;g+=1)x[g]=x[g-4]^x[g-5]^x[g-6]^x[g-8];for(var g=0;g<255;g+=1)w[x[g]]=g;var l={};return l.glog=function(n){if(n<1)throw"glog("+n+")";return w[n]},l.gexp=function(n){for(;n<0;)n+=255;for(;n>=256;)n-=255;return x[n]},l}();function K(x,w){if(typeof x.length>"u")throw x.length+"/"+w;var g=function(){for(var n=0;n<x.length&&x[n]==0;)n+=1;for(var s=new Array(x.length-n+w),t=0;t<x.length-n;t+=1)s[t]=x[t+n];return s}(),l={};return l.getAt=function(n){return g[n]},l.getLength=function(){return g.length},l.multiply=function(n){for(var s=new Array(l.getLength()+n.getLength()-1),t=0;t<l.getLength();t+=1)for(var r=0;r<n.getLength();r+=1)s[t+r]^=M.gexp(M.glog(l.getAt(t))+M.glog(n.getAt(r)));return K(s,0)},l.mod=function(n){if(l.getLength()-n.getLength()<0)return l;for(var s=M.glog(l.getAt(0))-M.glog(n.getAt(0)),t=new Array(l.getLength()),r=0;r<l.getLength();r+=1)t[r]=l.getAt(r);for(var r=0;r<n.getLength();r+=1)t[r]^=M.gexp(M.glog(n.getAt(r))+s);return K(t,0).mod(n)},l}var Y=function(){var x=[[1,26,19],[1,26,16],[1,26,13],[1,26,9],[1,44,34],[1,44,28],[1,44,22],[1,44,16],[1,70,55],[1,70,44],[2,35,17],[2,35,13],[1,100,80],[2,50,32],[2,50,24],[4,25,9],[1,134,108],[2,67,43],[2,33,15,2,34,16],[2,33,11,2,34,12],[2,86,68],[4,43,27],[4,43,19],[4,43,15],[2,98,78],[4,49,31],[2,32,14,4,33,15],[4,39,13,1,40,14],[2,121,97],[2,60,38,2,61,39],[4,40,18,2,41,19],[4,40,14,2,41,15],[2,146,116],[3,58,36,2,59,37],[4,36,16,4,37,17],[4,36,12,4,37,13],[2,86,68,2,87,69],[4,69,43,1,70,44],[6,43,19,2,44,20],[6,43,15,2,44,16],[4,101,81],[1,80,50,4,81,51],[4,50,22,4,51,23],[3,36,12,8,37,13],[2,116,92,2,117,93],[6,58,36,2,59,37],[4,46,20,6,47,21],[7,42,14,4,43,15],[4,133,107],[8,59,37,1,60,38],[8,44,20,4,45,21],[12,33,11,4,34,12],[3,145,115,1,146,116],[4,64,40,5,65,41],[11,36,16,5,37,17],[11,36,12,5,37,13],[5,109,87,1,110,88],[5,65,41,5,66,42],[5,54,24,7,55,25],[11,36,12,7,37,13],[5,122,98,1,123,99],[7,73,45,3,74,46],[15,43,19,2,44,20],[3,45,15,13,46,16],[1,135,107,5,136,108],[10,74,46,1,75,47],[1,50,22,15,51,23],[2,42,14,17,43,15],[5,150,120,1,151,121],[9,69,43,4,70,44],[17,50,22,1,51,23],[2,42,14,19,43,15],[3,141,113,4,142,114],[3,70,44,11,71,45],[17,47,21,4,48,22],[9,39,13,16,40,14],[3,135,107,5,136,108],[3,67,41,13,68,42],[15,54,24,5,55,25],[15,43,15,10,44,16],[4,144,116,4,145,117],[17,68,42],[17,50,22,6,51,23],[19,46,16,6,47,17],[2,139,111,7,140,112],[17,74,46],[7,54,24,16,55,25],[34,37,13],[4,151,121,5,152,122],[4,75,47,14,76,48],[11,54,24,14,55,25],[16,45,15,14,46,16],[6,147,117,4,148,118],[6,73,45,14,74,46],[11,54,24,16,55,25],[30,46,16,2,47,17],[8,132,106,4,133,107],[8,75,47,13,76,48],[7,54,24,22,55,25],[22,45,15,13,46,16],[10,142,114,2,143,115],[19,74,46,4,75,47],[28,50,22,6,51,23],[33,46,16,4,47,17],[8,152,122,4,153,123],[22,73,45,3,74,46],[8,53,23,26,54,24],[12,45,15,28,46,16],[3,147,117,10,148,118],[3,73,45,23,74,46],[4,54,24,31,55,25],[11,45,15,31,46,16],[7,146,116,7,147,117],[21,73,45,7,74,46],[1,53,23,37,54,24],[19,45,15,26,46,16],[5,145,115,10,146,116],[19,75,47,10,76,48],[15,54,24,25,55,25],[23,45,15,25,46,16],[13,145,115,3,146,116],[2,74,46,29,75,47],[42,54,24,1,55,25],[23,45,15,28,46,16],[17,145,115],[10,74,46,23,75,47],[10,54,24,35,55,25],[19,45,15,35,46,16],[17,145,115,1,146,116],[14,74,46,21,75,47],[29,54,24,19,55,25],[11,45,15,46,46,16],[13,145,115,6,146,116],[14,74,46,23,75,47],[44,54,24,7,55,25],[59,46,16,1,47,17],[12,151,121,7,152,122],[12,75,47,26,76,48],[39,54,24,14,55,25],[22,45,15,41,46,16],[6,151,121,14,152,122],[6,75,47,34,76,48],[46,54,24,10,55,25],[2,45,15,64,46,16],[17,152,122,4,153,123],[29,74,46,14,75,47],[49,54,24,10,55,25],[24,45,15,46,46,16],[4,152,122,18,153,123],[13,74,46,32,75,47],[48,54,24,14,55,25],[42,45,15,32,46,16],[20,147,117,4,148,118],[40,75,47,7,76,48],[43,54,24,22,55,25],[10,45,15,67,46,16],[19,148,118,6,149,119],[18,75,47,31,76,48],[34,54,24,34,55,25],[20,45,15,61,46,16]],w=function(n,s){var t={};return t.totalCount=n,t.dataCount=s,t},g={},l=function(n,s){switch(s){case O.L:return x[(n-1)*4+0];case O.M:return x[(n-1)*4+1];case O.Q:return x[(n-1)*4+2];case O.H:return x[(n-1)*4+3];default:return}};return g.getRSBlocks=function(n,s){var t=l(n,s);if(typeof t>"u")throw"bad rs block @ typeNumber:"+n+"/errorCorrectionLevel:"+s;for(var r=t.length/3,h=[],i=0;i<r;i+=1)for(var v=t[i*3+0],_=t[i*3+1],B=t[i*3+2],y=0;y<v;y+=1)h.push(w(_,B));return h},g}(),G=function(){var x=[],w=0,g={};return g.getBuffer=function(){return x},g.getAt=function(l){var n=Math.floor(l/8);return(x[n]>>>7-l%8&1)==1},g.put=function(l,n){for(var s=0;s<n;s+=1)g.putBit((l>>>n-s-1&1)==1)},g.getLengthInBits=function(){return w},g.putBit=function(l){var n=Math.floor(w/8);x.length<=n&&x.push(0),l&&(x[n]|=128>>>w%8),w+=1},g},tr=function(x){var w=T.MODE_NUMBER,g=x,l={};l.getMode=function(){return w},l.getLength=function(t){return g.length},l.write=function(t){for(var r=g,h=0;h+2<r.length;)t.put(n(r.substring(h,h+3)),10),h+=3;h<r.length&&(r.length-h==1?t.put(n(r.substring(h,h+1)),4):r.length-h==2&&t.put(n(r.substring(h,h+2)),7))};var n=function(t){for(var r=0,h=0;h<t.length;h+=1)r=r*10+s(t.charAt(h));return r},s=function(t){if("0"<=t&&t<="9")return t.charCodeAt(0)-48;throw"illegal char :"+t};return l},er=function(x){var w=T.MODE_ALPHA_NUM,g=x,l={};l.getMode=function(){return w},l.getLength=function(s){return g.length},l.write=function(s){for(var t=g,r=0;r+1<t.length;)s.put(n(t.charAt(r))*45+n(t.charAt(r+1)),11),r+=2;r<t.length&&s.put(n(t.charAt(r)),6)};var n=function(s){if("0"<=s&&s<="9")return s.charCodeAt(0)-48;if("A"<=s&&s<="Z")return s.charCodeAt(0)-65+10;switch(s){case" ":return 36;case"$":return 37;case"%":return 38;case"*":return 39;case"+":return 40;case"-":return 41;case".":return 42;case"/":return 43;case":":return 44;default:throw"illegal char :"+s}};return l},nr=function(x){var w=T.MODE_8BIT_BYTE,g=x,l=L.stringToBytes(x),n={};return n.getMode=function(){return w},n.getLength=function(s){return l.length},n.write=function(s){for(var t=0;t<l.length;t+=1)s.put(l[t],8)},n},ar=function(x){var w=T.MODE_KANJI,g=x,l=L.stringToBytesFuncs.SJIS;if(!l)throw"sjis not supported.";(function(t,r){var h=l(t);if(h.length!=2||(h[0]<<8|h[1])!=r)throw"sjis not supported."})("\u53CB",38726);var n=l(x),s={};return s.getMode=function(){return w},s.getLength=function(t){return~~(n.length/2)},s.write=function(t){for(var r=n,h=0;h+1<r.length;){var i=(255&r[h])<<8|255&r[h+1];if(33088<=i&&i<=40956)i-=33088;else if(57408<=i&&i<=60351)i-=49472;else throw"illegal char at "+(h+1)+"/"+i;i=(i>>>8&255)*192+(i&255),t.put(i,13),h+=2}if(h<r.length)throw"illegal char at "+(h+1)},s},j=function(){var x=[],w={};return w.writeByte=function(g){x.push(g&255)},w.writeShort=function(g){w.writeByte(g),w.writeByte(g>>>8)},w.writeBytes=function(g,l,n){l=l||0,n=n||g.length;for(var s=0;s<n;s+=1)w.writeByte(g[s+l])},w.writeString=function(g){for(var l=0;l<g.length;l+=1)w.writeByte(g.charCodeAt(l))},w.toByteArray=function(){return x},w.toString=function(){var g="";g+="[";for(var l=0;l<x.length;l+=1)l>0&&(g+=","),g+=x[l];return g+="]",g},w},fr=function(){var x=0,w=0,g=0,l="",n={},s=function(r){l+=String.fromCharCode(t(r&63))},t=function(r){if(!(r<0)){if(r<26)return 65+r;if(r<52)return 97+(r-26);if(r<62)return 48+(r-52);if(r==62)return 43;if(r==63)return 47}throw"n:"+r};return n.writeByte=function(r){for(x=x<<8|r&255,w+=8,g+=1;w>=6;)s(x>>>w-6),w-=6},n.flush=function(){if(w>0&&(s(x<<6-w),x=0,w=0),g%3!=0)for(var r=3-g%3,h=0;h<r;h+=1)l+="="},n.toString=function(){return l},n},ir=function(x){var w=x,g=0,l=0,n=0,s={};s.read=function(){for(;n<8;){if(g>=w.length){if(n==0)return-1;throw"unexpected end of file./"+n}var r=w.charAt(g);if(g+=1,r=="=")return n=0,-1;if(r.match(/^\s$/))continue;l=l<<6|t(r.charCodeAt(0)),n+=6}var h=l>>>n-8&255;return n-=8,h};var t=function(r){if(65<=r&&r<=90)return r-65;if(97<=r&&r<=122)return r-97+26;if(48<=r&&r<=57)return r-48+52;if(r==43)return 62;if(r==47)return 63;throw"c:"+r};return s},ur=function(x,w){var g=x,l=w,n=new Array(x*w),s={};s.setPixel=function(i,v,_){n[v*g+i]=_},s.write=function(i){i.writeString("GIF87a"),i.writeShort(g),i.writeShort(l),i.writeByte(128),i.writeByte(0),i.writeByte(0),i.writeByte(0),i.writeByte(0),i.writeByte(0),i.writeByte(255),i.writeByte(255),i.writeByte(255),i.writeString(","),i.writeShort(0),i.writeShort(0),i.writeShort(g),i.writeShort(l),i.writeByte(0);var v=2,_=r(v);i.writeByte(v);for(var B=0;_.length-B>255;)i.writeByte(255),i.writeBytes(_,B,255),B+=255;i.writeByte(_.length-B),i.writeBytes(_,B,_.length-B),i.writeByte(0),i.writeString(";")};var t=function(i){var v=i,_=0,B=0,y={};return y.write=function(C,E){if(C>>>E)throw"length over";for(;_+E>=8;)v.writeByte(255&(C<<_|B)),E-=8-_,C>>>=8-_,B=0,_=0;B=C<<_|B,_=_+E},y.flush=function(){_>0&&v.writeByte(B)},y},r=function(i){for(var v=1<<i,_=(1<<i)+1,B=i+1,y=h(),C=0;C<v;C+=1)y.add(String.fromCharCode(C));y.add(String.fromCharCode(v)),y.add(String.fromCharCode(_));var E=j(),N=t(E);N.write(v,B);var m=0,U=String.fromCharCode(n[m]);for(m+=1;m<n.length;){var H=String.fromCharCode(n[m]);m+=1,y.contains(U+H)?U=U+H:(N.write(y.indexOf(U),B),y.size()<4095&&(y.size()==1<<B&&(B+=1),y.add(U+H)),U=H)}return N.write(y.indexOf(U),B),N.write(_,B),N.flush(),E.toByteArray()},h=function(){var i={},v=0,_={};return _.add=function(B){if(_.contains(B))throw"dup key:"+B;i[B]=v,v+=1},_.size=function(){return v},_.indexOf=function(B){return i[B]},_.contains=function(B){return typeof i[B]<"u"},_};return s},or=function(x,w,g){for(var l=ur(x,w),n=0;n<w;n+=1)for(var s=0;s<x;s+=1)l.setPixel(s,n,g(s,n));var t=j();l.write(t);for(var r=fr(),h=t.toByteArray(),i=0;i<h.length;i+=1)r.writeByte(h[i]);return r.flush(),"data:image/gif;base64,"+r};return L}();(function(){W.stringToBytesFuncs["UTF-8"]=function(L){function T(O){for(var k=[],P=0;P<O.length;P++){var M=O.charCodeAt(P);M<128?k.push(M):M<2048?k.push(192|M>>6,128|M&63):M<55296||M>=57344?k.push(224|M>>12,128|M>>6&63,128|M&63):(P++,M=65536+((M&1023)<<10|O.charCodeAt(P)&1023),k.push(240|M>>18,128|M>>12&63,128|M>>6&63,128|M&63))}return k}return T(L)}})();(function(L){typeof define=="function"&&define.amd?define([],L):typeof V=="object"&&(q.exports=L())})(function(){return W})});var hr=$((lr,rr)=>{rr.exports=z()});return hr();})();
+function qrSvg(text, cell) {
+  try { const q = QRGEN(0, "M"); q.addData(text); q.make(); return q.createSvgTag({ cellSize: cell || 4, margin: 2, scalable: true }); } catch (e) { return ""; }
+}
+function newToken() {
+  const a = "abcdefghijkmnpqrstuvwxyz23456789"; let s = "";
+  try { const u = new Uint8Array(10); crypto.getRandomValues(u); u.forEach((x) => (s += a[x % a.length])); } catch (e) { for (let i = 0; i < 10; i++) s += a[Math.floor(Math.random() * a.length)]; }
+  return s;
+}
+function teacherLinkBase() { try { return window.location.origin.startsWith("http") ? window.location.origin : "https://your-app.vercel.app"; } catch (e) { return "https://your-app.vercel.app"; } }
+function teacherLink(cfg, t) { const tk = ((cfg.teacherLinks || {}).tokens || {})[t]; return tk ? `${teacherLinkBase()}/?t=${tk}` : ""; }
+function buildTeacherPages(cfg) {
+  const L = leisureData(cfg), tk = (cfg.teacherLinks || {}).tokens || {};
+  const today = isoToday(), dates = Array.from({ length: 8 }, (_, i) => isoShift(today, i));
+  const by = {};
+  const ent = (t, dt) => ((by[t] || (by[t] = {}))[dt] || (by[t][dt] = { cover: [], coveredBy: [] }));
+  for (const dt of dates) {
+    const rec = (cfg.subs || {})[dt]; if (!rec) continue;
+    const a = rec.assign || {};
+    for (const t of Object.keys(rec.absent || {})) ent(t, dt).absent = rec.absent[t];
+    for (const n of subsNeeds(cfg, dt)) { const u = a[n.key]; ent(n.t, dt).coveredBy.push({ p: n.p, cls: n.cls, sub: n.sub, by: u || null }); if (u) ent(u, dt).cover.push({ p: n.p, cls: n.cls, sub: n.sub, for: n.t }); }
+  }
+  const rows = [{ token: "_school", data: { school: cfg.school || "", year: cfg.year || "", logo: cfg.logoIcon || cfg.logo || "", days: cfg.days, periods: cfg.periods, dayNames: Object.fromEntries(cfg.days.map((d) => [d, DAY_FULL[d] || d])) } }];
+  for (const t of cfg.singles) {
+    const token = tk[t]; if (!token) continue;
+    const week = {}; let load = 0;
+    for (const d of cfg.days) week[d] = cfg.periods.map((_, p) => { const b = L.busy[t] && L.busy[t][d] ? L.busy[t][d][p] : null; if (b === "off") return "off"; if (!b) return null; load++; return { c: b.c, s: b.sub, k: b.combined ? 1 : 0 }; });
+    rows.push({ token, data: { t, ct: cfg.classes.filter((c) => cfg.classTeacher[c] === t), week, load, free: L.week[t], subs: by[t] || {} } });
+  }
+  return rows;
+}
+function exportQrCardsPDF(cfg, list) {
+  const css = "@page{size:A4 portrait;margin:10mm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact;box-sizing:border-box} body{margin:0;font-family:Arial,Helvetica,sans-serif;color:#16213a}" +
+    " .g{display:grid;grid-template-columns:repeat(3,1fr);gap:6mm} .cd{border:1.5px dashed #9fb7bb;border-radius:4mm;padding:4mm;text-align:center;page-break-inside:avoid;height:84mm;display:flex;flex-direction:column;align-items:center;justify-content:space-between}" +
+    " .sc{font-size:9.5px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:#0a4f55;display:flex;align-items:center;gap:5px} .sc img{height:16px} .t{font-family:'Courier New',monospace;font-size:22px;font-weight:800;color:#0a3d42} .q svg{width:44mm;height:44mm} .h{font-size:10px;color:#4b5870}";
+  const cards = list.map((t) => { const url = teacherLink(cfg, t); return `<div class="cd"><div class="sc">${cfg.logo ? `<img src="${cfg.logo}" alt="">` : ""}${esc(cfg.school || "")}</div><div class="t">${esc(t)}</div><div class="q">${qrSvg(url, 4)}</div><div class="h">Scan to see your timetable<br>and substitutions</div></div>`; }).join("");
+  openPrint(esc(cfg.school) + " - Teacher QR cards", css, `<div class="g">${cards}</div>`);
+}
+function ShareLinkButton({ cfg, t }) {
+  const [open, setOpen] = useState(false);
+  const [msg, setMsg] = useState("");
+  const url = teacherLink(cfg, t);
+  if (!(cfg.teacherLinks || {}).on || !url) return null;
+  const copy = async () => { try { await navigator.clipboard.writeText(url); setMsg("Link copied"); } catch (e) { setMsg("Couldn't copy"); } };
+  return (
+    <span style={{ position: "relative" }}>
+      <PrintBtn onClick={() => setOpen(!open)} icon="download" light label="Share link" sub={`${t}'s own page`} />
+      {open && (
+        <div style={{ position: "absolute", right: 0, top: "110%", zIndex: 40, width: 280, background: "#fff", border: `1px solid ${C.line}`, borderRadius: 14, boxShadow: "0 12px 30px rgba(0,0,0,.18)", padding: 14, textAlign: "center" }}>
+          <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>{t}'s timetable link</div>
+          <div dangerouslySetInnerHTML={{ __html: qrSvg(url, 4) }} style={{ width: 160, height: 160, margin: "0 auto" }} />
+          <div style={{ fontSize: 11, color: C.sub, wordBreak: "break-all", margin: "6px 0 10px" }}>{url}</div>
+          <div style={{ display: "flex", gap: 6, justifyContent: "center" }}>
+            <button className="tt-btn" onClick={copy} style={{ ...ghostBtn, padding: "5px 10px", fontSize: 12 }}>Copy</button>
+            <button className="tt-btn" onClick={() => { try { window.open("https://wa.me/?text=" + encodeURIComponent(`Your timetable (${cfg.school || ""}): ${url}`), "_blank"); } catch (e) { /* ignore */ } }} style={{ ...ghostBtn, padding: "5px 10px", fontSize: 12, color: "#128c4b" }}>WhatsApp</button>
+            <button className="tt-btn" onClick={() => setOpen(false)} style={{ ...ghostBtn, padding: "5px 10px", fontSize: 12 }}>Close</button>
+          </div>
+          {msg && <div style={{ fontSize: 12, color: C.free, fontWeight: 700, marginTop: 6 }}>{msg}</div>}
+        </div>
+      )}
+    </span>
+  );
+}
+const TEACHER_SQL = `-- Teacher links: run once in Supabase → SQL Editor → New query → Run
+create table if not exists public.teacher_pages (
+  token text primary key, data jsonb not null, updated_at timestamptz not null default now()
+);
+alter table public.teacher_pages enable row level security;
+drop policy if exists "staff manage teacher pages" on public.teacher_pages;
+create policy "staff manage teacher pages" on public.teacher_pages
+  for all to authenticated using (true) with check (true);
+create or replace function public.get_teacher_page(p_token text) returns jsonb
+language sql stable security definer set search_path = public as $$
+  select data || jsonb_build_object('_at', updated_at) from public.teacher_pages where token = p_token
+$$;
+revoke all on function public.get_teacher_page(text) from public;
+grant execute on function public.get_teacher_page(text) to anon, authenticated;`;
+function TeacherLinksPanel({ cfg, update, ask, pubState, publishNow, mobile }) {
+  const [q, setQ] = useState("");
+  const [qr, setQr] = useState("");
+  const [msg, setMsg] = useState("");
+  const th = CUR_TH || THEMES.teal;
+  const on = !!(cfg.teacherLinks || {}).on;
+  const list = cfg.singles.filter((t) => !q.trim() || t.toLowerCase().includes(q.trim().toLowerCase()));
+  const turnOn = () => update((n) => { const tk = { ...((n.teacherLinks || {}).tokens || {}) }; n.singles.forEach((t) => { if (!tk[t]) tk[t] = newToken(); }); n.teacherLinks = { on: true, tokens: tk }; });
+  const turnOff = () => ask("Turn teacher links off? Every teacher's link stops working until you turn them on again (the same links come back).", () => { update((n) => { n.teacherLinks = { ...(n.teacherLinks || {}), on: false }; }); publishNow([]); });
+  const renew = (t) => ask(`Make a new link for ${t}? The old link stops working — send ${t} the new one.`, () => update((n) => { n.teacherLinks = { ...(n.teacherLinks || {}), tokens: { ...((n.teacherLinks || {}).tokens || {}), [t]: newToken() } }; }));
+  const copy = async (text, what) => { try { await navigator.clipboard.writeText(text); setMsg(`${what} copied.`); } catch (e) { setMsg("Couldn't copy on this device."); } };
+  const allText = cfg.singles.map((t) => `${t}: ${teacherLink(cfg, t)}`).join("\n");
+  const fmt = (x) => new Date(x).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  return (
+    <div style={{ ...card, padding: 18, position: "relative" }}>
+      <span aria-hidden="true" style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 4, background: `linear-gradient(180deg, ${th.g1}, ${th.g2})` }} />
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8, flexWrap: "wrap" }}>
+        <span style={{ width: 40, height: 40, borderRadius: 12, display: "grid", placeItems: "center", background: `${th.accent}14`, color: th.accent, flexShrink: 0 }}><Icon name="teachers" size={19} /></span>
+        <div style={{ fontSize: 15.5, fontWeight: 800, color: C.ink }}>Teacher links — each teacher's own timetable page</div>
+        <span style={{ marginLeft: "auto", fontSize: 11.5, fontWeight: 700, padding: "2px 10px", borderRadius: 20, background: on ? C.freeSoft : "#eef1f5", color: on ? C.free : C.sub }}>{on ? "on" : "off"}</span>
+      </div>
+      <div className="tt-callout" style={{ marginBottom: 12 }}>Every teacher gets a private link (and QR code) that opens <b>only their timetable, today's periods and their substitution duties</b> — on any phone, with no login and nothing to install. It is read-only and updates by itself a few seconds after you save. It costs nothing on your free Supabase and Vercel plans.</div>
+      {!on ? (
+        <div style={{ display: "grid", gap: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 800 }}>One-time setup</div>
+          <ol style={{ margin: 0, paddingLeft: 20, fontSize: 13, lineHeight: 1.8, color: C.ink }}>
+            <li>Open <b>supabase.com</b> → your project → <b>SQL Editor</b> → <b>New query</b>, paste the code below and press <b>Run</b>.</li>
+            <li>Make sure the new <b>main.jsx</b>, <b>TeacherPage.jsx</b> and <b>storage.js</b> are in your <b>src</b> folder and redeployed.</li>
+            <li>Press <b>Turn on teacher links</b>.</li>
+          </ol>
+          <pre style={{ margin: 0, background: "#0f1b2d", color: "#d6f5ee", padding: 12, borderRadius: 10, fontSize: 11.5, overflowX: "auto", maxHeight: 200 }}>{TEACHER_SQL}</pre>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button className="tt-btn" onClick={() => copy(TEACHER_SQL, "SQL")} style={ghostBtn}>Copy SQL</button>
+            <button className="tt-btn" onClick={turnOn} style={solidBtn}>Turn on teacher links</button>
+          </div>
+          {msg && <div style={{ fontSize: 12.5, color: C.free, fontWeight: 600 }}>{msg}</div>}
+        </div>
+      ) : (
+        <div style={{ display: "grid", gap: 10 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", fontSize: 12.5 }}>
+            {pubState ? (pubState.ok ? <span style={{ color: C.free, fontWeight: 700 }}>✓ Pages up to date ({fmt(pubState.at)}{pubState.sent ? ` · ${pubState.sent} updated` : ""})</span>
+              : <span style={{ color: C.clash, fontWeight: 700 }}>Couldn't publish: {pubState.error}. {/teacher_pages|function|schema|relation/i.test(pubState.error || "") ? "Run the setup SQL in Supabase first." : ""}</span>) : <span style={{ color: C.sub }}>Pages are published a few seconds after each save.</span>}
+            <button className="tt-btn" onClick={() => publishNow()} style={{ ...ghostBtn, padding: "5px 10px", fontSize: 12 }}>Publish now</button>
+            <span style={{ marginLeft: "auto", display: "flex", gap: 6, flexWrap: "wrap" }}>
+              <PrintBtn onClick={() => exportQrCardsPDF(cfg, cfg.singles)} icon="pdf" label="Print QR cards" sub="A4 · 9 per page" />
+              <button className="tt-btn" onClick={() => copy(allText, "All links")} style={ghostBtn}>Copy all links</button>
+              <button className="tt-btn" onClick={turnOff} style={{ ...ghostBtn, color: C.clash }}>Turn off</button>
+            </span>
+          </div>
+          {msg && <div style={{ fontSize: 12.5, color: C.free, fontWeight: 600 }}>{msg}</div>}
+          <input className="tt-in" placeholder="Search teacher" value={q} onChange={(e) => setQ(e.target.value)} style={{ maxWidth: 260, fontFamily: sans, fontSize: 13, height: 34 }} />
+          <div className="tt-scroll" style={{ maxHeight: 420, overflowY: "auto", display: "grid", gap: 6 }}>
+            {list.map((t) => { const url = teacherLink(cfg, t); return (
+              <div key={t} style={{ border: `1px solid ${C.line}`, borderRadius: 12, padding: "8px 10px", display: "grid", gap: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                  <b style={{ fontFamily: mono, minWidth: 64 }}>{t}</b>
+                  <span style={{ flex: "1 1 200px", minWidth: 0, fontSize: 12, color: C.sub, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: mobile ? "normal" : "nowrap", wordBreak: "break-all" }}>{url}</span>
+                  <span style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                    <button className="tt-btn" onClick={() => copy(url, `${t}'s link`)} style={{ ...ghostBtn, padding: "4px 9px", fontSize: 12 }}>Copy</button>
+                    <button className="tt-btn" onClick={() => { try { window.open("https://wa.me/?text=" + encodeURIComponent(`Your timetable (${cfg.school || ""}): ${url}`), "_blank"); } catch (e) { /* ignore */ } }} style={{ ...ghostBtn, padding: "4px 9px", fontSize: 12, color: "#128c4b" }}>WhatsApp</button>
+                    <button className="tt-btn" onClick={() => setQr(qr === t ? "" : t)} style={{ ...ghostBtn, padding: "4px 9px", fontSize: 12 }}>{qr === t ? "Hide QR" : "QR"}</button>
+                    <button className="tt-btn" onClick={() => window.open(url, "_blank")} style={{ ...ghostBtn, padding: "4px 9px", fontSize: 12 }}>Open</button>
+                    <button className="tt-btn" onClick={() => renew(t)} title="Make a new link (the old one stops working)" style={{ ...ghostBtn, padding: "4px 9px", fontSize: 12, color: C.sub }}>New link</button>
+                  </span>
+                </div>
+                {qr === t && <div dangerouslySetInnerHTML={{ __html: qrSvg(url, 4) }} style={{ width: 170, height: 170 }} />}
+              </div>); })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+/* ---------------- Undo & safety copies ---------------- */
+var SNAP_SKIP = ["logo", "logoIcon", "hmSign", "seal", "versions", "snapshots", "adminPw", "subs"];
+var SNAP_HINT = { text: "", at: 0 };
+function setSnapHint(text) {
+  const t = String(text || "");
+  const known = [[/^restoring/i, null], [/new academic year/i, "New academic year"], [/improve teaching quality/i, "Improve quality"], [/master reset/i, "Master reset"], [/regenerat|fresh, clash-free|replace all/i, "Regenerate"], [/fill (the )?remaining|fill remaining/i, "Fill remaining"], [/^reset/i, "Reset"], [/clear all mapping|clear .*mapping/i, "Clear all mapping"], [/clear every|clear all/i, "Clear all"], [/fix all clashes/i, "Fix all clashes"], [/^use (version|saved|current)|^use /i, "Using a version"], [/import|replace the timetable/i, "Import"], [/restore the safety copy/i, "Restore"]];
+  let label = ""; for (const [re, l] of known) if (re.test(t)) { label = l === null ? t.replace(/^restoring\s*/i, "Restore of ") : l; break; }
+  if (!label) { label = t.split(/[.?!—(,:]/)[0].trim(); if (label.length > 48) label = label.slice(0, 48).replace(/\s+\S*$/, "") + "…"; }
+  SNAP_HINT = { text: label, at: Date.now() };
+}
+function bigChange(a, b) {
+  if (!a || !b) return null;
+  const parts = [];
+  if ((a.classes || []).length !== (b.classes || []).length || (a.singles || []).length !== (b.singles || []).length || (a.subjects || []).length !== (b.subjects || []).length) parts.push("classes / teachers / subjects changed");
+  let g = 0;
+  for (const c of a.classes || []) for (const d of a.days || []) {
+    const x = (a.grid && a.grid[c] && a.grid[c][d]) || [], y = (b.grid && b.grid[c] && b.grid[c][d]) || [];
+    const n = Math.max(x.length, y.length);
+    for (let p = 0; p < n; p++) if (((x[p] && x[p][0]) || "") !== ((y[p] && y[p][0]) || "")) g++;
+  }
+  if (g >= 20) parts.push(`${g} periods changed`);
+  let m = 0; const ks = new Set([...Object.keys(a.bkey || {}), ...Object.keys(b.bkey || {})]);
+  for (const k of ks) if (JSON.stringify((a.bkey || {})[k] || []) !== JSON.stringify((b.bkey || {})[k] || [])) m++;
+  if (m >= 3) parts.push(`mapping of ${m} classes changed`);
+  if (Object.keys(a.locked || {}).length - Object.keys(b.locked || {}).length >= 25) parts.push("frozen periods removed");
+  return parts.length ? parts.join(" · ") : null;
+}
+function snapSummary(c) {
+  let f = 0; for (const k of c.classes || []) for (const d of c.days || []) for (const sl of (c.grid && c.grid[k] && c.grid[k][d]) || []) if (sl && sl[0]) f++;
+  return { classes: (c.classes || []).length, teachers: (c.singles || []).length, filled: f };
+}
+function b64FromBuf(buf) { const u = new Uint8Array(buf); let s = ""; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(s); }
+function bufFromB64(b) { const s = atob(b); const u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return u; }
+async function makeSnapshot(c, label, kind) {
+  const o = {}; for (const k of Object.keys(c)) if (!SNAP_SKIP.includes(k)) o[k] = c[k];
+  const js = JSON.stringify(o);
+  const rec = { id: "sn" + Date.now() + Math.random().toString(36).slice(2, 6), at: Date.now(), label: label || "Safety copy", kind: kind || "auto", sum: snapSummary(c) };
+  try {
+    if (typeof CompressionStream === "undefined") throw new Error("no gzip");
+    const st = new Blob([js]).stream().pipeThrough(new CompressionStream("gzip"));
+    rec.z = b64FromBuf(await new Response(st).arrayBuffer());
+  } catch (e) { rec.j = js; }
+  return rec;
+}
+async function readSnapshot(rec) {
+  if (rec.j) return JSON.parse(rec.j);
+  const st = new Blob([bufFromB64(rec.z)]).stream().pipeThrough(new DecompressionStream("gzip"));
+  return JSON.parse(await new Response(st).text());
+}
+function pruneSnaps(list) {
+  const arc = list.filter((x) => x.kind === "archive").sort((a, b) => b.at - a.at).slice(0, 6);
+  const man = list.filter((x) => x.kind === "manual").sort((a, b) => b.at - a.at).slice(0, 6);
+  const aut = list.filter((x) => x.kind !== "manual" && x.kind !== "archive").sort((a, b) => b.at - a.at).slice(0, 8);
+  return [...arc, ...man, ...aut].sort((a, b) => b.at - a.at);
+}
+function SafetyPanel({ cfg, update, ask }) {
+  const [name, setName] = useState("");
+  const [msg, setMsg] = useState(null);
+  const [busy, setBusy] = useState("");
+  const list = (cfg.snapshots || []).slice().sort((a, b) => b.at - a.at);
+  const fmt = (t) => new Date(t).toLocaleString(undefined, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+  const saveNow = async () => {
+    setBusy("save");
+    try { const rec = await makeSnapshot(cfg, name.trim() || "Saved by hand", "manual"); update((n) => { n.snapshots = pruneSnaps([...(n.snapshots || []), rec]); }); setName(""); setMsg({ ok: true, text: "Safety copy saved." }); }
+    catch (e) { setMsg({ ok: false, text: "Couldn't save: " + ((e && e.message) || e) }); }
+    setBusy("");
+  };
+  const restore = (rec) => ask(`Restore the safety copy "${rec.label}" from ${fmt(rec.at)}? Classes, teachers, mapping, rules and the whole timetable go back to how they were then. (Your logo, signature, seal, saved versions and substitution record are kept. The current state is saved as a safety copy first, so you can come back.)`, async () => {
+    setBusy(rec.id);
+    try {
+      const data = await readSnapshot(rec);
+      setSnapHint(`restoring the copy from ${fmt(rec.at)}`);
+      update((n) => { for (const k of Object.keys(n)) if (!SNAP_SKIP.includes(k)) delete n[k]; for (const k of Object.keys(data)) if (!SNAP_SKIP.includes(k)) n[k] = data[k]; });
+      setMsg({ ok: true, text: `Restored "${rec.label}".` });
+    } catch (e) { setMsg({ ok: false, text: "Couldn't restore: " + ((e && e.message) || e) }); }
+    setBusy("");
+  });
+  const download = async (rec) => {
+    try { const data = await readSnapshot(rec); downloadText(`timetable_safety_copy_${new Date(rec.at).toISOString().slice(0, 16).replace(/[:T]/g, "-")}.json`, JSON.stringify(data, null, 1), "application/json"); }
+    catch (e) { setMsg({ ok: false, text: "Couldn't download: " + ((e && e.message) || e) }); }
+  };
+  const del = (rec) => ask(`Delete the safety copy "${rec.label}"?`, () => update((n) => { n.snapshots = (n.snapshots || []).filter((x) => x.id !== rec.id); }));
+  const th = CUR_TH || THEMES.teal;
+  return (
+    <div style={{ ...card, padding: 18, position: "relative" }}>
+      <span aria-hidden="true" style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 4, background: `linear-gradient(180deg, ${th.g1}, ${th.g2})` }} />
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
+        <span style={{ width: 40, height: 40, borderRadius: 12, display: "grid", placeItems: "center", background: `${th.accent}14`, color: th.accent, flexShrink: 0, fontSize: 18 }}>⟲</span>
+        <div style={{ fontSize: 15.5, fontWeight: 800, color: C.ink }}>Safety copies & undo</div>
+        <span style={{ marginLeft: "auto", fontSize: 11.5, fontWeight: 700, padding: "2px 10px", borderRadius: 20, background: C.freeSoft, color: C.free }}>{list.length} kept</span>
+      </div>
+      <div className="tt-callout" style={{ marginBottom: 12 }}>Before every big change — Auto-generate, Reset, Master reset, Clear all, imports, Fix clashes, using a version — the app <b>automatically keeps a copy</b> of everything as it was. Restore any copy here with one click. For small slips use <b>↶ Undo</b> at the top of the screen (Ctrl+Z on a computer). Copies are saved with your timetable, so they work on every device.</div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+        <input className="tt-in" style={{ flex: "1 1 220px", maxWidth: 360, fontFamily: sans, fontSize: 13, height: 36 }} placeholder="Name this copy (optional)" value={name} onChange={(e) => setName(e.target.value)} />
+        <PrintBtn onClick={saveNow} icon="download" label={busy === "save" ? "Saving…" : "Save a safety copy now"} sub="kept until you delete it" />
+      </div>
+      {msg && <div style={{ fontSize: 12.5, fontWeight: 600, color: msg.ok ? C.free : C.clash, marginBottom: 10 }}>{msg.text}</div>}
+      {list.length === 0 ? <div style={{ fontSize: 12.5, color: C.sub }}>No safety copies yet — one is made automatically before the next big change.</div> : (
+        <div style={{ display: "grid", gap: 8 }}>
+          {list.map((r) => (
+            <div key={r.id} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "9px 12px", border: `1px solid ${r.kind === "manual" ? `${th.accent}55` : C.line}`, borderRadius: 12, background: r.kind === "manual" ? `${th.accent}08` : "#fff" }}>
+              <span style={{ fontSize: 10.5, fontWeight: 800, padding: "2px 8px", borderRadius: 10, background: r.kind === "manual" ? th.accent : r.kind === "archive" ? C.accent : "#eef1f5", color: r.kind === "manual" || r.kind === "archive" ? "#fff" : C.sub, textTransform: "uppercase", letterSpacing: 0.4 }}>{r.kind === "manual" ? "Saved" : r.kind === "archive" ? "Year" : "Auto"}</span>
+              <div style={{ minWidth: 0, flex: "1 1 220px" }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: C.ink, wordBreak: "break-word" }}>{r.label}</div>
+                <div style={{ fontSize: 11.5, color: C.sub }}>{fmt(r.at)}{r.sum ? ` · ${r.sum.classes} classes · ${r.sum.teachers} teachers · ${r.sum.filled} periods filled` : ""}</div>
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button className="tt-btn" onClick={() => download(r)} style={{ ...ghostBtn, padding: "5px 10px", fontSize: 12 }}>Download</button>
+                <button className="tt-btn" onClick={() => del(r)} style={{ ...ghostBtn, padding: "5px 10px", fontSize: 12, color: C.clash }}>Delete</button>
+                <button className="tt-btn" disabled={busy === r.id} onClick={() => restore(r)} style={{ ...solidBtn, padding: "5px 12px", fontSize: 12 }}>{busy === r.id ? "Restoring…" : "Restore"}</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Daily substitution register ---------------- */
+const WD = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+function isoToday() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
+function isoShift(iso, n) { const [y, m, d] = iso.split("-").map(Number); const t = new Date(y, m - 1, d + n); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`; }
+function isoDay(iso) { const [y, m, d] = iso.split("-").map(Number); return WD[new Date(y, m - 1, d).getDay()]; }
+function isoNice(iso, long) { const [y, m, d] = iso.split("-").map(Number); return new Date(y, m - 1, d).toLocaleDateString(undefined, long ? { weekday: "long", day: "numeric", month: "long", year: "numeric" } : { weekday: "short", day: "numeric", month: "short" }); }
+function partPeriods(cfg, part) { const P = cfg.periods.length, h = Math.ceil(P / 2); return cfg.periods.map((_, i) => i).filter((i) => part === "am" ? i < h : part === "pm" ? i >= h : true); }
+function subsNeeds(cfg, date) {
+  const rec = (cfg.subs || {})[date] || {}, abs = rec.absent || {}, d = isoDay(date), out = [];
+  if (!cfg.days.includes(d)) return out;
+  for (const t of Object.keys(abs)) {
+    if (!cfg.singles.includes(t)) continue;
+    for (const p of partPeriods(cfg, abs[t])) { const r = teacherAt(cfg, t, d, p); if (r) out.push({ key: `${t}|${p}`, t, p, cls: r.c, sub: r.sub, combined: !!r.combined }); }
+  }
+  return out.sort((a, b) => a.p - b.p || cmpClass(a.cls, b.cls));
+}
+function absentAt(cfg, date, u, p) { const a = (((cfg.subs || {})[date] || {}).absent || {})[u]; return !!a && partPeriods(cfg, a).includes(p); }
+function subCounts(cfg, date) {
+  const mon = date.slice(0, 7), month = {}, total = {}, last = {};
+  for (const [dt, r] of Object.entries(cfg.subs || {})) for (const u of Object.values(r.assign || {})) {
+    if (!u) continue;
+    total[u] = (total[u] || 0) + 1;
+    if (dt.slice(0, 7) === mon) month[u] = (month[u] || 0) + 1;
+    if (!last[u] || dt > last[u]) last[u] = dt;
+  }
+  return { month, total, last };
+}
+function subCandidates(cfg, date, need, counts) {
+  const d = isoDay(date), rec = (cfg.subs || {})[date] || {}, assign = rec.assign || {};
+  const takenAt = new Set(Object.entries(assign).filter(([k, u]) => u && +k.split("|")[1] === need.p && k !== need.key).map(([, u]) => u));
+  const today = {}; Object.values(assign).forEach((u) => { if (u) today[u] = (today[u] || 0) + 1; });
+  const cls = String(need.cls).split(", ");
+  const out = [];
+  for (const u of cfg.singles) {
+    if (u === need.t || isOffDay(cfg, u, d) || absentAt(cfg, date, u, need.p) || takenAt.has(u)) continue;
+    if (teacherAt(cfg, u, d, need.p)) continue;
+    let freeToday = 0; for (let p = 0; p < cfg.periods.length; p++) if (!teacherAt(cfg, u, d, p) && !absentAt(cfg, date, u, p)) freeToday++;
+    const knows = cls.some((c) => cfg.classTeacher[c] === u || (cfg.bkey[c] || []).some((r) => String(r.teacher || "").split(" ").includes(u)));
+    const ct = cls.some((c) => cfg.classTeacher[c] === u);
+    const sameSub = cls.some((c) => (cfg.bkey[c] || []).some((r) => r.sub === need.sub && String(r.teacher || "").split(" ").includes(u)));
+    const m = counts.month[u] || 0, td = today[u] || 0;
+    const score = (ct ? 40 : knows ? 30 : 0) + (sameSub ? 10 : 0) - m * 6 - td * 12 + Math.min(freeToday, 5) * 3;
+    const why = [ct ? "class teacher" : knows ? `teaches ${cls[0]}` : null, sameSub ? `teaches ${need.sub}` : null, `${freeToday} free today`, `${m} this month`].filter(Boolean);
+    out.push({ u, score, why, m, freeToday });
+  }
+  return out.sort((a, b) => b.score - a.score || a.m - b.m || a.u.localeCompare(b.u));
+}
+function subsText(cfg, date) {
+  const needs = subsNeeds(cfg, date), a = (((cfg.subs || {})[date] || {}).assign) || {};
+  const L = [`*${cfg.school || "School"} — Substitution*`, `${isoNice(date, true)}`, ""];
+  if (!needs.length) L.push("No substitutions needed.");
+  for (const n of needs) L.push(`P${cfg.periods[n.p]} · ${n.cls} · ${n.sub} — ${n.t} absent → *${a[n.key] || "not covered"}*`);
+  return L.join("\n");
+}
+function exportSubSlipPDF(cfg, date) {
+  const needs = subsNeeds(cfg, date), rec = (cfg.subs || {})[date] || {}, a = rec.assign || {}, abs = rec.absent || {};
+  const css = "@page{size:A4 portrait;margin:1cm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact;box-sizing:border-box} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#16213a}" + lhCss() +
+    " table{border-collapse:collapse;width:100%;border:2px solid #0e6b73} th,td{border:1px solid #b9d3d3;padding:7px 8px;font-size:13px;text-align:center} thead th{background:#0e6b73;color:#fff;font-weight:800} td.l{text-align:left} td.p{font-weight:800;font-size:15px;color:#0a4f55;background:#e1f0f0;width:16mm}" +
+    " .sub{font-family:'Courier New',monospace;font-weight:800;font-size:15px;color:#0a3d42} .nc{color:#b3261e;font-weight:800} .ab{margin:6px 0 10px;font-size:12.5px} .ab span{display:inline-block;margin:2px 6px 2px 0;padding:2px 9px;border-radius:12px;background:#fbe0dd;color:#8a1f17;font-weight:700} td.sg{width:34mm} .nt{margin-top:8px;font-size:12px;color:#33415c}";
+  const part = (x) => x === "am" ? " (first half)" : x === "pm" ? " (second half)" : "";
+  const rows = needs.map((n) => `<tr><td class="p">P${cfg.periods[n.p]}</td><td><b>${esc(n.cls)}</b></td><td>${esc(n.sub)}</td><td>${esc(n.t)}</td><td>${a[n.key] ? `<span class="sub">${esc(a[n.key])}</span>` : '<span class="nc">not covered</span>'}</td><td class="sg"></td></tr>`).join("");
+  const body = pdfLetterhead(cfg, "Substitution", isoNice(date, true), `${Object.keys(abs).length} absent · ${needs.length} period${needs.length === 1 ? "" : "s"} to cover`) +
+    `<div class="ab"><b>Absent:</b> ${Object.keys(abs).map((t) => `<span>${esc(t)}${part(abs[t])}</span>`).join("") || "none"}</div>` +
+    `<table><thead><tr><th>Period</th><th>Class</th><th>Subject</th><th>Absent teacher</th><th>Substitute</th><th>Substitute's sign</th></tr></thead><tbody>${rows || '<tr><td colspan="6">No substitutions needed.</td></tr>'}</tbody></table>` +
+    (rec.note ? `<div class="nt"><b>Note:</b> ${esc(rec.note)}</div>` : "") + pdfFooter(esc(cfg.school || "") + " &middot; Substitution " + esc(date), ["Headmaster"], cfg, "class");
+  openPrint(esc(cfg.school) + " - Substitution " + date, css, body);
+}
+function exportSubMonthPDF(cfg, month) {
+  const dates = Object.keys(cfg.subs || {}).filter((d) => d.slice(0, 7) === month).sort();
+  const counts = {}; let rows = "";
+  for (const dt of dates) for (const n of subsNeeds(cfg, dt)) { const u = ((cfg.subs[dt] || {}).assign || {})[n.key]; if (u) counts[u] = (counts[u] || 0) + 1; rows += `<tr><td>${esc(isoNice(dt))}</td><td>P${cfg.periods[n.p]}</td><td>${esc(n.cls)}</td><td>${esc(n.sub)}</td><td>${esc(n.t)}</td><td><b>${esc(u || "—")}</b></td></tr>`; }
+  const css = "@page{size:A4 portrait;margin:1cm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact;box-sizing:border-box} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#16213a}" + lhCss() +
+    " table{border-collapse:collapse;width:100%;border:2px solid #0e6b73;margin-bottom:10px} th,td{border:1px solid #b9d3d3;padding:4px 6px;font-size:11.5px;text-align:center} thead th{background:#0e6b73;color:#fff} thead{display:table-header-group} tr{page-break-inside:avoid} h3{font-size:14px;color:#0a4f55;margin:10px 0 6px}";
+  const [y, m] = month.split("-").map(Number), title = new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  const tally = Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([u, n]) => `<tr><td style="font-family:'Courier New',monospace;font-weight:800">${esc(u)}</td><td>${n}</td></tr>`).join("");
+  openPrint(esc(cfg.school) + " - Substitution record " + month, css, pdfLetterhead(cfg, "Substitution record", title, `${dates.length} day(s) with absences`) +
+    `<h3>Substitutions taken by each teacher</h3><table style="width:60%"><thead><tr><th>Teacher</th><th>Substitutions</th></tr></thead><tbody>${tally || '<tr><td colspan="2">None</td></tr>'}</tbody></table>` +
+    `<h3>All substitutions</h3><table><thead><tr><th>Date</th><th>Period</th><th>Class</th><th>Subject</th><th>Absent</th><th>Substitute</th></tr></thead><tbody>${rows || '<tr><td colspan="6">None</td></tr>'}</tbody></table>` +
+    pdfFooter(esc(cfg.school || ""), ["Headmaster"], cfg, "class"));
+}
+function SubsView({ cfg, update, mobile }) {
+  const [date, setDate] = useState(isoToday());
+  const [q, setQ] = useState("");
+  const [msg, setMsg] = useState("");
+  const th = CUR_TH || THEMES.teal;
+  const d = isoDay(date), working = cfg.days.includes(d);
+  const rec = (cfg.subs || {})[date] || {}, abs = rec.absent || {}, assign = rec.assign || {};
+  const needs = useMemo(() => subsNeeds(cfg, date), [cfg, date]);
+  const counts = useMemo(() => subCounts(cfg, date), [cfg, date]);
+  const covered = needs.filter((n) => assign[n.key]).length;
+  const edit = (fn) => update((n) => {
+    n.subs = n.subs || {}; const r = n.subs[date] || (n.subs[date] = { absent: {}, assign: {} }); r.absent = r.absent || {}; r.assign = r.assign || {};
+    fn(r, n);
+    // tidy: drop assignments that are no longer needed, empty days, and records older than ~13 months
+    const keys = new Set(subsNeeds(n, date).map((x) => x.key)); for (const k of Object.keys(r.assign)) if (!keys.has(k) || !r.assign[k]) delete r.assign[k];
+    if (!Object.keys(r.absent).length && !Object.keys(r.assign).length && !r.note) delete n.subs[date];
+    const cut = isoShift(isoToday(), -400); for (const k of Object.keys(n.subs)) if (k < cut) delete n.subs[k];
+  });
+  const toggleAbs = (t) => edit((r) => { if (r.absent[t]) delete r.absent[t]; else r.absent[t] = "full"; });
+  const setPart = (t, p) => edit((r) => { r.absent[t] = p; });
+  const pick = (key, u) => edit((r) => { if (u) r.assign[key] = u; else delete r.assign[key]; });
+  const autoAll = () => {
+    update((n) => {
+      n.subs = n.subs || {}; const r = n.subs[date] || (n.subs[date] = { absent: {}, assign: {} }); r.assign = r.assign || {};
+      const cnt = subCounts(n, date);
+      for (const nd of subsNeeds(n, date)) { if (r.assign[nd.key]) continue; const c = subCandidates(n, date, nd, cnt)[0]; if (c) { r.assign[nd.key] = c.u; cnt.month[c.u] = (cnt.month[c.u] || 0) + 1; } }
+    });
+    setMsg("Best substitutes filled in. Change any of them from the lists.");
+  };
+  const share = () => { const t = subsText(cfg, date); try { window.open("https://wa.me/?text=" + encodeURIComponent(t), "_blank"); } catch (e) { /* ignore */ } };
+  const copy = async () => { try { await navigator.clipboard.writeText(subsText(cfg, date)); setMsg("Copied — paste it in WhatsApp or anywhere."); } catch (e) { setMsg("Couldn't copy on this device."); } };
+  const list = cfg.singles.filter((t) => !q.trim() || t.toLowerCase().includes(q.trim().toLowerCase()));
+  const absList = Object.keys(abs).filter((t) => cfg.singles.includes(t));
+  const history = Object.entries(cfg.subs || {}).sort((a, b) => (a[0] < b[0] ? 1 : -1)).slice(0, 14);
+  const month = date.slice(0, 7);
+  const tally = cfg.singles.map((u) => ({ u, m: counts.month[u] || 0, t: counts.total[u] || 0 })).filter((x) => x.t).sort((a, b) => b.m - a.m || b.t - a.t);
+  const navBtn = { ...ghostBtn, padding: "6px 11px", fontSize: 13, fontWeight: 800 };
+  return (
+    <div>
+      <ViewHeader title="Daily substitution" note="Mark who is absent — the app lists every period that needs cover and suggests the fairest free teacher for each."
+        meta={[["Absent", absList.length, absList.length ? "warn" : undefined], ["To cover", needs.length], ["Covered", `${covered}/${needs.length}`, needs.length && covered === needs.length ? "ok" : needs.length ? "warn" : undefined]]}
+        right={<><PrintBtn onClick={() => exportSubSlipPDF(cfg, date)} icon="print" label="Print slip" sub="A4 · with HM signature" /></>} />
+
+      <div style={{ ...card, marginBottom: 16 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: 14 }}>
+          <button className="tt-btn" onClick={() => setDate(isoShift(date, -1))} style={navBtn} aria-label="Previous day">‹</button>
+          <input type="date" className="tt-in" value={date} onChange={(e) => e.target.value && setDate(e.target.value)} style={{ width: 160, fontFamily: sans, fontSize: 13.5, height: 36 }} />
+          <button className="tt-btn" onClick={() => setDate(isoShift(date, 1))} style={navBtn} aria-label="Next day">›</button>
+          {date !== isoToday() && <button className="tt-btn" onClick={() => setDate(isoToday())} style={{ ...ghostBtn, fontSize: 12.5 }}>Today</button>}
+          <span style={{ fontSize: 15, fontWeight: 800, color: th.g2, marginLeft: 6 }}>{isoNice(date, true)}</span>
+          {!working && <span style={{ fontSize: 12, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: C.warnSoft, color: C.warn }}>Not a working day in the timetable</span>}
+        </div>
+      </div>
+
+      {working && <div style={{ display: "grid", gridTemplateColumns: mobile ? "minmax(0,1fr)" : "minmax(0, 340px) minmax(0, 1fr)", gap: 16, alignItems: "start" }}>
+        <div style={{ ...card }}>
+          <Panelhead text="1 · Who is absent?" count={absList.length ? `${absList.length} absent` : "none"} />
+          <div style={{ padding: 12, display: "grid", gap: 10 }}>
+            {absList.length > 0 && (
+              <div style={{ display: "grid", gap: 6 }}>
+                {absList.map((t) => (
+                  <div key={t} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 10, background: C.clashSoft, border: `1px solid ${C.clash}33` }}>
+                    <b style={{ fontFamily: mono, color: "#8a1f17", minWidth: 54 }}>{t}</b>
+                    <select className="tt-sel" value={abs[t]} onChange={(e) => setPart(t, e.target.value)} style={{ width: "auto", flex: 1, fontFamily: sans, fontSize: 12.5 }}>
+                      <option value="full">Whole day</option><option value="am">First half (P1–P{Math.ceil(cfg.periods.length / 2)})</option><option value="pm">Second half (P{Math.ceil(cfg.periods.length / 2) + 1}–P{cfg.periods.length})</option>
+                    </select>
+                    <button className="tt-btn" onClick={() => toggleAbs(t)} aria-label={`Remove ${t}`} style={{ border: "none", background: "#fff", borderRadius: 20, width: 24, height: 24, cursor: "pointer", color: C.clash, fontWeight: 800 }}>×</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <input className="tt-in" placeholder="Search teacher" value={q} onChange={(e) => setQ(e.target.value)} style={{ fontFamily: sans, fontSize: 13, height: 34 }} />
+            <div className="tt-scroll" style={{ display: "flex", flexWrap: "wrap", gap: 6, maxHeight: mobile ? 220 : 380, overflowY: "auto" }}>
+              {list.map((t) => { const on = !!abs[t], off = isOffDay(cfg, t, d); return (
+                <button key={t} className="tt-btn" disabled={off} onClick={() => toggleAbs(t)} title={off ? "Not working this day" : on ? "Marked absent — tap to undo" : "Tap to mark absent"}
+                  style={{ fontFamily: mono, fontWeight: 800, fontSize: 12.5, padding: "6px 10px", borderRadius: 9, cursor: off ? "default" : "pointer", border: `1.5px solid ${on ? C.clash : C.line}`, background: on ? C.clash : off ? "#f3f4f6" : "#fff", color: on ? "#fff" : off ? "#b4bccb" : C.ink, textDecoration: off ? "line-through" : "none" }}>{t}</button>
+              ); })}
+            </div>
+            <textarea className="tt-in" placeholder="Note for the slip (optional)" value={rec.note || ""} onChange={(e) => edit((r) => { if (e.target.value) r.note = e.target.value; else delete r.note; })} style={{ fontFamily: sans, fontSize: 12.5, minHeight: 54, resize: "vertical" }} />
+          </div>
+        </div>
+
+        <div style={{ ...card }}>
+          <Panelhead text="2 · Periods to cover" count={needs.length ? `${covered} of ${needs.length} covered` : "nothing to cover"} tone={needs.length && covered === needs.length ? "free" : undefined} />
+          <div style={{ padding: 12, display: "grid", gap: 10 }}>
+            {needs.length === 0 ? <div style={{ padding: "18px 6px", textAlign: "center", fontSize: 13, color: C.sub }}>{absList.length ? "The absent teachers have no periods in this part of the day." : "Tap the absent teachers on the left. Their periods appear here."}</div> : (
+              <>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button className="tt-btn" onClick={autoAll} style={solidBtn}>✦ Suggest best for all</button>
+                  <button className="tt-btn" onClick={() => edit((r) => { r.assign = {}; })} style={ghostBtn}>Clear choices</button>
+                  <span style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <button className="tt-btn" onClick={share} style={{ ...ghostBtn, color: "#128c4b", borderColor: "#128c4b55" }}>WhatsApp</button>
+                    <button className="tt-btn" onClick={copy} style={ghostBtn}>Copy text</button>
+                  </span>
+                </div>
+                {msg && <div style={{ fontSize: 12.5, fontWeight: 600, color: C.free }}>{msg}</div>}
+                {needs.map((n) => {
+                  const cands = subCandidates(cfg, date, n, counts), cur = assign[n.key], best = cands[0];
+                  const curC = cands.find((c) => c.u === cur);
+                  return (
+                    <div key={n.key} style={{ display: "grid", gridTemplateColumns: mobile ? "auto minmax(0,1fr)" : "auto minmax(0,1fr) minmax(0, 300px)", gap: 10, alignItems: "center", padding: "10px 12px", borderRadius: 12, border: `1.5px solid ${cur ? `${C.free}55` : `${C.warn}66`}`, background: cur ? "#f6fcf8" : "#fffaf0" }}>
+                      <span style={{ width: 44, height: 44, borderRadius: 12, display: "grid", placeItems: "center", background: `linear-gradient(135deg, ${th.g1}, ${th.g2})`, color: "#fff", fontWeight: 800, fontSize: 15 }}>P{cfg.periods[n.p]}</span>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 14, fontWeight: 800, color: C.ink }}>{n.cls} · <span style={{ color: SUBJECT_BAR[n.sub] || C.ink }}>{n.sub}</span>{n.combined && <span style={{ fontSize: 11, color: C.sub, fontWeight: 600 }}> · combined</span>}</div>
+                        <div style={{ fontSize: 12, color: C.sub }}>for <b style={{ color: "#8a1f17", fontFamily: mono }}>{n.t}</b>{curC ? <> · {curC.why.join(" · ")}</> : best ? <> · best: <b style={{ fontFamily: mono, color: C.ink }}>{best.u}</b> ({best.why.slice(0, 2).join(", ")})</> : <span style={{ color: C.clash }}> · nobody is free this period</span>}</div>
+                      </div>
+                      <div style={{ gridColumn: mobile ? "1 / -1" : "auto", display: "flex", gap: 6 }}>
+                        <select className="tt-sel" value={cur || ""} onChange={(e) => pick(n.key, e.target.value)} style={{ flex: 1, fontFamily: sans, fontSize: 13, height: 36, borderColor: cur ? C.free : undefined, fontWeight: cur ? 700 : 500 }}>
+                          <option value="">— choose substitute —</option>
+                          {cands.map((c, i) => <option key={c.u} value={c.u}>{i === 0 ? "★ " : ""}{c.u} — {c.why.join(", ")}</option>)}
+                        </select>
+                        {!cur && best && <button className="tt-btn" onClick={() => pick(n.key, best.u)} style={{ ...solidBtn, padding: "6px 12px" }}>Use {best.u}</button>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </>
+            )}
+          </div>
+        </div>
+      </div>}
+
+      <div style={{ display: "grid", gridTemplateColumns: mobile ? "minmax(0,1fr)" : "repeat(2, minmax(0,1fr))", gap: 16, marginTop: 16 }}>
+        <div style={card}>
+          <Panelhead text={`Fair share — substitutions taken (${new Date(date + "T00:00").toLocaleDateString(undefined, { month: "long" })})`} count={`${tally.reduce((a, x) => a + x.m, 0)} this month`} />
+          <div style={{ padding: 12 }}>
+            {tally.length === 0 ? <div style={{ fontSize: 12.5, color: C.sub }}>No substitutions recorded yet.</div> : (
+              <div style={{ display: "grid", gap: 5 }}>
+                {tally.slice(0, 14).map((x) => { const mx = Math.max(1, ...tally.map((y) => y.m)); return (
+                  <div key={x.u} style={{ display: "grid", gridTemplateColumns: "64px 1fr 70px", gap: 8, alignItems: "center", fontSize: 12.5 }}>
+                    <b style={{ fontFamily: mono }}>{x.u}</b>
+                    <span style={{ height: 10, borderRadius: 6, background: "#eef1f5", overflow: "hidden" }}><span style={{ display: "block", height: "100%", width: `${(x.m / mx) * 100}%`, background: `linear-gradient(90deg, ${th.g1}, ${th.g2})` }} /></span>
+                    <span style={{ color: C.sub, textAlign: "right" }}><b style={{ color: C.ink }}>{x.m}</b> · {x.t} total</span>
+                  </div>); })}
+              </div>
+            )}
+            <div style={{ marginTop: 12 }}><PrintBtn onClick={() => exportSubMonthPDF(cfg, month)} icon="pdf" light label="Monthly record" sub="A4 · every substitution this month" /></div>
+          </div>
+        </div>
+        <div style={card}>
+          <Panelhead text="Recent days" count={`${Object.keys(cfg.subs || {}).length} recorded`} />
+          <div style={{ padding: 8 }}>
+            {history.length === 0 ? <div style={{ padding: 6, fontSize: 12.5, color: C.sub }}>Nothing recorded yet.</div> : history.map(([dt, r]) => {
+              const nd = subsNeeds(cfg, dt), cv = nd.filter((x) => (r.assign || {})[x.key]).length;
+              return (
+                <button key={dt} className="tt-btn" onClick={() => setDate(dt)} style={{ display: "flex", width: "100%", alignItems: "center", gap: 10, padding: "8px 10px", border: "none", borderRadius: 10, cursor: "pointer", background: dt === date ? `${th.accent}12` : "transparent", textAlign: "left" }}>
+                  <span style={{ fontWeight: 800, fontSize: 13, color: C.ink, minWidth: 120 }}>{isoNice(dt)}</span>
+                  <span style={{ fontSize: 12, color: C.sub, flex: 1 }}>{Object.keys(r.absent || {}).join(", ") || "—"}</span>
+                  <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 10, background: cv === nd.length ? C.freeSoft : C.warnSoft, color: cv === nd.length ? C.free : C.warn }}>{cv}/{nd.length}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -4052,7 +5288,7 @@ function TeacherAvailability({ cfg, update, ask, teacherLoad = {}, mobile }) {
   );
 }
 
-function SetupView({ cfg, update, ask, mobile, teacherLoad }) {
+function SetupView({ cfg, update, ask, askPw, mobile, teacherLoad }) {
   const [name, setName] = useState("");
   const [ct, setCt] = useState("");
   const [clonefrom, setClonefrom] = useState(cfg.classes[0]);
@@ -4136,8 +5372,9 @@ function SetupView({ cfg, update, ask, mobile, teacherLoad }) {
           <input className="tt-in" style={{ maxWidth: 380, fontSize: 14, padding: "9px 11px" }} value={cfg.school} onChange={(e) => update((n) => { n.school = e.target.value; })} placeholder="Your school name" />
         </div>
       </div>
+      <YearCard cfg={cfg} update={update} askPw={askPw} />
       <LogoCard cfg={cfg} update={update} />
-      <StampCard cfg={cfg} update={update} />
+      <StampCard cfg={cfg} update={update} mobile={mobile} />
 
       <div style={{ ...card, marginBottom: 16 }}>
         <Panelhead text="Working days" />
@@ -4315,18 +5552,24 @@ function teacherAt(cfg, t, d, p) {
 function isOffDay(cfg, t, d) { var a = (cfg.teacherDays || {})[t]; return !!(a && a.length && a.indexOf(d) < 0); }
 
 function pdfLetterhead(cfg, kind, title, sub) {
-  return '<div class="lh">' + (cfg.logo ? '<img src="' + cfg.logo + '" alt="">' : '') + '<div class="lt"><div class="ls">' + esc(cfg.school || "") + '</div><div class="lk">' + esc(kind) + '</div></div><div class="lr"><div class="lti">' + esc(title) + '</div>' + (sub ? '<div class="lsu">' + sub + '</div>' : '') + '</div></div>';
+  return '<div class="lh">' + (cfg.logo ? '<img src="' + cfg.logo + '" alt="">' : '') + '<div class="lt"><div class="ls">' + esc(cfg.school || "") + '</div><div class="lk">' + esc(kind) + (cfg.year ? ' &middot; ' + esc(cfg.year) : '') + '</div></div><div class="lr"><div class="lti">' + esc(title) + '</div>' + (sub ? '<div class="lsu">' + sub + '</div>' : '') + '</div></div>';
+}
+var STAMP_K = { S: 0.8, M: 1, L: 1.22 };
+function stampGeom(cfg) {
+  var sh = 14.5 * (STAMP_K[cfg && cfg.signSize] || 1), sd = 24 * (STAMP_K[cfg && cfg.sealSize] || 1), pos = (cfg && cfg.sealPos) || "left";
+  var sealCss = pos === "over" ? "left:50%;margin-left:" + (-sd / 2) + "mm;bottom:" + (-sd * 0.04) + "mm" : pos === "right" ? "right:-6mm;bottom:" + (-sd * 0.2) + "mm" : "left:-15mm;bottom:" + (-sd * 0.2) + "mm";
+  return { sh: sh, sd: sd, pos: pos, sealCss: sealCss, boxH: Math.max(15, sh + 1) };
 }
 function pdfFooter(left, sigs, cfg, kind) {
   var d = new Date().toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
   var on = cfg && (kind === "teacher" ? cfg.signOnTeacher !== false : cfg.signOnClass !== false);
-  var hmTitle = (cfg && cfg.hmTitle) || "Headmaster";
+  var hmTitle = (cfg && cfg.hmTitle) || "Headmaster", g = stampGeom(cfg);
   return '<div class="ft"><div class="gen">' + left + '<br>Generated ' + esc(d) + '</div>' + sigs.map(function (s) {
     var isHM = s === "Headmaster";
-    if (!isHM) return '<div class="sig"><div class="sgi"></div><div class="sgl">' + esc(s) + '</div></div>';
-    var img = on && cfg.hmSign ? '<img class="sg" src="' + cfg.hmSign + '" alt="">' : '';
-    var seal = on && cfg.seal ? '<img class="seal" src="' + cfg.seal + '" alt="">' : '';
-    return '<div class="sig hm"><div class="sgi">' + seal + img + '</div><div class="sgl">' + esc(hmTitle) + (cfg && cfg.hmName ? '<span class="sgn">' + esc(cfg.hmName) + '</span>' : '') + '</div></div>';
+    if (!isHM) return '<div class="sig"><div class="sgi" style="height:' + g.boxH + 'mm"></div><div class="sgl">' + esc(s) + '</div></div>';
+    var img = on && cfg.hmSign ? '<img class="sg" src="' + cfg.hmSign + '" alt="" style="max-height:' + g.sh + 'mm;max-width:50mm">' : '';
+    var seal = on && cfg.seal ? '<img class="seal" src="' + cfg.seal + '" alt="" style="width:' + g.sd + 'mm;height:' + g.sd + 'mm;left:auto;right:auto;bottom:auto;' + g.sealCss + '">' : '';
+    return '<div class="sig hm"><div class="sgi" style="height:' + g.boxH + 'mm">' + seal + img + '</div><div class="sgl">' + esc(hmTitle) + (cfg && cfg.hmName ? '<span class="sgn">' + esc(cfg.hmName) + '</span>' : '') + '</div></div>';
   }).join("") + '</div>';
 }
 function gridCss(paper) {
