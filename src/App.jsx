@@ -12,7 +12,7 @@ import { supabase } from "./supabaseClient";
    ============================================================ */
 
 const STORE_KEY = "tt_cfg_v2";
-const APP_VERSION = "2026-10-13 g";
+const APP_VERSION = "2026-10-14 b";
 
 const WEEK_ORDER = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const DAY_FULL = { MON: "Monday", TUE: "Tuesday", WED: "Wednesday", THU: "Thursday", FRI: "Friday", SAT: "Saturday", SUN: "Sunday" };
@@ -1239,6 +1239,7 @@ function processStamp(img, removeWhite, maxW) {
   if (!/^data:image\/webp/.test(url)) url = out.toDataURL("image/png");
   return url;
 }
+const HM_TITLES = ["Headmaster", "Headmistress", "Head Teacher", "Principal", "Vice Principal", "Manager"];
 function StampCard({ cfg, update }) {
   const [msg, setMsg] = useState(null);
   const [clean, setClean] = useState(true);
@@ -1276,6 +1277,7 @@ function StampCard({ cfg, update }) {
     </div>
   );
   const hmTitle = cfg.hmTitle || "Headmaster";
+  const [customT, setCustomT] = useState(!!cfg.hmTitle && !HM_TITLES.includes(cfg.hmTitle));
   return (
     <div style={{ ...card, marginBottom: 16 }}>
       <Panelhead text="Headmaster signature & school seal — printed on timetables" count={cfg.hmSign || cfg.seal ? [cfg.hmSign && "signature", cfg.seal && "seal"].filter(Boolean).join(" + ") : "not set"} tone={cfg.hmSign || cfg.seal ? "free" : undefined} />
@@ -1285,10 +1287,16 @@ function StampCard({ cfg, update }) {
           <Tile field="seal" label="School seal" hint="stamp on white paper, photo or scan" maxW={520} />
           <div style={{ flex: "1 1 260px", display: "grid", gap: 10, alignContent: "start" }}>
             <label style={{ display: "grid", gap: 4, fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4 }}>Title under the signature
-              <select className="tt-sel" value={hmTitle} onChange={(e) => update((n) => { n.hmTitle = e.target.value; })}>{["Headmaster", "Headmistress", "Head Teacher", "Principal"].map((x) => <option key={x}>{x}</option>)}</select>
+              <select className="tt-sel" value={customT ? "__custom" : hmTitle} onChange={(e) => { if (e.target.value === "__custom") { setCustomT(true); } else { setCustomT(false); update((n) => { n.hmTitle = e.target.value; }); } }}>
+                {HM_TITLES.map((x) => <option key={x}>{x}</option>)}
+                <option value="__custom">Custom title…</option>
+              </select>
             </label>
+            {customT && <label style={{ display: "grid", gap: 4, fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4 }}>Your title
+              <input className="tt-in" autoFocus value={cfg.hmTitle && !HM_TITLES.includes(cfg.hmTitle) ? cfg.hmTitle : ""} onChange={(e) => update((n) => { if (e.target.value.trim()) n.hmTitle = e.target.value; else delete n.hmTitle; })} style={{ fontFamily: sans, fontSize: 13 }} />
+            </label>}
             <label style={{ display: "grid", gap: 4, fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4 }}>Name (optional)
-              <input className="tt-in" value={cfg.hmName || ""} placeholder="e.g. K. Abdul Rahman" onChange={(e) => update((n) => { if (e.target.value) n.hmName = e.target.value; else delete n.hmName; })} />
+              <input className="tt-in" value={cfg.hmName || ""} style={{ fontFamily: sans, fontSize: 13 }} onChange={(e) => update((n) => { if (e.target.value) n.hmName = e.target.value; else delete n.hmName; })} />
             </label>
             <label style={chk}><input type="checkbox" checked={cfg.signOnClass !== false} onChange={(e) => update((n) => { n.signOnClass = e.target.checked; })} /> Print on class timetables</label>
             <label style={chk}><input type="checkbox" checked={cfg.signOnTeacher !== false} onChange={(e) => update((n) => { n.signOnTeacher = e.target.checked; })} /> Print on teacher timetables</label>
@@ -1463,7 +1471,7 @@ function FreeView({ cfg, occupancy, fday, setFday, fper, setFper, mobile }) {
   const running = cfg.classes.map((cn) => ({ cn, slot: cfg.grid[cn][fday][pi] })).filter((x) => x.slot[0]);
   return (
     <div>
-      <ViewHeader title="Free teachers & substitution" note="Pick a slot to see who can cover it" />
+      <ViewHeader title="Free teachers & substitution" note="Pick a slot to see who can cover it" right={<><PrintBtn onClick={() => exportSubChartPDF(cfg, { paper: "A3" })} icon="pdf" label="Substitution chart" sub="A3 · whole week" /><PrintBtn onClick={() => exportFreeDailyPDF(cfg, { paper: "A4", day: fday })} icon="pdf" light label="Today's sheet" sub={`A4 · ${DAY_FULL[fday] || ""}`} /></>} />
       <div className="tt-noprint" style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
         <Seg label="Day" options={cfg.days.map((d) => [d, DAY_FULL[d].slice(0, 3)])} val={fday} onChange={setFday} />
         <Seg label="Period" options={cfg.periods.map((p) => [p, "P" + p])} val={fper} onChange={(v) => setFper(+v)} />
@@ -3647,11 +3655,8 @@ function ExportView({ cfg, update, ask }) {
           </div>} />
         <Card icon="setup" title="Data backup" desc="Download all your setup and timetable (classes, teachers, mapping, rules, combined subjects, timetable) as one file. Keep it as a backup, or share it when asking for help."
           actions={<PrintBtn onClick={() => exportJSON(cfg)} icon="download" light label={<>Download data backup (.json)</>} />} />
-        <Card icon="free" title="Leisure / free periods" desc="Either a grid marking exactly which periods each teacher is free (green dot) — all teachers on one A3 page — or a simple count per day."
-          actions={<>
-            <PrintBtn onClick={() => exportFreeSlotsPDF(cfg, paper)} icon="pdf" label={<>Free periods by period (A3 PDF)</>} />
-            <PrintBtn onClick={() => exportFreeReportPDF(cfg, paper)} icon="pdf" light label={<>Free-period counts per day ({paper})</>} />
-          </>} />
+        <Card icon="free" title="Leisure / free periods" desc="Four ways to print who is free. The substitution chart is the quickest to use on a notice board: find the day and period, and every free teacher is listed in that box."
+          actions={<LeisureExport cfg={cfg} paper={paper} />} />
       </div>
     </div>
   );
@@ -3820,6 +3825,8 @@ function TeacherFreeReport({ cfg }) {
   const [paper, setPaper] = useState("A4");
   const [orient, setOrient] = useState("portrait");
   const [showP, setShowP] = useState(true);
+  const [showTot, setShowTot] = useState(true);
+  const [showSum, setShowSum] = useState(true);
   const data = useMemo(() => cfg.singles.map((t) => ({ t, days: cfg.days.map((d) => freeOf(cfg, t, d)) })), [cfg]);
   const toneOf = (n) => n === 0 ? [C.clashSoft, C.clash] : n === 1 ? [C.warnSoft, C.warn] : [C.freeSoft, C.free];
   const dayTot = cfg.days.map((_, i) => data.reduce((a, r) => a + (r.days[i] ? r.days[i].length : 0), 0));
@@ -3830,14 +3837,16 @@ function TeacherFreeReport({ cfg }) {
         <select className="tt-sel" value={paper} onChange={(e) => setPaper(e.target.value)} style={{ width: 90 }}>{["A4", "A3", "Letter", "Legal"].map((x) => <option key={x}>{x}</option>)}</select>
         <select className="tt-sel" value={orient} onChange={(e) => setOrient(e.target.value)} style={{ width: 118 }}><option value="portrait">Portrait</option><option value="landscape">Landscape</option></select>
         <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}><input type="checkbox" checked={showP} onChange={(e) => setShowP(e.target.checked)} /> Show free period numbers</label>
-        <span style={{ marginLeft: "auto" }}><PrintBtn onClick={() => exportFreeReportPDF(cfg, paper, { showP, orient })} icon="download" label="Download PDF" sub={`${paper} · ${orient}`} /></span>
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}><input type="checkbox" checked={showTot} onChange={(e) => setShowTot(e.target.checked)} /> "Total free" column</label>
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}><input type="checkbox" checked={showSum} onChange={(e) => setShowSum(e.target.checked)} /> "All teachers" total row</label>
+        <span style={{ marginLeft: "auto" }}><PrintBtn onClick={() => exportFreeReportPDF(cfg, paper, { showP, orient, showTot, showSum })} icon="download" label="Download PDF" sub={`${paper} · ${orient}`} /></span>
       </div>
       <div className="tt-scroll" style={{ overflowX: "auto" }}>
         <table style={{ ...tbl, minWidth: 130 + cfg.days.length * 92 }}>
           <thead><tr>
             <th style={{ ...th, textAlign: "left", paddingLeft: 12 }}>Teacher</th>
             {cfg.days.map((d) => <th key={d} style={th}>{DAY_FULL[d].slice(0, 3)}</th>)}
-            <th style={th}>Total free</th>
+            {showTot && <th style={th}>Total free</th>}
           </tr></thead>
           <tbody>
             {data.map(({ t, days }) => {
@@ -3855,15 +3864,15 @@ function TeacherFreeReport({ cfg }) {
                       </td>
                     );
                   })}
-                  <td style={{ ...cellTd, height: 34, fontFamily: mono, fontWeight: 800, color: C.free, background: C.freeSoft }}>{totalFree}</td>
+                  {showTot && <td style={{ ...cellTd, height: 34, fontFamily: mono, fontWeight: 800, color: C.free, background: C.freeSoft }}>{totalFree}</td>}
                 </tr>
               );
             })}
-            <tr>
+            {showSum && <tr>
               <td style={{ ...cellTd, textAlign: "left", paddingLeft: 12, fontWeight: 800, background: C.accentSoft }}>All teachers</td>
               {dayTot.map((x, i) => <td key={i} style={{ ...cellTd, fontWeight: 800, fontFamily: mono, background: C.accentSoft }}>{x}</td>)}
-              <td style={{ ...cellTd, fontWeight: 800, fontFamily: mono, background: C.accentSoft }}>{dayTot.reduce((a, b) => a + b, 0)}</td>
-            </tr>
+              {showTot && <td style={{ ...cellTd, fontWeight: 800, fontFamily: mono, background: C.accentSoft }}>{dayTot.reduce((a, b) => a + b, 0)}</td>}
+            </tr>}
           </tbody>
         </table>
       </div>
@@ -3972,46 +3981,78 @@ function ClassTeacherImport({ cfg, update, ask }) {
   );
 }
 
-function TeacherAvailability({ cfg, update }) {
+function TeacherAvailability({ cfg, update, ask, teacherLoad = {}, mobile }) {
   const [q, setQ] = useState("");
+  const [show, setShow] = useState("all");
   const TD = cfg.teacherDays || {};
-  const list = cfg.singles.filter((t) => !q.trim() || t.toLowerCase().includes(q.trim().toLowerCase()));
+  const th = CUR_TH || THEMES.teal;
   const isOn = (t, d) => { const a = TD[t]; return !a || !a.length || a.includes(d); };
+  const daysOf = (t) => cfg.days.filter((d) => isOn(t, d));
+  const setDays = (n, t, a) => { a = n.days.filter((x) => a.includes(x)); if (a.length === n.days.length || a.length === 0) delete n.teacherDays[t]; else n.teacherDays[t] = a; };
   const toggle = (t, d) => update((n) => {
     n.teacherDays = n.teacherDays || {};
     let a = n.teacherDays[t] && n.teacherDays[t].length ? [...n.teacherDays[t]] : [...n.days];
     a = a.includes(d) ? a.filter((x) => x !== d) : [...a, d];
-    a = n.days.filter((x) => a.includes(x));
-    if (a.length === n.days.length || a.length === 0) delete n.teacherDays[t]; else n.teacherDays[t] = a;
+    if (!a.length) return; // at least one working day
+    setDays(n, t, a);
   });
+  const fullWeek = (t) => update((n) => { if (n.teacherDays) delete n.teacherDays[t]; });
   const limited = cfg.singles.filter((t) => TD[t] && TD[t].length && TD[t].length < cfg.days.length);
+  const need = (t) => (teacherLoad[t] || {}).target || 0;
+  const over = cfg.singles.filter((t) => need(t) > teacherCap(cfg, t));
+  const list = cfg.singles.filter((t) => (!q.trim() || t.toLowerCase().includes(q.trim().toLowerCase())) && (show === "all" || (show === "limited" ? limited.includes(t) : over.includes(t))));
+  const short = (d) => (DAY_FULL[d] ? DAY_FULL[d].slice(0, 3) : d);
+  const chip = (on) => ({ display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 12px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer", border: `1.5px solid ${on ? th.accent : C.line}`, background: on ? th.accent : "#fff", color: on ? "#fff" : C.sub });
   return (
     <div style={{ ...card, marginBottom: 16 }}>
-      <Panelhead text="Teacher availability (working days)" count={limited.length ? `${limited.length} limited` : undefined} />
-      <div style={{ padding: "10px 14px", borderBottom: `1px solid ${C.line}`, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-        <input className="tt-in" style={{ width: 200 }} placeholder="Search teacher…" value={q} onChange={(e) => setQ(e.target.value)} />
-        <span style={{ fontSize: 12, color: C.sub }}>Tap a day to switch it off for that teacher. The generator never gives them periods on an off day.</span>
-      </div>
-      <div className="tt-scroll" style={{ maxHeight: 360, overflow: "auto" }}>
-        <table style={{ ...tbl, minWidth: 380 }}>
-          <thead><tr><th style={{ ...th, textAlign: "left", paddingLeft: 12 }}>Teacher</th>{cfg.days.map((d) => <th key={d} style={{ ...th, width: 58 }}>{DAY_FULL[d] ? DAY_FULL[d].slice(0, 3) : d}</th>)}<th style={{ ...th, width: 80 }}>Max/week</th></tr></thead>
-          <tbody>{list.map((t) => (
-            <tr key={t}>
-              <td style={{ ...cellTd, textAlign: "left", paddingLeft: 12, fontFamily: mono, fontWeight: 800, height: 36 }}>{t}</td>
-              {cfg.days.map((d) => { const on = isOn(t, d); return (
-                <td key={d} style={{ ...cellTd, height: 36 }}>
-                  <button className="tt-btn" onClick={() => toggle(t, d)} style={{ minWidth: 44, padding: "4px 6px", borderRadius: 7, fontSize: 11.5, fontWeight: 700, cursor: "pointer", border: `1px solid ${on ? C.primary : C.line}`, background: on ? C.primarySoft : "#f4f5f7", color: on ? C.primary : C.sub }}>{on ? "On" : "Off"}</button>
-                </td>); })}
-              <td style={{ ...cellTd, height: 36, fontFamily: mono }}>{teacherCap(cfg, t)}</td>
-            </tr>
-          ))}</tbody>
-        </table>
+      <Panelhead text="Teacher availability (working days)" count={limited.length ? `${limited.length} part-week` : "all full week"} tone={limited.length ? undefined : "free"} />
+      <div style={{ padding: 14, display: "grid", gap: 12 }}>
+        <div className="tt-callout">Tap a day to switch it <b>off</b> for that teacher — the generator never gives them a period on an off day. Use this for part-time teachers or teachers shared with another school.</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <div style={{ position: "relative", flex: mobile ? "1 1 100%" : "0 0 240px" }}>
+            <span aria-hidden="true" style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: C.sub, fontSize: 13 }}>⌕</span>
+            <input className="tt-in" style={{ paddingLeft: 28, fontFamily: sans, fontSize: 13, height: 34 }} placeholder="Search teacher" value={q} onChange={(e) => setQ(e.target.value)} />
+          </div>
+          <button className="tt-btn" onClick={() => setShow("all")} style={chip(show === "all")}>All <span style={{ opacity: 0.8 }}>{cfg.singles.length}</span></button>
+          <button className="tt-btn" onClick={() => setShow("limited")} style={chip(show === "limited")}>Part-week <span style={{ opacity: 0.8 }}>{limited.length}</span></button>
+          <button className="tt-btn" onClick={() => setShow("over")} style={{ ...chip(show === "over"), ...(over.length && show !== "over" ? { color: C.clash, borderColor: `${C.clash}66` } : {}) }}>Over capacity <span style={{ opacity: 0.8 }}>{over.length}</span></button>
+          {limited.length > 0 && <button className="tt-btn" onClick={() => ask(`Give all ${limited.length} part-week teachers the full week again?`, () => update((n) => { n.teacherDays = {}; }))} style={{ ...ghostBtn, marginLeft: "auto", fontSize: 12, padding: "5px 11px" }}>Reset all to full week</button>}
+        </div>
+        <div className="tt-scroll" style={{ maxHeight: mobile ? 520 : 470, overflowY: "auto", paddingRight: 2 }}>
+          {list.length === 0 && <div style={{ padding: 20, textAlign: "center", fontSize: 13, color: C.sub }}>No teacher matches.</div>}
+          <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "repeat(auto-fill, minmax(330px, 1fr))", gap: 10 }}>
+            {list.map((t) => {
+              const on = daysOf(t), part = on.length < cfg.days.length, cap = teacherCap(cfg, t), nd = need(t), bad = nd > cap;
+              return (
+                <div key={t} style={{ border: `1.5px solid ${bad ? `${C.clash}55` : part ? `${C.accent}66` : C.line}`, borderRadius: 14, padding: "10px 12px", background: bad ? "#fff8f7" : part ? "#fffcf6" : "#fff", display: "grid", gap: 9 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ width: 38, height: 38, borderRadius: 11, flexShrink: 0, display: "grid", placeItems: "center", fontFamily: mono, fontWeight: 800, fontSize: t.length > 4 ? 10.5 : 12.5, color: "#fff", background: part ? `linear-gradient(135deg, ${C.accent}, #b8701c)` : `linear-gradient(135deg, ${th.g1}, ${th.g2})` }}>{t.replace(/[^A-Za-z0-9]/g, "").slice(0, 3)}</span>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ fontFamily: mono, fontWeight: 800, fontSize: 14.5, color: C.ink, wordBreak: "break-word", lineHeight: 1.2 }}>{t}</div>
+                      <div style={{ fontSize: 11.5, color: C.sub, marginTop: 2 }}>
+                        <b style={{ color: part ? "#94620b" : C.free }}>{part ? `${on.length} of ${cfg.days.length} days` : "Full week"}</b> · up to {cap} periods{nd ? <> · needs <b style={{ color: bad ? C.clash : C.ink }}>{nd}</b></> : null}
+                      </div>
+                    </div>
+                    {part && <button className="tt-btn" onClick={() => fullWeek(t)} title="Give this teacher the full week" style={{ ...ghostBtn, padding: "3px 9px", fontSize: 11.5 }}>Full week</button>}
+                  </div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {cfg.days.map((d) => { const o = isOn(t, d); return (
+                      <button key={d} className="tt-btn" onClick={() => toggle(t, d)} title={`${DAY_FULL[d] || d}: ${o ? "working — tap to switch off" : "off — tap to switch on"}`}
+                        style={{ flex: mobile ? "1 1 0" : "0 0 auto", minWidth: 46, height: 32, borderRadius: 9, fontSize: 12, fontWeight: 800, cursor: "pointer", border: `1.5px solid ${o ? th.accent : C.line}`, background: o ? `${th.accent}16` : "#f3f4f6", color: o ? th.g2 : "#a3abb9", textDecoration: o ? "none" : "line-through" }}>{short(d)}</button>
+                    ); })}
+                  </div>
+                  {bad && <div style={{ fontSize: 11.5, color: C.clash, fontWeight: 600 }}>Needs {nd} periods but can take only {cap} on these days — switch a day on or move some periods to another teacher.</div>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
       </div>
     </div>
   );
 }
 
-function SetupView({ cfg, update, ask, mobile }) {
+function SetupView({ cfg, update, ask, mobile, teacherLoad }) {
   const [name, setName] = useState("");
   const [ct, setCt] = useState("");
   const [clonefrom, setClonefrom] = useState(cfg.classes[0]);
@@ -4153,7 +4194,7 @@ function SetupView({ cfg, update, ask, mobile }) {
       </div>
 
       <ClassTeacherImport cfg={cfg} update={update} ask={ask} />
-      <TeacherAvailability cfg={cfg} update={update} />
+      <TeacherAvailability cfg={cfg} update={update} ask={ask} teacherLoad={teacherLoad} mobile={mobile} />
 
       <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "minmax(0,1.2fr) minmax(0,1fr)", gap: 16, alignItems: "start" }}>
         <div style={card}>
@@ -4348,28 +4389,185 @@ function exportTeachersPDF(cfg, paper, only) {
 
 
 
-function exportFreeSlotsPDF(cfg, paper) {
-  var css = "@page{size:A3 landscape;margin:8mm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#111} h2{font-size:16px;margin:0 0 8px;text-align:center;color:#0a4f55} table{border-collapse:collapse;width:100%;border:2px solid #0e6b73;table-layout:fixed} th,td{border:1px solid #bcd;padding:2px 1px;text-align:center;font-size:9px} thead th{background:#0e6b73;color:#fff;font-weight:700} td.free{background:#c9efd8;color:#0e7a45;font-weight:800} td.busy{color:#bbb} td.off{background:#e4e6ea} .tname{text-align:left;font-weight:800;background:#e1f0f0} .dsep{border-left:2px solid #0e6b73}";
-  var head1 = "<tr><th rowspan=2 class=tname>Teacher</th>";
-  for (var di = 0; di < cfg.days.length; di++) head1 += "<th colspan=" + cfg.periods.length + " class=dsep>" + esc(DAY_FULL[cfg.days[di]]) + "</th>";
-  head1 += "<th rowspan=2>Free</th></tr>";
-  var head2 = "<tr>";
-  for (var d2 = 0; d2 < cfg.days.length; d2++) for (var pp = 0; pp < cfg.periods.length; pp++) head2 += "<th class=" + (pp === 0 ? "dsep" : "x") + ">" + cfg.periods[pp] + "</th>";
-  head2 += "</tr>";
-  var rows = "";
-  for (var ti = 0; ti < cfg.singles.length; ti++) {
-    var t = cfg.singles[ti], cells = "", freeTot = 0;
-    for (var di3 = 0; di3 < cfg.days.length; di3++) {
-      var d = cfg.days[di3];
-      for (var p = 0; p < cfg.periods.length; p++) {
-        var off = isOffDay(cfg, t, d), busy = off ? null : teacherAt(cfg, t, d, p);
-        if (!busy && !off) freeTot++;
-        cells += "<td class=\"" + (off ? "off" : busy ? "busy" : "free") + (p === 0 ? " dsep" : "") + "\">" + (off ? "" : busy ? "" : "\u25cf") + "</td>";
+function lhCss() {
+  return " .lh{display:flex;align-items:center;gap:12px;border-bottom:3px solid #0e6b73;padding-bottom:7px;margin-bottom:8px} .lh img{height:56px;width:56px;object-fit:contain}" +
+    " .ls{font-size:21px;font-weight:800;color:#0a4f55;letter-spacing:.6px;text-transform:uppercase;line-height:1.1} .lk{font-size:11px;font-weight:800;color:#d98a2b;letter-spacing:2.5px;text-transform:uppercase;margin-top:3px}" +
+    " .lr{margin-left:auto;text-align:right} .lti{display:inline-block;font-size:20px;font-weight:800;background:linear-gradient(115deg,#0a4f55,#0e6b73);color:#fff;padding:5px 16px;border-radius:8px} .lsu{font-size:12px;color:#0a4f55;font-weight:700;margin-top:4px}" +
+    " .ft{display:flex;align-items:flex-end;gap:16mm;margin-top:6mm} .gen{margin-right:auto;font-size:10px;color:#647189;line-height:1.4}" +
+    " .sig{width:52mm;text-align:center;color:#16213a} .sgi{height:15mm;position:relative;display:flex;align-items:flex-end;justify-content:center}" +
+    " .sgi img.sg{position:relative;max-height:14.5mm;max-width:50mm;object-fit:contain;mix-blend-mode:multiply} .sgi img.seal{position:absolute;left:-15mm;bottom:-5mm;width:24mm;height:24mm;object-fit:contain;opacity:.9;mix-blend-mode:multiply}" +
+    " .sgl{border-top:1.2px solid #16213a;padding-top:3px;font-size:11px;font-weight:700} .sgn{display:block;font-size:10px;font-weight:600;color:#4b5870}";
+}
+// who is free when: free[d][p] = [teachers], perDay[t][d] = free count that day, week[t] = free count in the week
+function leisureData(cfg) {
+  var free = {}, perDay = {}, week = {}, busy = {};
+  cfg.singles.forEach(function (t) { perDay[t] = {}; week[t] = 0; busy[t] = {}; });
+  for (var di = 0; di < cfg.days.length; di++) {
+    var d = cfg.days[di]; free[d] = [];
+    for (var p = 0; p < cfg.periods.length; p++) {
+      var list = [];
+      for (var ti = 0; ti < cfg.singles.length; ti++) {
+        var t = cfg.singles[ti];
+        if (isOffDay(cfg, t, d)) { (busy[t][d] || (busy[t][d] = []))[p] = "off"; continue; }
+        var r = teacherAt(cfg, t, d, p);
+        (busy[t][d] || (busy[t][d] = []))[p] = r;
+        if (!r) { list.push(t); perDay[t][d] = (perDay[t][d] || 0) + 1; week[t]++; }
       }
+      list.sort(function (a, b) { return a.localeCompare(b); });
+      free[d].push(list);
     }
-    rows += "<tr><td class=tname>" + esc(t) + "</td>" + cells + "<td><b>" + freeTot + "</b></td></tr>";
   }
-  openPrint(esc(cfg.school) + " - Teacher free periods (by period)", css, "<h2>" + esc(cfg.school) + " - Teacher free (leisure) periods — green dot = free</h2><table><thead>" + head1 + head2 + "</thead><tbody>" + rows + "</tbody></table>");
+  return { free: free, perDay: perDay, week: week, busy: busy };
+}
+function cntTone(n) { return n <= 3 ? "background:#fbe0dd;color:#b3261e" : n <= 6 ? "background:#fbefd5;color:#94620b" : "background:#d7f2e2;color:#126236"; }
+function freeKey(showLow) {
+  return "<div class='lg'><b>Key:</b><span><span class='cn' style='" + cntTone(2) + "'>0–3 free</span> short of cover</span><span><span class='cn' style='" + cntTone(5) + "'>4–6 free</span></span><span><span class='cn' style='" + cntTone(9) + "'>7+ free</span> plenty</span>" +
+    (showLow ? "<span><span class='tc'>AB</span> free 3+ periods that day — ask first</span><span><span class='tc lo'>AB</span> only 1–2 free that day</span>" : "") + "<span>Teachers on an off day are not listed. Combined subjects are counted.</span></div>";
+}
+
+/* 1. Substitution chart: days down, periods across, free teachers in each box */
+function exportSubChartPDF(cfg, o) {
+  o = o || {};
+  var paper = o.paper || "A3", L = leisureData(cfg), P = cfg.periods.length, D = cfg.days.length;
+  var maxN = 0; cfg.days.forEach(function (d) { L.free[d].forEach(function (l) { if (l.length > maxN) maxN = l.length; }); });
+  var big = paper === "A3", fs = big ? (maxN > 22 ? 11 : 12.5) : (maxN > 16 ? 8.5 : 10);
+  var ph = { A3: 277, A4: 190, Letter: 196, Legal: 196 }[paper] || 190;
+  var css = "@page{size:" + paper + " landscape;margin:1cm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact;box-sizing:border-box} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#16213a}" +
+    " .page{height:" + ph + "mm;display:flex;flex-direction:column}" + lhCss() +
+    " table{border-collapse:collapse;width:100%;table-layout:fixed;flex:1;border:2px solid #0e6b73} th,td{border:1px solid #a9c6c6}" +
+    " thead th{background:#0e6b73;color:#fff;font-size:" + (big ? 15 : 12) + "px;font-weight:800;height:" + (big ? 30 : 24) + "px} th.dy{width:" + (big ? 30 : 22) + "mm;background:#e1f0f0;color:#0a4f55;font-size:" + (big ? 15 : 12) + "px;font-weight:800}" +
+    " td{vertical-align:top;padding:" + (big ? "5px 5px" : "3px 3px") + "} td.no{background:repeating-linear-gradient(135deg,#f1f3f6 0 6px,#e6e9ee 6px 12px)}" +
+    " .cn{display:inline-block;font-size:" + (fs - 0.5) + "px;font-weight:800;padding:1px 8px;border-radius:10px;margin-bottom:4px}" +
+    " .tc{display:inline-block;font-family:'Courier New',monospace;font-size:" + fs + "px;font-weight:800;padding:1px 4px;margin:0 3px 3px 0;border-radius:4px;background:#eef7f7;border:1px solid #bcd9d9;color:#0a3d42}" +
+    " .tc.lo{background:#f8f9fb;border:1px dashed #aab3c1;color:#4b5563;font-weight:600}" +
+    " .lg{margin-top:6px;font-size:10.5px;color:#4b5870;display:flex;gap:12px;flex-wrap:wrap;align-items:center} .lg .tc,.lg .cn{font-size:10px;margin:0}" +
+    " .wk{margin-top:6px;font-size:10px;color:#33415c;line-height:1.7} .wk b{color:#0a4f55} .wk span{display:inline-block;margin-right:9px;white-space:nowrap}";
+  var head = "<tr><th class='dy'>Day</th>"; for (var p = 0; p < P; p++) head += "<th>P" + cfg.periods[p] + "</th>"; head += "</tr>";
+  var body = "";
+  for (var di = 0; di < D; di++) {
+    var d = cfg.days[di]; body += "<tr><th class='dy'>" + esc(DAY_FULL[d]) + "</th>";
+    for (var p2 = 0; p2 < P; p2++) {
+      var anyClass = cfg.classes.some(function (c) { return p2 < classPeriods(cfg, c); });
+      if (!anyClass) { body += "<td class='no'></td>"; continue; }
+      var l = L.free[d][p2];
+      body += "<td><span class='cn' style='" + cntTone(l.length) + "'>" + l.length + " free</span><br>" +
+        l.map(function (t) { return "<span class='tc" + ((L.perDay[t][d] || 0) <= 2 ? " lo" : "") + "'>" + esc(t) + "</span>"; }).join("") + "</td>";
+    }
+    body += "</tr>";
+  }
+  var wk = "";
+  if (o.showWeek !== false) {
+    var arr = cfg.singles.slice().sort(function (a, b) { return L.week[b] - L.week[a] || a.localeCompare(b); });
+    wk = "<div class='wk'><b>Free periods this week:</b> " + arr.map(function (t) { return "<span>" + esc(t) + " <b>" + L.week[t] + "</b></span>"; }).join("") + "</div>";
+  }
+  var foot = o.sign !== false ? pdfFooter(esc(cfg.school || "") + " &middot; Substitution chart", ["Headmaster"], cfg, "class") : "";
+  openPrint(esc(cfg.school) + " - Substitution chart", css, "<div class='page'>" + pdfLetterhead(cfg, "Substitution chart", "Free teachers by period", cfg.singles.length + " teachers &middot; " + D + " days &middot; " + P + " periods") +
+    "<table><thead>" + head + "</thead><tbody>" + body + "</tbody></table>" + freeKey(true) + wk + foot + "</div>");
+}
+
+/* 2. One page per day: periods down the side, free teachers listed */
+function exportFreeDailyPDF(cfg, o) {
+  o = o || {};
+  var paper = o.paper || "A4", L = leisureData(cfg), P = cfg.periods.length;
+  var ph = { A3: 400, A4: 277, Letter: 259, Legal: 336 }[paper] || 277, big = paper === "A3";
+  var css = "@page{size:" + paper + " portrait;margin:1cm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact;box-sizing:border-box} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#16213a}" +
+    " .page{height:" + ph + "mm;display:flex;flex-direction:column;page-break-after:always} .page:last-child{page-break-after:auto}" + lhCss() +
+    " table{border-collapse:collapse;width:100%;table-layout:fixed;flex:1;border:2px solid #0e6b73} th,td{border:1px solid #a9c6c6}" +
+    " thead th{background:#0e6b73;color:#fff;font-size:13px;font-weight:800;height:28px} th.pp{width:22mm;background:#e1f0f0;color:#0a4f55;font-size:" + (big ? 22 : 18) + "px;font-weight:800}" +
+    " td{vertical-align:middle;padding:5px 7px} td.n{width:24mm;text-align:center} td.no{background:repeating-linear-gradient(135deg,#f1f3f6 0 6px,#e6e9ee 6px 12px)}" +
+    " .cn{display:inline-block;font-size:13px;font-weight:800;padding:2px 9px;border-radius:12px}" +
+    " .tc{display:inline-block;font-family:'Courier New',monospace;font-size:" + (big ? 16 : 13.5) + "px;font-weight:800;padding:2px 6px;margin:2px 4px 2px 0;border-radius:5px;background:#eef7f7;border:1px solid #bcd9d9;color:#0a3d42}" +
+    " .tc.lo{background:#f8f9fb;border:1px dashed #aab3c1;color:#4b5563;font-weight:600}" +
+    " .lg{margin-top:6px;font-size:10.5px;color:#4b5870;display:flex;gap:12px;flex-wrap:wrap;align-items:center} .lg .tc,.lg .cn{font-size:10px;margin:0}" +
+    " .off{margin-top:5px;font-size:11px;color:#647189}";
+  var days = o.day ? [o.day] : cfg.days, pages = "";
+  days.forEach(function (d) {
+    var rows = "";
+    for (var p = 0; p < P; p++) {
+      var anyClass = cfg.classes.some(function (c) { return p < classPeriods(cfg, c); });
+      if (!anyClass) { rows += "<tr><th class='pp'>P" + cfg.periods[p] + "</th><td class='n no'></td><td class='no'></td></tr>"; continue; }
+      var l = L.free[d][p];
+      rows += "<tr><th class='pp'>P" + cfg.periods[p] + "</th><td class='n'><span class='cn' style='" + cntTone(l.length) + "'>" + l.length + "</span></td><td>" +
+        (l.length ? l.map(function (t) { return "<span class='tc" + ((L.perDay[t][d] || 0) <= 2 ? " lo" : "") + "'>" + esc(t) + "</span>"; }).join("") : "<i style='color:#b3261e'>Nobody is free</i>") + "</td></tr>";
+    }
+    var offT = cfg.singles.filter(function (t) { return isOffDay(cfg, t, d); });
+    pages += "<div class='page'>" + pdfLetterhead(cfg, "Free teachers for substitution", DAY_FULL[d], cfg.singles.length - offT.length + " teachers working") +
+      "<table><thead><tr><th class='pp' style='background:#0e6b73;color:#fff;font-size:13px'>Period</th><th style='width:24mm'>Free</th><th>Teachers free in this period</th></tr></thead><tbody>" + rows + "</tbody></table>" +
+      (offT.length ? "<div class='off'><b>Not working today:</b> " + offT.map(esc).join(", ") + "</div>" : "") + freeKey(true) +
+      (o.sign !== false ? pdfFooter(esc(cfg.school || "") + " &middot; " + esc(DAY_FULL[d]), ["Headmaster"], cfg, "class") : "") + "</div>";
+  });
+  openPrint(esc(cfg.school) + " - Free teachers by day", css, pages);
+}
+
+/* 3. Teacher week grid: one row per teacher, every period of the week; busy cells show the class */
+function exportFreeSlotsPDF(cfg, paper, o) {
+  o = o || {};
+  paper = paper || "A3";
+  var L = leisureData(cfg), P = cfg.periods.length, D = cfg.days.length, N = cfg.singles.length, big = paper === "A3";
+  var fs = big ? (N > 48 ? 8.5 : 9.5) : 7;
+  var css = "@page{size:" + paper + " landscape;margin:8mm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact;box-sizing:border-box} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#16213a}" + lhCss() +
+    " table{border-collapse:collapse;width:100%;table-layout:fixed;border:2px solid #0e6b73} th,td{border:1px solid #c9d8de;text-align:center;padding:1px 1px;font-size:" + fs + "px;height:" + (big ? 19 : 14) + "px;overflow:hidden;white-space:nowrap}" +
+    " thead{display:table-header-group} tr{page-break-inside:avoid} thead th{background:#0e6b73;color:#fff;font-weight:800} thead tr.pr th{background:#e1f0f0;color:#0a4f55;font-size:" + (fs + 0.5) + "px}" +
+    " .tn{width:" + (big ? 20 : 15) + "mm;text-align:left;padding-left:4px;font-weight:800;color:#0a4f55;font-family:'Courier New',monospace} tbody tr:nth-child(even) td.tn{background:#f2f8f8}" +
+    " .ds{border-left:2.5px solid #0e6b73!important} td.f{background:#c9efd8;color:#0e7a45;font-weight:800} td.b{background:#fff;color:#7a8597;font-size:" + (fs - 1.2) + "px} td.cb{background:#fbf3e4;color:#94620b;font-size:" + (fs - 1.2) + "px} td.o{background:repeating-linear-gradient(135deg,#eef0f3 0 4px,#e2e5ea 4px 8px)}" +
+    " td.t{width:" + (big ? 13 : 10) + "mm;font-weight:800;background:#e3f5ec;color:#126236} .lg{margin-top:6px;font-size:10px;color:#4b5870;display:flex;gap:12px;flex-wrap:wrap;align-items:center} .lg i{display:inline-block;width:18px;height:11px;border:1px solid #c9d8de;vertical-align:middle;margin-right:4px}";
+  var h1 = "<tr><th class='tn' rowspan='2' style='color:#fff'>Teacher</th>";
+  cfg.days.forEach(function (d) { h1 += "<th colspan='" + P + "' class='ds'>" + esc(DAY_FULL[d]) + "</th>"; });
+  h1 += (o.showTot !== false ? "<th rowspan='2' class='t' style='background:#0e6b73;color:#fff'>Free</th>" : "") + "</tr>";
+  var h2 = "<tr class='pr'>"; cfg.days.forEach(function () { for (var p = 0; p < P; p++) h2 += "<th" + (p === 0 ? " class='ds'" : "") + ">" + cfg.periods[p] + "</th>"; }); h2 += "</tr>";
+  var rows = "";
+  cfg.singles.forEach(function (t) {
+    var r = "<tr><td class='tn'>" + esc(t) + "</td>";
+    cfg.days.forEach(function (d) {
+      for (var p = 0; p < P; p++) {
+        var b = L.busy[t][d] ? L.busy[t][d][p] : null, ds = p === 0 ? " ds" : "";
+        if (b === "off") r += "<td class='o" + ds + "'></td>";
+        else if (!b) r += "<td class='f" + ds + "'>&#9679;</td>";
+        else { var cc = String(b.c).split(", "); r += "<td class='" + (b.combined ? "cb" : "b") + ds + "' title='" + esc(b.c + " " + b.sub) + "'>" + esc(cc.length > 1 ? cc[0] + "+" : cc[0]) + "</td>"; }
+      }
+    });
+    rows += r + (o.showTot !== false ? "<td class='t'>" + L.week[t] + "</td>" : "") + "</tr>";
+  });
+  var lg = "<div class='lg'><b>Key:</b><span><i style='background:#c9efd8'></i>free</span><span><i></i>teaching (class shown)</span><span><i style='background:#fbf3e4'></i>combined subject (first class shown, + = more)</span><span><i style='background:repeating-linear-gradient(135deg,#eef0f3 0 3px,#e2e5ea 3px 6px)'></i>not working that day</span></div>";
+  openPrint(esc(cfg.school) + " - Teacher week grid (free periods)", css, pdfLetterhead(cfg, "Leisure / free periods", "Teacher week grid", N + " teachers &middot; green = free") +
+    "<table><thead>" + h1 + h2 + "</thead><tbody>" + rows + "</tbody></table>" + lg);
+}
+
+function LeisureExport({ cfg, paper }) {
+  const [cp, setCp] = useState("A3");
+  const [week, setWeek] = useState(true);
+  const [sign, setSign] = useState(true);
+  const [day, setDay] = useState("");
+  const [tot, setTot] = useState(true);
+  const lab = { display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 600, color: C.ink, cursor: "pointer" };
+  const row = { display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", padding: "10px 0", borderTop: `1px dashed ${C.line}` };
+  const ttl = { fontSize: 13, fontWeight: 800, color: C.ink, minWidth: 210 };
+  const sub = { display: "block", fontSize: 11.5, fontWeight: 500, color: C.sub, marginTop: 2 };
+  return (
+    <div style={{ display: "grid", width: "100%" }}>
+      <div style={{ ...row, borderTop: "none", paddingTop: 0 }}>
+        <span style={ttl}>Substitution chart <span style={{ fontSize: 10.5, padding: "1px 7px", borderRadius: 10, background: C.freeSoft, color: C.free, marginLeft: 4 }}>recommended</span><span style={sub}>Days × periods — who is free in each period, on one page</span></span>
+        <select className="tt-sel" style={{ width: 80 }} value={cp} onChange={(e) => setCp(e.target.value)}><option>A3</option><option>A4</option></select>
+        <label style={lab}><input type="checkbox" checked={week} onChange={(e) => setWeek(e.target.checked)} /> Weekly totals</label>
+        <label style={lab}><input type="checkbox" checked={sign} onChange={(e) => setSign(e.target.checked)} /> HM signature</label>
+        <span style={{ marginLeft: "auto" }}><PrintBtn onClick={() => exportSubChartPDF(cfg, { paper: cp, showWeek: week, sign })} icon="pdf" label="Substitution chart" sub={`${cp} landscape`} /></span>
+      </div>
+      <div style={row}>
+        <span style={ttl}>Day sheets<span style={sub}>One page per day, periods down the side — print today's</span></span>
+        <select className="tt-sel" style={{ width: 140 }} value={day} onChange={(e) => setDay(e.target.value)}><option value="">All days</option>{cfg.days.map((d) => <option key={d} value={d}>{DAY_FULL[d]}</option>)}</select>
+        <span style={{ marginLeft: "auto" }}><PrintBtn onClick={() => exportFreeDailyPDF(cfg, { paper: paper || "A4", day: day || null, sign })} icon="pdf" light label="Day sheets" sub={`${paper || "A4"} portrait · ${day ? DAY_FULL[day] : "all days"}`} /></span>
+      </div>
+      <div style={row}>
+        <span style={ttl}>Teacher week grid<span style={sub}>One row per teacher — green = free, class shown when busy</span></span>
+        <label style={lab}><input type="checkbox" checked={tot} onChange={(e) => setTot(e.target.checked)} /> Total free column</label>
+        <span style={{ marginLeft: "auto" }}><PrintBtn onClick={() => exportFreeSlotsPDF(cfg, "A3", { showTot: tot })} icon="pdf" light label="Teacher week grid" sub="A3 landscape" /></span>
+      </div>
+      <div style={row}>
+        <span style={ttl}>Counts per day<span style={sub}>Number of free periods for each teacher, each day</span></span>
+        <span style={{ marginLeft: "auto" }}><PrintBtn onClick={() => exportFreeReportPDF(cfg, paper)} icon="pdf" light label="Free-period counts" sub={`${paper} portrait`} /></span>
+      </div>
+    </div>
+  );
 }
 
 function sheetLayout(paper, orient, per, D, P) {
@@ -4438,7 +4636,7 @@ function freeOf(cfg, t, d) {
 }
 function exportFreeReportPDF(cfg, paper, o) {
   o = o || {};
-  var showP = o.showP !== false, orient = o.orient || "portrait";
+  var showP = o.showP !== false, orient = o.orient || "portrait", showTot = o.showTot !== false, showSum = o.showSum !== false;
   var nT = cfg.singles.length, big = (paper === "A3") || orient === "landscape";
   var fs = nT > 50 ? 10 : nT > 36 ? 11 : 12.5; if (big) fs += 1;
   var css = "@page{size:" + (paper || "A4") + " " + orient + ";margin:1cm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact;box-sizing:border-box} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#16213a}" +
@@ -4452,7 +4650,7 @@ function exportFreeReportPDF(cfg, paper, o) {
   var tone = function (n) { return n === 0 ? "background:#fbe0dd;color:#b3261e" : n === 1 ? "background:#fbefd5;color:#94620b" : n <= 3 ? "background:#e3f5ec;color:#1f7a47" : "background:#c9ecd8;color:#126236"; };
   var head = "<tr><th style='text-align:left'>Teacher</th>";
   for (var di = 0; di < cfg.days.length; di++) head += "<th>" + esc(DAY_FULL[cfg.days[di]]) + "</th>";
-  head += "<th>Total free</th></tr>";
+  head += (showTot ? "<th>Total free</th>" : "") + "</tr>";
   var rows = "", dayTot = cfg.days.map(function () { return 0; }), grand = 0;
   for (var ti = 0; ti < cfg.singles.length; ti++) {
     var t = cfg.singles[ti], total = 0, cells = "";
@@ -4463,9 +4661,10 @@ function exportFreeReportPDF(cfg, paper, o) {
       cells += "<td><span class='c' style='" + tone(fr.length) + "'>" + fr.length + "</span>" + (showP ? "<span class='p'>" + (fr.length ? "P" + fr.join(" P") : "&mdash;") + "</span>" : "") + "</td>";
     }
     grand += total;
-    rows += "<tr><td class='n'>" + esc(t) + "</td>" + cells + "<td class='tot'>" + total + "</td></tr>";
+    rows += "<tr><td class='n'>" + esc(t) + "</td>" + cells + (showTot ? "<td class='tot'>" + total + "</td>" : "") + "</tr>";
   }
-  var foot = "<tr class='sum'><td style='text-align:left'>All teachers</td>" + dayTot.map(function (x) { return "<td>" + x + "</td>"; }).join("") + "<td>" + grand + "</td></tr>";
+  var foot = "<tr class='sum'><td style='text-align:left'>All teachers</td>" + dayTot.map(function (x) { return "<td>" + x + "</td>"; }).join("") + (showTot ? "<td>" + grand + "</td>" : "") + "</tr>";
+  if (!showSum) foot = "";
   var logo = cfg.logo ? "<img src='" + cfg.logo + "' alt=''>" : "";
   var now = new Date(), stamp = now.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
   var hdr = "<div class='hd'>" + logo + "<div><div class='s'>" + esc(cfg.school || "") + "</div><div class='t'>Teacher free-period report &mdash; free periods per day</div></div><div class='d'>" + nT + " teachers &middot; " + cfg.days.length + " days &middot; " + cfg.periods.length + " periods<br>" + esc(stamp) + "</div></div>";
