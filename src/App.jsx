@@ -12,7 +12,7 @@ import { supabase } from "./supabaseClient";
    ============================================================ */
 
 const STORE_KEY = "tt_cfg_v2";
-const APP_VERSION = "2026-10-15 a";
+const APP_VERSION = "2026-10-15 c";
 
 const WEEK_ORDER = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const DAY_FULL = { MON: "Monday", TUE: "Tuesday", WED: "Wednesday", THU: "Thursday", FRI: "Friday", SAT: "Saturday", SUN: "Sunday" };
@@ -151,7 +151,7 @@ function autoScheduleCore(cfg, mode = "all", onlyClass = null, opts = {}) {
   const ROOMS = roomsOf(cfg), ROOMCAP = {}; ROOMS.forEach((rm) => (ROOMCAP["#room:" + rm.name] = rm.cap));
   const roomTok = (sub) => ROOMS.filter((rm) => rm.subjects.includes(sub)).map((rm) => "#room:" + rm.name);
   const tOfL = (l) => tOf(l.teacher).concat(roomTok(l.sub));
-  const QP = qualityPrefs(cfg), CORE = new Set(QP.on ? QP.core : []), HALF = Math.ceil(P / 2);
+  const QP = qualityPrefs(cfg), CORE = new Set(QP.on ? QP.core : []), HALF = fnCount(cfg);
   const mkBusy = () => { const m = new Map(); return { has: (t) => (m.get(t) || 0) >= (ROOMCAP[t] || 1), add: (t) => m.set(t, (m.get(t) || 0) + 1), delete: (t) => { const n = (m.get(t) || 0) - 1; if (n > 0) m.set(t, n); else m.delete(t); } }; };
 
   const gen = (seed) => {
@@ -1324,6 +1324,7 @@ function processStamp(img, removeWhite, maxW) {
 const HM_TITLES = ["Headmaster", "Headmistress", "Head Teacher", "Principal", "Vice Principal", "Manager"];
 function StampCard({ cfg, update, mobile }) {
   const [msg, setMsg] = useState(null);
+  const [crop, setCrop] = useState(null);
   const [clean, setClean] = useState(true);
   const [busy, setBusy] = useState("");
   const [drag, setDrag] = useState("");
@@ -1333,19 +1334,20 @@ function StampCard({ cfg, update, mobile }) {
   const handle = (field, label, maxW, f) => {
     if (!f) return;
     if (!/^image\//.test(f.type)) { setMsg({ ok: false, text: "Please choose an image file (PNG, JPG or WEBP)." }); return; }
-    setBusy(field); setMsg(null);
-    const rd = new FileReader();
-    rd.onerror = () => { setBusy(""); setMsg({ ok: false, text: "Couldn't read this file." }); };
-    rd.onload = () => setTimeout(async () => {
+    setMsg(null);
+    readAsDataUrl(f).then((src) => setCrop({ src, field, label, maxW })).catch((er) => setMsg({ ok: false, text: er.message }));
+  };
+  const afterCrop = (url) => {
+    const { field, label, maxW } = crop; setCrop(null); setBusy(field);
+    setTimeout(async () => {
       try {
-        const img = await loadImg(rd.result);
+        const img = await loadImg(url);
         const data = processStamp(img, clean, maxW);
         update((n) => { n[field] = data; });
         setMsg({ ok: true, text: `${label} added — see the preview below.` });
       } catch (er) { setMsg({ ok: false, text: (er && er.message) || "Couldn't use this image." }); }
       setBusy("");
     }, 30);
-    rd.readAsDataURL(f);
   };
   const checker = "repeating-conic-gradient(#eef1f5 0 25%, #ffffff 0 50%) 0 0 / 14px 14px";
   const Drop = ({ field, label, hint, maxW, icon }) => {
@@ -1384,7 +1386,7 @@ function StampCard({ cfg, update, mobile }) {
     );
   };
   const seg = (val, opts, set) => (
-    <div style={{ display: "inline-flex", border: `1px solid ${C.line}`, borderRadius: 10, overflow: "hidden", background: "#fff" }}>
+    <div style={{ display: "inline-flex", flexWrap: "wrap", border: `1px solid ${C.line}`, borderRadius: 10, overflow: "hidden", background: "#fff" }}>
       {opts.map(([k, l]) => <button key={k} className="tt-btn" onClick={() => set(k)} style={{ border: "none", padding: "6px 12px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", background: val === k ? th.accent : "transparent", color: val === k ? "#fff" : C.sub }}>{l}</button>)}
     </div>
   );
@@ -1393,6 +1395,7 @@ function StampCard({ cfg, update, mobile }) {
   const g = stampGeom(cfg), px = mobile ? 3.3 : 3.6;
   return (
     <div style={{ ...card, marginBottom: 16 }}>
+      {crop && <CropModal src={crop.src} title={crop.label} square={crop.field === "seal"} onDone={afterCrop} onCancel={() => setCrop(null)} />}
       <Panelhead text="Headmaster signature & school seal" count={cfg.hmSign || cfg.seal ? [cfg.hmSign && "signature", cfg.seal && "seal"].filter(Boolean).join(" + ") : "not set"} tone={cfg.hmSign || cfg.seal ? "free" : undefined} />
       <div style={{ padding: mobile ? 12 : 14, display: "grid", gap: 14 }}>
         <div className="tt-callout">Sign or stamp on plain white paper and take a photo from straight above in good light. The paper is removed and the edges trimmed automatically, so only the ink prints on the class and teacher timetables.</div>
@@ -1426,7 +1429,7 @@ function StampCard({ cfg, update, mobile }) {
           )}
           <div style={lab}>Signature size {seg(cfg.signSize || "M", [["S", "Small"], ["M", "Medium"], ["L", "Large"]], (v) => update((n) => { n.signSize = v; }))}</div>
           <div style={lab}>Seal size {seg(cfg.sealSize || "M", [["S", "Small"], ["M", "Medium"], ["L", "Large"]], (v) => update((n) => { n.sealSize = v; }))}</div>
-          <div style={lab}>Seal position {seg(cfg.sealPos || "left", [["left", "Left"], ["over", "On the sign"], ["right", "Right"]], (v) => update((n) => { n.sealPos = v; }))}</div>
+          <div style={lab}>Seal position {seg(cfg.sealPos || "corner", [["corner", "Bottom left of page"], ["left", "Beside sign"], ["over", "On the sign"], ["right", "Right"]], (v) => update((n) => { n.sealPos = v; }))}</div>
           <div style={{ display: "grid", gap: 8, alignContent: "start" }}>
             <label style={chk}><input type="checkbox" checked={cfg.signOnClass !== false} onChange={(e) => update((n) => { n.signOnClass = e.target.checked; })} /> Print on class timetables</label>
             <label style={chk}><input type="checkbox" checked={cfg.signOnTeacher !== false} onChange={(e) => update((n) => { n.signOnTeacher = e.target.checked; })} /> Print on teacher timetables</label>
@@ -1435,12 +1438,13 @@ function StampCard({ cfg, update, mobile }) {
 
         <div>
           <div style={{ fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 6 }}>Preview — bottom of a printed timetable (actual proportions)</div>
-          <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "flex-end", gap: mobile ? 0 : 40, padding: mobile ? "18px 14px 12px" : "18px 26px 14px", border: `1px solid ${C.line}`, borderRadius: 12, background: "#fff", overflow: "hidden", boxShadow: "inset 0 -3px 0 #0e6b7322" }}>
+          <div style={{ display: "flex", alignItems: "flex-end", justifyContent: mobile && g.pos === "corner" && cfg.seal ? "space-between" : "flex-end", gap: mobile ? 0 : 40, padding: mobile ? "18px 14px 12px" : "18px 26px 14px", border: `1px solid ${C.line}`, borderRadius: 12, background: "#fff", overflow: "hidden", boxShadow: "inset 0 -3px 0 #0e6b7322" }}>
+            {g.pos === "corner" && cfg.seal && <img src={cfg.seal} alt="" style={{ width: g.sd * px * (mobile ? 0.8 : 1), height: g.sd * px * (mobile ? 0.8 : 1), objectFit: "contain", opacity: 0.92, mixBlendMode: "multiply", flexShrink: 0, marginRight: mobile ? 10 : 0 }} />}
             {!mobile && <div style={{ marginRight: "auto", fontSize: 11, color: C.sub, lineHeight: 1.5 }}>{cfg.school} · Class 5 A<br />Generated today</div>}
             {!mobile && <div style={{ width: 52 * px, textAlign: "center", flexShrink: 0 }}><div style={{ height: g.boxH * px }} /><div style={{ borderTop: `1.5px solid ${C.ink}`, paddingTop: 3, fontSize: 12, fontWeight: 700 }}>Class Teacher</div></div>}
-            <div style={{ width: 52 * px, maxWidth: "100%", textAlign: "center", flexShrink: 0, margin: mobile ? "0 auto" : 0 }}>
+            <div style={{ width: 52 * px, maxWidth: "100%", textAlign: "center", flexShrink: mobile ? 1 : 0, margin: mobile && g.pos !== "corner" ? "0 auto" : 0 }}>
               <div style={{ height: g.boxH * px, position: "relative", display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
-                {cfg.seal && <img src={cfg.seal} alt="" style={{ position: "absolute", width: g.sd * px, height: g.sd * px, objectFit: "contain", opacity: 0.9, mixBlendMode: "multiply",
+                {cfg.seal && g.pos !== "corner" && <img src={cfg.seal} alt="" style={{ position: "absolute", width: g.sd * px, height: g.sd * px, objectFit: "contain", opacity: 0.9, mixBlendMode: "multiply",
                   ...(g.pos === "over" ? { left: "50%", marginLeft: (-g.sd / 2) * px, bottom: -g.sd * 0.04 * px } : g.pos === "right" ? { right: -6 * px, bottom: -g.sd * 0.2 * px } : { left: mobile ? -8 * px : -15 * px, bottom: -g.sd * 0.2 * px }) }} />}
                 {cfg.hmSign ? <img src={cfg.hmSign} alt="" style={{ position: "relative", maxHeight: g.sh * px, maxWidth: 50 * px, objectFit: "contain", mixBlendMode: "multiply" }} />
                   : !cfg.seal && <span style={{ fontSize: 11.5, color: C.sub, alignSelf: "center" }}>Upload a signature or seal to see it here</span>}
@@ -1455,16 +1459,19 @@ function StampCard({ cfg, update, mobile }) {
 }
 function LogoCard({ cfg, update }) {
   const [msg, setMsg] = useState(null);
+  const [crop, setCrop] = useState(null);
   const onFile = (e) => {
     const f = e.target.files && e.target.files[0]; e.target.value = "";
     if (!f) return;
     if (!/^image\//.test(f.type)) { setMsg({ ok: false, text: "Please choose an image file (PNG, JPG or WEBP)." }); return; }
+    readAsDataUrl(f).then((src) => setCrop(src)).catch((er) => setMsg({ ok: false, text: er.message }));
+  };
+  const useLogo = (url) => {
+    setCrop(null);
     setMsg({ ok: true, text: "Processing the logo…" });
-    const rd = new FileReader();
-    rd.onerror = () => setMsg({ ok: false, text: "Couldn't read this file." });
-    rd.onload = async () => {
+    (async () => {
       try {
-        const img = await loadImg(rd.result), box = logoBBox(img);
+        const img = await loadImg(url), box = logoBBox(img);
         const big = logoCanvas(img, box, 480, false, 0);
         let logo = big.toDataURL("image/webp", 0.86);
         if (!/^data:image\/webp/.test(logo)) logo = big.toDataURL("image/png");
@@ -1472,8 +1479,7 @@ function LogoCard({ cfg, update }) {
         update((n) => { n.logo = logo; n.logoIcon = icon; });
         setMsg({ ok: true, text: "Logo saved. It now shows in the header, as the browser icon, as a watermark in the app and on every PDF." });
       } catch (er) { setMsg({ ok: false, text: (er && er.message) || "Couldn't use this image." }); }
-    };
-    rd.readAsDataURL(f);
+    })();
   };
   const dlIcons = async () => {
     try {
@@ -1485,6 +1491,7 @@ function LogoCard({ cfg, update }) {
   const chk = { display: "inline-flex", alignItems: "center", gap: 7, fontSize: 13, fontWeight: 600, color: C.ink, cursor: "pointer" };
   return (
     <div style={{ ...card, marginBottom: 16 }}>
+      {crop && <CropModal src={crop} title="school logo" square onDone={useLogo} onCancel={() => setCrop(null)} />}
       <Panelhead text="School logo — header, app icon & watermark" count={cfg.logo ? "uploaded" : "not set"} tone={cfg.logo ? "free" : undefined} />
       <div style={{ padding: 14, display: "flex", gap: 18, flexWrap: "wrap", alignItems: "center" }}>
         <div style={{ width: 112, height: 112, borderRadius: 16, border: `2px dashed ${cfg.logo ? C.primary : C.line}`, background: cfg.logo ? "#fff" : "#f7f9fb", display: "grid", placeItems: "center", padding: 8, flexShrink: 0 }}>
@@ -3842,7 +3849,7 @@ function spreadPen(cfg, st, c, sub, pr) {
   return pen;
 }
 function qualityReport(cfg, grid) {
-  const pr = qualityPrefs(cfg), st = qState(cfg, grid), P = st.P, half = Math.ceil(P / 2), core = new Set(pr.core);
+  const pr = qualityPrefs(cfg), st = qState(cfg, grid), P = st.P, half = fnCount(cfg), core = new Set(pr.core);
   let runs = 0, noFree = 0, afternoon = 0, spread = 0, lessons = 0, pen = 0, gaps = 0;
   for (const t of cfg.singles) for (let d = 0; d < st.D; d++) {
     if (!teacherWorkDays(cfg, t).includes(st.DAYS[d])) continue;
@@ -3917,7 +3924,7 @@ function polishGrid(cfg, gridIn, movable, ms) {
   const pr = qualityPrefs(cfg);
   const grid = JSON.parse(JSON.stringify(gridIn));
   const work = { ...cfg, grid };
-  const st = qState(work, grid), P = st.P, D = st.D, half = Math.ceil(P / 2), core = new Set(pr.core);
+  const st = qState(work, grid), P = st.P, D = st.D, half = fnCount(cfg), core = new Set(pr.core);
   const cells = {};
   for (const c of cfg.classes) { const list = []; for (let d = 0; d < D; d++) for (let p = 0; p < P; p++) { const sl = grid[c] && grid[c][st.DAYS[d]] && grid[c][st.DAYS[d]][p]; if (!sl) continue; if (sl[0] && st.isC(sl[0])) continue; if (movable(c, st.DAYS[d], p)) list.push([d, p]); } if (list.length > 1) cells[c] = list; }
   const cls = Object.keys(cells); if (!cls.length) return { grid, moves: 0 };
@@ -3983,7 +3990,7 @@ function QualityPanel({ cfg, update, ask, compact }) {
   const items = [
     [pr.maxRun ? `Teacher-days with more than ${pr.maxRun} in a row` : "Periods in a row (off)", pr.maxRun ? q.runs : "—", pr.maxRun ? `of ${q.teacherDays}` : ""],
     ["Teacher-days with no free period", pr.dailyFree ? q.noFree : "—", pr.dailyFree ? `of ${q.teacherDays}` : ""],
-    [pr.core.length ? `${pr.core.join(", ")} in the afternoon` : "Core subjects in the morning (none chosen)", pr.core.length ? q.afternoon : "—", pr.core.length ? `of ${q.coreLessons}` : ""],
+    [pr.core.length ? `${pr.core.join(", ")} in the afternoon (AN)` : "Core subjects in the forenoon (none chosen)", pr.core.length ? q.afternoon : "—", pr.core.length ? `of ${q.coreLessons}` : ""],
     ["Short subjects on back-to-back days", pr.spread ? q.spread : "—", ""],
     ["Gaps between a teacher's lessons", q.gaps, "info"],
   ];
@@ -4024,9 +4031,9 @@ function QualityPanel({ cfg, update, ask, compact }) {
             <div style={{ fontSize: 11.5, color: C.sub }}>Gives teachers a break after this many periods.</div>
           </div>
           <div style={{ border: `1px solid ${C.line}`, borderRadius: 12, padding: 12, display: "grid", gap: 8 }}>
-            <div style={{ fontSize: 13, fontWeight: 800 }}>Core subjects in the morning</div>
+            <div style={{ fontSize: 13, fontWeight: 800 }}>Core subjects in the forenoon (FN)</div>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{cfg.subjects.map((sb) => { const on = pr.core.includes(sb); return <button key={sb} className="tt-btn" onClick={() => setP("core", on ? pr.core.filter((x) => x !== sb) : [...pr.core, sb])} style={{ ...chip(on), fontFamily: mono, padding: "4px 9px" }}>{sb}</button>; })}</div>
-            <div style={{ fontSize: 11.5, color: C.sub }}>Tap subjects that should come in P1–P{Math.ceil(cfg.periods.length / 2)} where possible.</div>
+            <div style={{ fontSize: 11.5, color: C.sub }}>Tap subjects that should come in the forenoon (FN: P1–P{fnCount(cfg)}) where possible.</div>
           </div>
           <div style={{ border: `1px solid ${C.line}`, borderRadius: 12, padding: 12, display: "grid", gap: 10 }}>
             <label style={{ display: "flex", gap: 8, fontSize: 13, fontWeight: 700, cursor: "pointer" }}><input type="checkbox" checked={pr.dailyFree} onChange={(e) => setP("dailyFree", e.target.checked)} /> At least one free period for every teacher each day</label>
@@ -4412,7 +4419,7 @@ function buildTeacherPages(cfg) {
     for (const t of Object.keys(rec.absent || {})) ent(t, dt).absent = rec.absent[t];
     for (const n of subsNeeds(cfg, dt)) { const u = a[n.key]; ent(n.t, dt).coveredBy.push({ p: n.p, cls: n.cls, sub: n.sub, by: u || null }); if (u) ent(u, dt).cover.push({ p: n.p, cls: n.cls, sub: n.sub, for: n.t }); }
   }
-  const rows = [{ token: "_school", data: { school: cfg.school || "", year: cfg.year || "", logo: cfg.logoIcon || cfg.logo || "", days: cfg.days, periods: cfg.periods, dayNames: Object.fromEntries(cfg.days.map((d) => [d, DAY_FULL[d] || d])) } }];
+  const rows = [{ token: "_school", data: { school: cfg.school || "", year: cfg.year || "", logo: cfg.logoIcon || cfg.logo || "", days: cfg.days, periods: cfg.periods, dayNames: Object.fromEntries(cfg.days.map((d) => [d, DAY_FULL[d] || d])), fn: fnCount(cfg) } }];
   for (const t of cfg.singles) {
     const token = tk[t]; if (!token) continue;
     const week = {}; let load = 0;
@@ -4540,6 +4547,95 @@ function TeacherLinksPanel({ cfg, update, ask, pubState, publishNow, mobile }) {
     </div>
   );
 }
+/* ---------------- Crop before upload ---------------- */
+function fnCount(cfg) { const P = cfg.periods.length, v = Number(cfg.fnCount); return P <= 1 ? P : Math.max(1, Math.min(P - 1, v > 0 ? v : Math.ceil(P / 2))); }
+function fnCss(cfg) { const n = fnCount(cfg); return n > 0 && n < cfg.periods.length ? ` tr>*:nth-child(${n + 2}){border-left:3px solid #d98a2b!important}` : ""; }
+function rotateDataUrl(src, deg) {
+  return loadImg(src).then((img) => {
+    const w = img.naturalWidth, h = img.naturalHeight, cv = document.createElement("canvas");
+    cv.width = deg % 180 ? h : w; cv.height = deg % 180 ? w : h;
+    const x = cv.getContext("2d"); x.translate(cv.width / 2, cv.height / 2); x.rotate((deg * Math.PI) / 180); x.drawImage(img, -w / 2, -h / 2);
+    return cv.toDataURL("image/png");
+  });
+}
+function CropModal({ src: src0, title, square, onDone, onCancel }) {
+  const [src, setSrc] = useState(src0);
+  const [nat, setNat] = useState(null);       // natural size
+  const [box, setBox] = useState(null);       // crop box in image pixels {x,y,w,h}
+  const [aspect, setAspect] = useState(square ? "sq" : "free");
+  const wrapRef = useRef(null);
+  const drag = useRef(null);
+  const th = CUR_TH || THEMES.teal;
+  useEffect(() => { let ok = true; loadImg(src).then((img) => { if (!ok) return; const w = img.naturalWidth, h = img.naturalHeight; setNat({ w, h }); const m = Math.round(Math.min(w, h) * 0.04); let b = { x: m, y: m, w: w - 2 * m, h: h - 2 * m }; if (aspect === "sq") { const s = Math.min(b.w, b.h); b = { x: (w - s) / 2, y: (h - s) / 2, w: s, h: s }; } setBox(b); }).catch(() => onCancel()); return () => { ok = false; }; }, [src]);
+  const maxW = Math.min(typeof window !== "undefined" ? window.innerWidth - 56 : 600, 640), maxH = typeof window !== "undefined" ? Math.round(window.innerHeight * 0.55) : 420;
+  const sc = nat ? Math.min(maxW / nat.w, maxH / nat.h, 1.5) : 1;
+  const dw = nat ? nat.w * sc : 0, dh = nat ? nat.h * sc : 0;
+  const clampBox = (b) => { const minS = Math.max(12, 24 / sc); let { x, y, w, h } = b; w = Math.max(minS, Math.min(w, nat.w)); h = Math.max(minS, Math.min(h, nat.h)); x = Math.max(0, Math.min(x, nat.w - w)); y = Math.max(0, Math.min(y, nat.h - h)); return { x, y, w, h }; };
+  const start = (mode) => (e) => { e.preventDefault(); e.stopPropagation(); try { e.currentTarget.setPointerCapture(e.pointerId); } catch (er) { /* ignore */ } drag.current = { mode, sx: e.clientX, sy: e.clientY, b: { ...box } }; };
+  const move = (e) => {
+    const g = drag.current; if (!g || !nat) return;
+    const dx = (e.clientX - g.sx) / sc, dy = (e.clientY - g.sy) / sc; let { x, y, w, h } = g.b;
+    if (g.mode === "move") { x += dx; y += dy; }
+    else {
+      if (g.mode.includes("l")) { x += dx; w -= dx; } if (g.mode.includes("r")) w += dx;
+      if (g.mode.includes("t")) { y += dy; h -= dy; } if (g.mode.includes("b")) h += dy;
+      if (aspect === "sq") { const s = Math.max(w, h); if (g.mode.includes("l")) x -= s - w; if (g.mode.includes("t")) y -= s - h; w = s; h = s; }
+    }
+    setBox(clampBox({ x, y, w, h }));
+  };
+  const end = () => { drag.current = null; };
+  const setSq = (v) => { setAspect(v); if (v === "sq" && box) { const s = Math.min(box.w, box.h); setBox(clampBox({ x: box.x + (box.w - s) / 2, y: box.y + (box.h - s) / 2, w: s, h: s })); } };
+  const rotate = async () => { try { const r = await rotateDataUrl(src, 90); setBox(null); setNat(null); setSrc(r); } catch (e) { /* ignore */ } };
+  const finish = async (whole) => {
+    try {
+      const img = await loadImg(src), b = whole || !box ? { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight } : box;
+      const cv = document.createElement("canvas"); cv.width = Math.round(b.w); cv.height = Math.round(b.h);
+      cv.getContext("2d").drawImage(img, b.x, b.y, b.w, b.h, 0, 0, cv.width, cv.height);
+      onDone(cv.toDataURL("image/png"));
+    } catch (e) { onCancel(); }
+  };
+  const handle = (pos, cur) => {
+    const s = 22, st = { position: "absolute", width: s, height: s, background: "#fff", border: `3px solid ${th.accent}`, borderRadius: 6, touchAction: "none", cursor: cur, boxShadow: "0 1px 4px rgba(0,0,0,.3)" };
+    if (pos.includes("t")) st.top = -s / 2; if (pos.includes("b")) st.bottom = -s / 2; if (pos.includes("l")) st.left = -s / 2; if (pos.includes("r")) st.right = -s / 2;
+    return <span key={pos} onPointerDown={start(pos)} onPointerMove={move} onPointerUp={end} onPointerCancel={end} style={st} />;
+  };
+  const seg = (on) => ({ border: "none", padding: "6px 12px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", background: on ? th.accent : "transparent", color: on ? "#fff" : C.sub });
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(16,25,40,.6)", zIndex: 120, display: "grid", placeItems: "center", padding: 10 }}>
+      <div style={{ background: "#fff", borderRadius: 16, padding: 16, width: "min(680px, 96vw)", maxHeight: "96vh", overflow: "auto", display: "grid", gap: 12, boxShadow: "0 20px 50px rgba(0,0,0,.35)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ fontSize: 16, fontWeight: 800 }}>Crop {title}</div>
+          <span style={{ fontSize: 12, color: C.sub }}>Drag the box or its corners to keep only the part you need.</span>
+        </div>
+        <div style={{ display: "grid", placeItems: "center", background: "repeating-conic-gradient(#eef1f5 0 25%, #ffffff 0 50%) 0 0 / 16px 16px", borderRadius: 12, padding: 14, minHeight: 160 }}>
+          {!nat || !box ? <span style={{ display: "inline-flex", gap: 8, alignItems: "center", color: C.sub, fontSize: 13 }}><span className="tt-spin" />Loading…</span> : (
+            <div ref={wrapRef} style={{ position: "relative", width: dw, height: dh, userSelect: "none", touchAction: "none" }}>
+              <img src={src} alt="" draggable={false} style={{ width: dw, height: dh, display: "block", pointerEvents: "none" }} />
+              <div onPointerDown={start("move")} onPointerMove={move} onPointerUp={end} onPointerCancel={end}
+                style={{ position: "absolute", left: box.x * sc, top: box.y * sc, width: box.w * sc, height: box.h * sc, border: `2px solid ${th.accent}`, boxShadow: "0 0 0 9999px rgba(16,25,40,.5)", cursor: "move", touchAction: "none",
+                  backgroundImage: "linear-gradient(rgba(255,255,255,.35) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.35) 1px, transparent 1px)", backgroundSize: `${(box.w * sc) / 3}px ${(box.h * sc) / 3}px` }}>
+                {handle("tl", "nwse-resize")}{handle("tr", "nesw-resize")}{handle("bl", "nesw-resize")}{handle("br", "nwse-resize")}
+              </div>
+            </div>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <div style={{ display: "inline-flex", border: `1px solid ${C.line}`, borderRadius: 10, overflow: "hidden" }}>
+            <button className="tt-btn" onClick={() => setSq("free")} style={seg(aspect === "free")}>Free</button>
+            <button className="tt-btn" onClick={() => setSq("sq")} style={seg(aspect === "sq")}>Square</button>
+          </div>
+          <button className="tt-btn" onClick={rotate} style={{ ...ghostBtn, padding: "6px 12px" }}>⟳ Rotate</button>
+          <span style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end", flex: "1 1 auto", minWidth: 0 }}>
+            <button className="tt-btn" onClick={onCancel} style={ghostBtn}>Cancel</button>
+            <button className="tt-btn" onClick={() => finish(true)} style={ghostBtn}>Use whole image</button>
+            <button className="tt-btn" onClick={() => finish(false)} style={solidBtn}>✓ Crop & use</button>
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+function readAsDataUrl(f) { return new Promise((res, rej) => { const rd = new FileReader(); rd.onload = () => res(rd.result); rd.onerror = () => rej(new Error("Couldn't read this file.")); rd.readAsDataURL(f); }); }
 /* ---------------- Undo & safety copies ---------------- */
 var SNAP_SKIP = ["logo", "logoIcon", "hmSign", "seal", "versions", "snapshots", "adminPw", "subs"];
 var SNAP_HINT = { text: "", at: 0 };
@@ -4665,7 +4761,7 @@ function isoToday() { const d = new Date(); return `${d.getFullYear()}-${String(
 function isoShift(iso, n) { const [y, m, d] = iso.split("-").map(Number); const t = new Date(y, m - 1, d + n); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`; }
 function isoDay(iso) { const [y, m, d] = iso.split("-").map(Number); return WD[new Date(y, m - 1, d).getDay()]; }
 function isoNice(iso, long) { const [y, m, d] = iso.split("-").map(Number); return new Date(y, m - 1, d).toLocaleDateString(undefined, long ? { weekday: "long", day: "numeric", month: "long", year: "numeric" } : { weekday: "short", day: "numeric", month: "short" }); }
-function partPeriods(cfg, part) { const P = cfg.periods.length, h = Math.ceil(P / 2); return cfg.periods.map((_, i) => i).filter((i) => part === "am" ? i < h : part === "pm" ? i >= h : true); }
+function partPeriods(cfg, part) { const h = fnCount(cfg); return cfg.periods.map((_, i) => i).filter((i) => part === "am" ? i < h : part === "pm" ? i >= h : true); }
 function subsNeeds(cfg, date) {
   const rec = (cfg.subs || {})[date] || {}, abs = rec.absent || {}, d = isoDay(date), out = [];
   if (!cfg.days.includes(d)) return out;
@@ -4718,7 +4814,7 @@ function exportSubSlipPDF(cfg, date) {
   const css = "@page{size:A4 portrait;margin:1cm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact;box-sizing:border-box} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#16213a}" + lhCss() +
     " table{border-collapse:collapse;width:100%;border:2px solid #0e6b73} th,td{border:1px solid #b9d3d3;padding:7px 8px;font-size:13px;text-align:center} thead th{background:#0e6b73;color:#fff;font-weight:800} td.l{text-align:left} td.p{font-weight:800;font-size:15px;color:#0a4f55;background:#e1f0f0;width:16mm}" +
     " .sub{font-family:'Courier New',monospace;font-weight:800;font-size:15px;color:#0a3d42} .nc{color:#b3261e;font-weight:800} .ab{margin:6px 0 10px;font-size:12.5px} .ab span{display:inline-block;margin:2px 6px 2px 0;padding:2px 9px;border-radius:12px;background:#fbe0dd;color:#8a1f17;font-weight:700} td.sg{width:34mm} .nt{margin-top:8px;font-size:12px;color:#33415c}";
-  const part = (x) => x === "am" ? " (first half)" : x === "pm" ? " (second half)" : "";
+  const part = (x) => x === "am" ? " (FN)" : x === "pm" ? " (AN)" : "";
   const rows = needs.map((n) => `<tr><td class="p">P${cfg.periods[n.p]}</td><td><b>${esc(n.cls)}</b></td><td>${esc(n.sub)}</td><td>${esc(n.t)}</td><td>${a[n.key] ? `<span class="sub">${esc(a[n.key])}</span>` : '<span class="nc">not covered</span>'}</td><td class="sg"></td></tr>`).join("");
   const body = pdfLetterhead(cfg, "Substitution", isoNice(date, true), `${Object.keys(abs).length} absent · ${needs.length} period${needs.length === 1 ? "" : "s"} to cover`) +
     `<div class="ab"><b>Absent:</b> ${Object.keys(abs).map((t) => `<span>${esc(t)}${part(abs[t])}</span>`).join("") || "none"}</div>` +
@@ -4803,7 +4899,7 @@ function SubsView({ cfg, update, mobile }) {
                   <div key={t} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 10, background: C.clashSoft, border: `1px solid ${C.clash}33` }}>
                     <b style={{ fontFamily: mono, color: "#8a1f17", minWidth: 54 }}>{t}</b>
                     <select className="tt-sel" value={abs[t]} onChange={(e) => setPart(t, e.target.value)} style={{ width: "auto", flex: 1, fontFamily: sans, fontSize: 12.5 }}>
-                      <option value="full">Whole day</option><option value="am">First half (P1–P{Math.ceil(cfg.periods.length / 2)})</option><option value="pm">Second half (P{Math.ceil(cfg.periods.length / 2) + 1}–P{cfg.periods.length})</option>
+                      <option value="full">Whole day</option><option value="am">Forenoon — FN (P1–P{fnCount(cfg)})</option><option value="pm">Afternoon — AN (P{fnCount(cfg) + 1}–P{cfg.periods.length})</option>
                     </select>
                     <button className="tt-btn" onClick={() => toggleAbs(t)} aria-label={`Remove ${t}`} style={{ border: "none", background: "#fff", borderRadius: 20, width: 24, height: 24, cursor: "pointer", color: C.clash, fontWeight: 800 }}>×</button>
                   </div>
@@ -5394,6 +5490,27 @@ function SetupView({ cfg, update, ask, askPw, mobile, teacherLoad }) {
           <select className="tt-sel" style={{ width: 90, textAlign: "center", fontWeight: 700 }} value={cfg.periods.length} onChange={(e) => { const v = +e.target.value; if (v < cfg.periods.length) ask(`Reduce to ${v} periods a day? Periods ${v + 1}–${cfg.periods.length} will be removed from every class timetable.`, () => setPeriods(v)); else setPeriods(v); }}>{Array.from({ length: 12 }, (_, i) => i + 1).map((n) => <option key={n} value={n}>{n}</option>)}</select>
           <span style={{ fontSize: 12, color: C.sub }}>e.g. 6, 7 or 8. Changing this adds or trims period columns across every class.</span>
         </div>
+        {cfg.periods.length > 1 && (
+          <div style={{ padding: "0 14px 14px", display: "grid", gap: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 13, color: C.sub }}>Forenoon (FN) periods:</span>
+              <div style={{ display: "inline-flex", border: `1px solid ${C.line}`, borderRadius: 10, overflow: "hidden" }}>
+                {cfg.periods.slice(0, -1).map((_, i) => { const v = i + 1, on = fnCount(cfg) === v; return <button key={v} className="tt-btn" onClick={() => update((n) => { n.fnCount = v; })} style={{ border: "none", padding: "6px 12px", fontSize: 13, fontWeight: 800, cursor: "pointer", background: on ? C.primary : "#fff", color: on ? "#fff" : C.sub }}>{v}</button>; })}
+              </div>
+              {cfg.fnCount && <button className="tt-btn" onClick={() => update((n) => { delete n.fnCount; })} style={{ ...ghostBtn, padding: "5px 10px", fontSize: 12 }}>Back to default ({Math.ceil(cfg.periods.length / 2)})</button>}
+            </div>
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
+              {cfg.periods.map((p, i) => (
+                <React.Fragment key={i}>
+                  {i === fnCount(cfg) && <span style={{ fontSize: 10.5, fontWeight: 800, color: C.accent, padding: "0 6px", letterSpacing: 0.5 }}>LUNCH</span>}
+                  <span style={{ minWidth: 40, textAlign: "center", padding: "6px 8px", borderRadius: 8, fontSize: 12.5, fontWeight: 800, background: i < fnCount(cfg) ? "#e8f2ff" : C.accentSoft, color: i < fnCount(cfg) ? "#2b5fa8" : "#94620b" }}>P{p}</span>
+                </React.Fragment>
+              ))}
+              <span style={{ fontSize: 12, color: C.sub, marginLeft: 8 }}><b style={{ color: "#2b5fa8" }}>FN</b> P1–P{fnCount(cfg)} · <b style={{ color: "#94620b" }}>AN</b> P{fnCount(cfg) + 1}–P{cfg.periods.length}</span>
+            </div>
+            <div style={{ fontSize: 11.5, color: C.sub }}>Used for half-day leave in Daily substitution, "core subjects in the forenoon", the teacher pages and the FN / AN marks on printed timetables.</div>
+          </div>
+        )}
       </div>
       <div style={{ ...card, marginBottom: 16 }}>
         <Panelhead text="Periods per day — classes that have fewer" count={Object.keys(cfg.classMaxP || {}).filter((c) => classPeriods(cfg, c) < cfg.periods.length).length || undefined} />
@@ -5529,8 +5646,8 @@ function subCol(sub) { return SUBJECT_BAR[sub] || "#444"; }
 
 
 function gridHead(cfg) {
-  var head = "<tr><th>Day / Period</th>";
-  for (var pi = 0; pi < cfg.periods.length; pi++) head += "<th>P" + cfg.periods[pi] + "</th>";
+  var head = "<tr><th>Day / Period</th>", fn = fnCount(cfg);
+  for (var pi = 0; pi < cfg.periods.length; pi++) head += "<th>P" + cfg.periods[pi] + (pi === 0 ? "<div style='font-size:9.5px;opacity:.85;font-weight:700;letter-spacing:.5px'>FN</div>" : pi === fn ? "<div style='font-size:9.5px;opacity:.85;font-weight:700;letter-spacing:.5px'>AN</div>" : "") + "</th>";
   return head + "</tr>";
 }
 
@@ -5556,7 +5673,7 @@ function pdfLetterhead(cfg, kind, title, sub) {
 }
 var STAMP_K = { S: 0.8, M: 1, L: 1.22 };
 function stampGeom(cfg) {
-  var sh = 14.5 * (STAMP_K[cfg && cfg.signSize] || 1), sd = 24 * (STAMP_K[cfg && cfg.sealSize] || 1), pos = (cfg && cfg.sealPos) || "left";
+  var sh = 14.5 * (STAMP_K[cfg && cfg.signSize] || 1), sd = 24 * (STAMP_K[cfg && cfg.sealSize] || 1), pos = (cfg && cfg.sealPos) || "corner";
   var sealCss = pos === "over" ? "left:50%;margin-left:" + (-sd / 2) + "mm;bottom:" + (-sd * 0.04) + "mm" : pos === "right" ? "right:-6mm;bottom:" + (-sd * 0.2) + "mm" : "left:-15mm;bottom:" + (-sd * 0.2) + "mm";
   return { sh: sh, sd: sd, pos: pos, sealCss: sealCss, boxH: Math.max(15, sh + 1) };
 }
@@ -5564,11 +5681,13 @@ function pdfFooter(left, sigs, cfg, kind) {
   var d = new Date().toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
   var on = cfg && (kind === "teacher" ? cfg.signOnTeacher !== false : cfg.signOnClass !== false);
   var hmTitle = (cfg && cfg.hmTitle) || "Headmaster", g = stampGeom(cfg);
-  return '<div class="ft"><div class="gen">' + left + '<br>Generated ' + esc(d) + '</div>' + sigs.map(function (s) {
+  var corner = on && cfg.seal && g.pos === "corner" && sigs.indexOf("Headmaster") >= 0;
+  var cornerSeal = corner ? '<div style="flex-shrink:0;margin-right:5mm;align-self:flex-end"><img src="' + cfg.seal + '" alt="" style="display:block;width:' + g.sd + 'mm;height:' + g.sd + 'mm;object-fit:contain;opacity:.92;mix-blend-mode:multiply"></div>' : '';
+  return '<div class="ft">' + cornerSeal + '<div class="gen">' + left + '<br>Generated ' + esc(d) + '</div>' + sigs.map(function (s) {
     var isHM = s === "Headmaster";
     if (!isHM) return '<div class="sig"><div class="sgi" style="height:' + g.boxH + 'mm"></div><div class="sgl">' + esc(s) + '</div></div>';
     var img = on && cfg.hmSign ? '<img class="sg" src="' + cfg.hmSign + '" alt="" style="max-height:' + g.sh + 'mm;max-width:50mm">' : '';
-    var seal = on && cfg.seal ? '<img class="seal" src="' + cfg.seal + '" alt="" style="width:' + g.sd + 'mm;height:' + g.sd + 'mm;left:auto;right:auto;bottom:auto;' + g.sealCss + '">' : '';
+    var seal = on && cfg.seal && !corner ? '<img class="seal" src="' + cfg.seal + '" alt="" style="width:' + g.sd + 'mm;height:' + g.sd + 'mm;left:auto;right:auto;bottom:auto;' + g.sealCss + '">' : '';
     return '<div class="sig hm"><div class="sgi" style="height:' + g.boxH + 'mm">' + seal + img + '</div><div class="sgl">' + esc(hmTitle) + (cfg && cfg.hmName ? '<span class="sgn">' + esc(cfg.hmName) + '</span>' : '') + '</div></div>';
   }).join("") + '</div>';
 }
@@ -5606,7 +5725,7 @@ function exportClassesPDF(cfg, paper, only) {
       '<table><thead>' + head + '</thead><tbody>' + body + '</tbody></table>' + (strip ? '<div class="sm">' + strip + '</div>' : '') +
       pdfFooter(esc(cfg.school || "") + " &middot; Class " + esc(c), ["Class Teacher", "Headmaster"], cfg, "class") + '</div>';
   }
-  openPrint(esc(cfg.school) + (list.length === 1 ? " - Class " + esc(list[0]) : " - Class timetables"), gridCss(paper), pages);
+  openPrint(esc(cfg.school) + (list.length === 1 ? " - Class " + esc(list[0]) : " - Class timetables"), gridCss(paper) + fnCss(cfg), pages);
 }
 
 function exportTeachersPDF(cfg, paper, only) {
@@ -5627,7 +5746,7 @@ function exportTeachersPDF(cfg, paper, only) {
       '<table><thead>' + head + '</thead><tbody>' + body + '</tbody></table>' + (cl.length ? '<div class="sm"><span><b>Classes</b>' + esc(cl.join(", ")) + '</span></div>' : '') +
       pdfFooter(esc(cfg.school || "") + " &middot; Teacher " + esc(t), ["Teacher", "Headmaster"], cfg, "teacher") + '</div>';
   }
-  openPrint(esc(cfg.school) + (list.length === 1 ? " - " + esc(list[0]) : " - Teacher timetables"), gridCss(paper), pages);
+  openPrint(esc(cfg.school) + (list.length === 1 ? " - " + esc(list[0]) : " - Teacher timetables"), gridCss(paper) + fnCss(cfg), pages);
 }
 
 

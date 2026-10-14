@@ -75,7 +75,7 @@ export default function TeacherPage({ token }) {
   );
 
   const td = subs[today] || {};
-  const absentPart = td.absent, half = Math.ceil(periods.length / 2);
+  const absentPart = td.absent, half = school.fn || Math.ceil(periods.length / 2);
   const absentAt = (p) => !!absentPart && (absentPart === "full" || (absentPart === "am" ? p < half : p >= half));
   const cell = (d, p) => (page.week[d] || [])[p];
   const subColor = (s) => SUB_COL[s] || C.g2;
@@ -104,11 +104,12 @@ export default function TeacherPage({ token }) {
             <span style={{ color: C.sub, fontSize: 13 }}>{nice(today, true)}</span>
             {working && <span style={{ marginLeft: "auto", fontSize: 12, fontWeight: 700, padding: "2px 10px", borderRadius: 20, background: C.freeSoft, color: C.free }}>{freeToday} free period{freeToday === 1 ? "" : "s"}</span>}
           </div>
-          {absentPart && <div style={{ ...note, background: C.redSoft, color: "#8a1f17" }}>You are marked <b>absent</b> {absentPart === "full" ? "today" : absentPart === "am" ? "for the first half" : "for the second half"}. Your classes are covered by colleagues.</div>}
+          {absentPart && <div style={{ ...note, background: C.redSoft, color: "#8a1f17" }}>You are marked <b>absent</b> {absentPart === "full" ? "today" : absentPart === "am" ? "for the forenoon (FN)" : "for the afternoon (AN)"}. Your classes are covered by colleagues.</div>}
           {coverToday.length > 0 && <div style={{ ...note, background: C.warnSoft, color: "#7a5310" }}><b>Substitution today:</b> {coverToday.sort((a, b) => a.p - b.p).map((x) => `P${periods[x.p]} ${x.cls} ${x.sub} (for ${x.for})`).join(" · ")}</div>}
           {!working ? <div style={{ color: C.sub, fontSize: 14, padding: "8px 0" }}>No classes today. 🌿</div> : (
             <div style={{ display: "grid", gap: 6 }}>
-              {myToday.map((x) => {
+              {myToday.flatMap((x) => [x.p === half && half > 0 && half < periods.length ? <div key={"lunch"} style={{ display: "flex", alignItems: "center", gap: 10, color: C.accent, fontSize: 11.5, fontWeight: 800, letterSpacing: 1, padding: "2px 4px" }}><span style={{ flex: 1, height: 1, background: "#f0d9b5" }} />LUNCH · AFTERNOON (AN)<span style={{ flex: 1, height: 1, background: "#f0d9b5" }} /></div> : null, x]).filter(Boolean).map((x) => {
+                if (!x || x.p === undefined) return x;
                 const c = x.c;
                 let main, sub, bg = "#fff", bd = C.line, tag = null;
                 if (x.cover) { main = `${x.cover.cls} · ${x.cover.sub}`; sub = `Substitution for ${x.cover.for}`; bg = C.warnSoft; bd = `${C.warn}88`; tag = "COVER"; }
