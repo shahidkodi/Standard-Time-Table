@@ -12,7 +12,7 @@ import { supabase } from "./supabaseClient";
    ============================================================ */
 
 const STORE_KEY = "tt_cfg_v2";
-const APP_VERSION = "2026-10-15 g";
+const APP_VERSION = "2026-10-16 a";
 
 const WEEK_ORDER = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const DAY_FULL = { MON: "Monday", TUE: "Tuesday", WED: "Wednesday", THU: "Thursday", FRI: "Friday", SAT: "Saturday", SUN: "Sunday" };
@@ -601,6 +601,8 @@ export default function App() {
   const [pwState, setPwState] = useState(null);
   const askPw = (msg, onYes) => setPwState({ msg, onYes });
   const [menuOpen, setMenuOpen] = useState(false);
+  const [bkSnooze, setBkSnooze] = useState(() => +lsGet("tt_bk_snooze", "0") || 0);
+  const weeklyDone = useRef(false);
   const [theme, setTheme] = useState("teal");
   const mobile = useIsMobile();
   useEffect(() => { try { const t = localStorage.getItem("tt_theme"); if (t) setTheme(t); } catch {} }, []);
@@ -678,8 +680,10 @@ export default function App() {
       setCfg((cur) => { if (!cur) return cur; const n = { ...cur, snapshots: pruneSnaps([...(cur.snapshots || []), rec]) }; persist(n); return n; });
     }).catch(() => {}).finally(() => { snapPending.current = false; });
   };
+  const meRef = useRef("");
   const update = (fn) => setCfg((prev) => {
     const next = clone(prev); fn(next); if (Array.isArray(next.classes)) next.classes.sort(cmpClass);
+    logChange(prev, next, meRef.current);
     const why = bigChange(prev, next), h = histRef.current, now = Date.now();
     if (why || now - h.lastAt > 1200) { h.past.push(prev); if (h.past.length > 40) h.past.shift(); }
     h.lastAt = now; h.future = [];
@@ -687,9 +691,9 @@ export default function App() {
     setTimeout(syncHist, 0);
     persist(next); return next;
   });
-  const keepLive = (target, cur) => { const n = { ...target }; if (cur.snapshots !== undefined) n.snapshots = cur.snapshots; else delete n.snapshots; return n; };
-  const undo = () => setCfg((cur) => { const h = histRef.current; if (!cur || !h.past.length) return cur; const prev = h.past.pop(); h.future.push(cur); h.lastAt = 0; const n = keepLive(prev, cur); persist(n); setTimeout(syncHist, 0); return n; });
-  const redo = () => setCfg((cur) => { const h = histRef.current; if (!cur || !h.future.length) return cur; const nx = h.future.pop(); h.past.push(cur); h.lastAt = 0; const n = keepLive(nx, cur); persist(n); setTimeout(syncHist, 0); return n; });
+  const keepLive = (target, cur, word) => { const n = { ...target }; if (cur.snapshots !== undefined) n.snapshots = cur.snapshots; else delete n.snapshots; let ch = []; try { ch = describeChange(cur, n); } catch (e) { /* ignore */ } n.changeLog = [...(cur.changeLog || []), { at: Date.now(), by: meRef.current || "", area: "undo", parts: [word + (ch.length ? ": " + ch.map((x) => x.text).join("; ").slice(0, 300) : "")] }].slice(-300); return n; };
+  const undo = () => setCfg((cur) => { const h = histRef.current; if (!cur || !h.past.length) return cur; const prev = h.past.pop(); h.future.push(cur); h.lastAt = 0; const n = keepLive(prev, cur, "Undo"); persist(n); setTimeout(syncHist, 0); return n; });
+  const redo = () => setCfg((cur) => { const h = histRef.current; if (!cur || !h.future.length) return cur; const nx = h.future.pop(); h.past.push(cur); h.lastAt = 0; const n = keepLive(nx, cur, "Redo"); persist(n); setTimeout(syncHist, 0); return n; });
   useEffect(() => {
     const onKey = (e) => {
       const tg = e.target && e.target.tagName; if (tg === "INPUT" || tg === "TEXTAREA" || tg === "SELECT") return;
@@ -766,6 +770,7 @@ export default function App() {
   const [showClashes, setShowClashes] = useState(false);
   const AUTH_ON = typeof supabase !== "undefined" && !!supabase && !!supabase.auth;
   const [me, setMe] = useState(AUTH_ON ? undefined : null);   // undefined = still checking who is signed in
+  meRef.current = me || "";
   useEffect(() => {
     if (!AUTH_ON) return;
     const pick = (sess) => { const em = sess && sess.user && sess.user.email; setMe(em ? String(em).split("@")[0].toLowerCase() : ""); };
@@ -780,6 +785,15 @@ export default function App() {
   const acc = unlocked ? { ...ACCESS_PRESETS.full, preset: "full", who: me, listed: true } : accessFor(cfg, me);
   const limited = !!acc.tabs;
   const view = acc.tabs && !acc.tabs.includes(view0) ? (acc.tabs[0] || "__none") : view0;
+  const isAdmin = acc.preset === "full" || !!acc.manage;
+  useEffect(() => {
+    if (!cfg || weeklyDone.current || me === undefined || !isAdmin || getLoadSource() === "cache") return;
+    weeklyDone.current = true;
+    const last = Math.max(0, ...(cfg.snapshots || []).filter((x) => x.kind === "weekly").map((x) => x.at || 0));
+    if (Date.now() - last < 7 * 864e5) return;
+    const src = cfg;   // the copy is taken once, a few seconds after opening the app
+    setTimeout(() => { makeSnapshot(src, `Weekly copy — ${new Date().toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}`, "weekly").then((rec) => setCfg((cur) => { if (!cur) return cur; if ((cur.snapshots || []).some((x) => x.kind === "weekly" && Date.now() - (x.at || 0) < 7 * 864e5)) return cur; const n = { ...cur, snapshots: pruneSnaps([...(cur.snapshots || []), rec]) }; persist(n); return n; })).catch(() => {}); }, 4000);
+  }, [cfg, me, isAdmin]);
   useEffect(() => {
     const href = cfg && cfg.logoIcon; if (!href) return;
     try {
@@ -915,6 +929,14 @@ export default function App() {
       </header>
 
       <NavTabs view={view} setView={setView} status={tabStatus} TH={TH} mobile={mobile} only={acc.tabs} />
+      {isAdmin && Date.now() - (cfg.lastBackupDl || 0) > 7 * 864e5 && Date.now() > bkSnooze && (
+        <div className="tt-noprint" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", margin: mobile ? "10px 12px 0" : "14px 22px 0", padding: "9px 14px", borderRadius: 12, background: "#eef4ff", border: "1px solid #2b5fa833", color: "#1d3f73", fontSize: 13 }}>
+          <span style={{ fontSize: 17 }}>📦</span>
+          <span style={{ flex: "1 1 220px" }}><b>Weekly backup</b> — {cfg.lastBackupDl ? `last downloaded ${Math.floor((Date.now() - cfg.lastBackupDl) / 864e5)} days ago` : "no backup downloaded yet"}. Keep a copy of everything on this device, in case of any accident.</span>
+          <button className="tt-btn" onClick={() => { downloadBackup(cfg); update((n) => { n.lastBackupDl = Date.now(); }); }} style={{ ...solidBtn, padding: "6px 12px", fontSize: 12.5 }}>Download backup</button>
+          <button className="tt-btn" onClick={() => { const t = Date.now() + 3 * 864e5; setBkSnooze(t); lsSet("tt_bk_snooze", String(t)); }} style={{ ...ghostBtn, padding: "6px 12px", fontSize: 12.5 }}>Later</button>
+        </div>
+      )}
       <NavDrawer open={menuOpen} onClose={() => setMenuOpen(false)} view={view} setView={setView} TH={TH} school={cfg.school} logo={cfg.logo} status={tabStatus} only={acc.tabs} me={me} theme={theme} setTheme={persistTheme} onSignOut={handleSignOut} />
       <div className="tt-printhead" style={{ display: "none", alignItems: "center", gap: 12, borderBottom: `3px solid ${TH.g1}`, padding: "0 0 8px", margin: "0 0 10px" }}>
         {cfg.logo && <img src={cfg.logo} alt="" style={{ height: 52, width: 52, objectFit: "contain" }} />}
@@ -1216,7 +1238,7 @@ function TeacherView({ cfg, tch, occupancy, teacherLoad, combinedByBase }) {
       <div className="tt-printarea" style={card}>
         <GridTable cfg={cfg} render={(d, pi) => {
           const r = lookup(d, pi);
-          if (!r) { const ex = extraAt(cfg, tch, d, pi); if (ex) return { t: ex.label, s: ex.kind === "class" ? "outside this timetable" : "non-teaching duty", bg: "#f1ecfa" }; return { free: true, bg: C.freeSoft }; }
+          if (!r) { const ex = extraAt(cfg, tch, d, pi); if (ex) return { t: ex.label, s: ex.kind === "class" ? "outside this timetable" : ex.kind === "lss" ? "LSS / USS coaching" : "non-teaching duty", bg: (DUTY_STYLE[ex.kind] || DUTY_STYLE.duty)[1] }; return { free: true, bg: C.freeSoft }; }
           return { t: r.cn, s: `${r.subj || ""}${r.combined ? " · combined" : r.code !== tch ? " · " + r.code : ""}`, bg: r.combined ? C.accentSoft : SUBJECT_TINT[r.subj] || "#fff", sub: r.subj };
         }} />
       </div>
@@ -3817,11 +3839,12 @@ function ExportView({ cfg, update, ask, pubState, publishNow, mobile }) {
               <PrintBtn onClick={() => exportTeachersOverviewPDF(cfg, { per: +ov.tper || 24, paper: ov.paper, orient: ov.orient })} icon="pdf" label={<>All teachers ({ov.paper}, {ov.tper}/sheet)</>} />
             </div>
           </div>} />
-        <Card icon="setup" title="Data backup" desc="Download all your setup and timetable (classes, teachers, mapping, rules, combined subjects, timetable) as one file. Keep it as a backup, or share it when asking for help."
-          actions={<PrintBtn onClick={() => exportJSON(cfg)} icon="download" light label={<>Download data backup (.json)</>} />} />
+        <Card icon="setup" title="Data backup" desc={`Download everything — classes, teachers, mapping, rules, timetable, substitution record, calendar and settings — as one file. Keep it on your phone or computer as a backup. ${cfg.lastBackupDl ? `Last downloaded ${new Date(cfg.lastBackupDl).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}.` : "Not downloaded yet."}`}
+          actions={<PrintBtn onClick={() => { downloadBackup(cfg); update((n) => { n.lastBackupDl = Date.now(); }); }} icon="download" light label={<>Download data backup (.json)</>} />} />
         <TeacherLinksPanel cfg={cfg} update={update} ask={ask} pubState={pubState} publishNow={publishNow} mobile={mobile} />
         <ExcelCard cfg={cfg} />
         <SafetyPanel cfg={cfg} update={update} ask={ask} />
+        <ChangeLogPanel cfg={cfg} />
         <Card icon="free" title="Leisure / free periods" desc="Four ways to print who is free. The substitution chart is the quickest to use on a notice board: find the day and period, and every free teacher is listed in that box."
           actions={<LeisureExport cfg={cfg} paper={paper} />} />
       </div>
@@ -4435,21 +4458,26 @@ function teacherLinkBase() { try { return window.location.origin.startsWith("htt
 function teacherLink(cfg, t) { const tk = ((cfg.teacherLinks || {}).tokens || {})[t]; return tk ? `${teacherLinkBase()}/?t=${tk}` : ""; }
 function buildTeacherPages(cfg) {
   const L = leisureData(cfg), tk = (cfg.teacherLinks || {}).tokens || {};
-  const today = isoToday(), dates = Array.from({ length: 8 }, (_, i) => isoShift(today, i));
+  const today = isoToday(), dates = Array.from({ length: 15 }, (_, i) => isoShift(today, i));
   const by = {};
   const ent = (t, dt) => ((by[t] || (by[t] = {}))[dt] || (by[t][dt] = { cover: [], coveredBy: [] }));
   for (const dt of dates) {
     const rec = (cfg.subs || {})[dt]; if (!rec) continue;
     const a = rec.assign || {};
     for (const t of Object.keys(rec.absent || {})) ent(t, dt).absent = rec.absent[t];
-    for (const n of subsNeeds(cfg, dt)) { const u = a[n.key]; ent(n.t, dt).coveredBy.push({ p: n.p, cls: n.cls, sub: n.sub, by: u || null }); if (u) ent(u, dt).cover.push({ p: n.p, cls: n.cls, sub: n.sub, for: n.t }); }
+    for (const n of subsNeeds(cfg, dt)) { const u = a[n.key], w = n.work ? { w: n.work } : {}; ent(n.t, dt).coveredBy.push({ p: n.p, cls: n.cls, sub: n.sub, by: u || null, ...w }); if (u) ent(u, dt).cover.push({ p: n.p, cls: n.cls, sub: n.sub, for: n.t, ...w }); }
   }
   const rows = [{ token: "_school", data: { school: cfg.school || "", year: cfg.year || "", logo: cfg.logoIcon || cfg.logo || "", days: cfg.days, periods: cfg.periods, dayNames: Object.fromEntries(cfg.days.map((d) => [d, DAY_FULL[d] || d])), fn: fnCount(cfg) } }];
   for (const t of cfg.singles) {
     const token = tk[t]; if (!token) continue;
     const week = {}; let load = 0;
     for (const d of cfg.days) week[d] = cfg.periods.map((_, p) => { const b = L.busy[t] && L.busy[t][d] ? L.busy[t][d][p] : null; if (b === "off") return "off"; if (!b) return null; load++; return { c: b.c, s: b.sub, k: b.combined ? 1 : 0 }; });
-    rows.push({ token, data: { t, ct: cfg.classes.filter((c) => cfg.classTeacher[c] === t), week, load, free: L.week[t], subs: by[t] || {} } });
+    const cal = {};
+    for (const dt of dates) { const e = calEntry(cfg, dt); if (!e) continue; const dd = dayOf(cfg, dt);
+      if (!dd) { cal[dt] = { k: "h", l: e.label || "" }; continue; }
+      const g = cfgOn(cfg, dt), off = isOffDay(cfg, t, dd);
+      cal[dt] = { k: e.kind === "follow" ? "f" : "s", l: e.label || "", d: dd, row: g.periods.map((_, p) => { if (off) return "off"; const b = teacherAt(g, t, dd, p); return b ? { c: b.c, s: b.sub, k: b.combined ? 1 : 0 } : null; }) }; }
+    rows.push({ token, data: { t, ct: cfg.classes.filter((c) => cfg.classTeacher[c] === t), week, load, free: L.week[t], subs: by[t] || {}, ...(Object.keys(cal).length ? { cal } : {}) } });
   }
   return rows;
 }
@@ -4662,7 +4690,9 @@ function CropModal({ src: src0, title, square, onDone, onCancel }) {
 }
 function readAsDataUrl(f) { return new Promise((res, rej) => { const rd = new FileReader(); rd.onload = () => res(rd.result); rd.onerror = () => rej(new Error("Couldn't read this file.")); rd.readAsDataURL(f); }); }
 /* ---------------- Extra duties: classes outside this timetable, non-teaching work ---------------- */
-var DUTY_KINDS = { class: "Class outside this timetable", duty: "Non-teaching duty" };
+var DUTY_KINDS = { class: "Class outside this timetable", lss: "LSS / USS coaching", duty: "Non-teaching duty" };
+var DUTY_STYLE = { class: ["#7c3aed", "#f4effb", "Class"], lss: ["#2563eb", "#eef4ff", "LSS/USS"], duty: ["#647189", "#f6f8fa", "Duty"] };
+function dutyCover(x) { return x.cover !== undefined ? !!x.cover : x.kind === "class"; }
 function extraAt(cfg, t, d, p) { const L = cfg.extraDuties || []; for (let i = 0; i < L.length; i++) { const x = L[i]; if (x.t === t && (x.slots || []).some((s) => s[0] === d && +s[1] === p)) return x; } return null; }
 function extraCount(cfg, t) { let n = 0; const wd = teacherWorkDays(cfg, t); for (const x of cfg.extraDuties || []) if (x.t === t) for (const s of x.slots || []) if (wd.includes(s[0]) && +s[1] < cfg.periods.length) n++; return n; }
 function extraConflicts(cfg, x) {
@@ -4687,18 +4717,19 @@ function ExtraDutiesPanel({ cfg, update, ask, mobile }) {
   const byT = {}; list.forEach((x) => (byT[x.t] || (byT[x.t] = [])).push(x));
   return (
     <div style={{ ...card, marginBottom: 16 }}>
-      <Panelhead text="Extra duties — lower-section classes & non-teaching work" count={list.length ? `${list.length} dut${list.length === 1 ? "y" : "ies"}` : "none"} />
+      <Panelhead text="Extra duties — lower-section classes, LSS / USS & non-teaching work" count={list.length ? `${list.length} dut${list.length === 1 ? "y" : "ies"}` : "none"} />
       <div style={{ padding: 14, display: "grid", gap: 12 }}>
+        {list.length > 0 && <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>{Object.entries(DUTY_STYLE).map(([k, [fg, bg, l]]) => { const n = list.filter((x) => (x.kind || "duty") === k).reduce((a, x) => a + x.slots.length, 0); return <span key={k} style={{ fontSize: 12, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: bg, color: fg, border: `1px solid ${fg}33` }}>{l}: {n} period{n === 1 ? "" : "s"} / week</span>; })}<span style={{ marginLeft: "auto" }}><PrintBtn onClick={() => exportExtraDutiesPDF(cfg)} icon="pdf" light label="Extra-duty report" sub="A4 · every teacher" /></span></div>}
         <div className="tt-callout">Some teachers also take classes that are <b>not in this timetable</b> (for example LP section) or have <b>weekly non-teaching work</b> (library, office, PTA). Add those periods here: the generator never puts a lesson there, they count as busy in the leisure reports, and Daily substitution never picks the teacher then. If the teacher is absent, a lower-section class is also listed for cover.</div>
         {Object.keys(byT).sort().map((t) => (
           <div key={t} style={{ border: `1px solid ${C.line}`, borderRadius: 14, padding: 10, display: "grid", gap: 8 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ width: 32, height: 32, borderRadius: 10, display: "grid", placeItems: "center", background: `linear-gradient(135deg, ${th.g1}, ${th.g2})`, color: "#fff", fontFamily: mono, fontWeight: 800, fontSize: 11 }}>{t.slice(0, 3)}</span><b style={{ fontFamily: mono }}>{t}</b><span style={{ fontSize: 12, color: C.sub }}>{byT[t].reduce((a, x) => a + x.slots.length, 0)} period(s) a week outside the timetable</span></div>
             {byT[t].map((x) => { const cf = extraConflicts(cfg, x); return (
-              <div key={x.id} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "8px 10px", borderRadius: 10, background: x.kind === "class" ? "#f4effb" : "#f6f8fa" }}>
-                <span style={{ fontSize: 10.5, fontWeight: 800, padding: "2px 8px", borderRadius: 10, background: x.kind === "class" ? "#7c3aed" : "#647189", color: "#fff", textTransform: "uppercase", letterSpacing: 0.4 }}>{x.kind === "class" ? "Class" : "Duty"}</span>
+              <div key={x.id} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "8px 10px", borderRadius: 10, background: (DUTY_STYLE[x.kind] || DUTY_STYLE.duty)[1] }}>
+                <span style={{ fontSize: 10.5, fontWeight: 800, padding: "2px 8px", borderRadius: 10, background: (DUTY_STYLE[x.kind] || DUTY_STYLE.duty)[0], color: "#fff", textTransform: "uppercase", letterSpacing: 0.4 }}>{(DUTY_STYLE[x.kind] || DUTY_STYLE.duty)[2]}</span>
                 <div style={{ minWidth: 0, flex: "1 1 200px" }}>
                   <div style={{ fontWeight: 800, fontSize: 13.5 }}>{x.label}</div>
-                  <div style={{ fontSize: 12, color: C.sub }}>{slotTxt(x)}</div>
+                  <div style={{ fontSize: 12, color: C.sub }}>{slotTxt(x)}{dutyCover(x) ? " · gets a substitute when absent" : ""}</div>
                   {cf.length > 0 && <div style={{ fontSize: 12, color: C.clash, fontWeight: 600 }}>Clashes with the timetable: {cf.map((k) => `${k.c} ${(DAY_FULL[k.d] || k.d).slice(0, 3)} P${k.p + 1}`).join(", ")}</div>}
                 </div>
                 {cf.length > 0 && <button className="tt-btn" onClick={() => freeConflicts(x)} style={{ ...ghostBtn, padding: "4px 10px", fontSize: 12, color: C.clash }}>Free these periods</button>}
@@ -4715,10 +4746,10 @@ function ExtraDutiesPanel({ cfg, update, ask, mobile }) {
                 <select className="tt-sel" value={form.t} onChange={(e) => setForm({ ...form, t: e.target.value })} style={{ height: 36 }}>{cfg.singles.map((t) => <option key={t}>{t}</option>)}</select>
               </label>
               <label style={{ display: "grid", gap: 4, fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase" }}>Type
-                <select className="tt-sel" value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })} style={{ height: 36, fontFamily: sans }}>{Object.entries(DUTY_KINDS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
+                <select className="tt-sel" value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value, cover: e.target.value === "class" })} style={{ height: 36, fontFamily: sans }}>{Object.entries(DUTY_KINDS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
               </label>
               <label style={{ display: "grid", gap: 4, fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase" }}>What is it
-                <input className="tt-in" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder={form.kind === "class" ? "e.g. LP 3 B — Maths" : "e.g. Library duty"} style={{ height: 36, fontFamily: sans, fontSize: 13 }} />
+                <input className="tt-in" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder={form.kind === "class" ? "e.g. LP 3 B — Maths" : form.kind === "lss" ? "e.g. USS coaching — Std 7" : "e.g. Library duty"} style={{ height: 36, fontFamily: sans, fontSize: 13 }} />
               </label>
             </div>
             <div style={{ fontSize: 12, fontWeight: 700, color: C.sub }}>Tap the periods every week:</div>
@@ -4733,6 +4764,7 @@ function ExtraDutiesPanel({ cfg, update, ask, mobile }) {
               </table>
             </div>
             <div style={{ fontSize: 11.5, color: C.sub }}>Amber boxes show where {form.t} already teaches in this timetable — choosing one creates a clash you can free afterwards.</div>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}><input type="checkbox" checked={dutyCover(form)} onChange={(e) => setForm({ ...form, cover: e.target.checked })} /> Find a substitute for these periods when {form.t} is absent</label>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}><button className="tt-btn" onClick={save} style={solidBtn}>Save duty</button><button className="tt-btn" onClick={() => setForm(null)} style={ghostBtn}>Cancel</button></div>
           </div>
         )}
@@ -4741,13 +4773,24 @@ function ExtraDutiesPanel({ cfg, update, ask, mobile }) {
     </div>
   );
 }
+function exportExtraDutiesPDF(cfg) {
+  const rows = cfg.singles.map((t) => { const o = { t, tt: 0, class: 0, lss: 0, duty: 0, free: 0 }; for (const d of teacherWorkDays(cfg, t)) for (let p = 0; p < cfg.periods.length; p++) { const r = teacherAt(cfg, t, d, p); if (!r) o.free++; else if (r.extra) o[DUTY_STYLE[r.kind] ? r.kind : "duty"]++; else o.tt++; } return o; }).filter((o) => o.class + o.lss + o.duty > 0);
+  const det = (cfg.extraDuties || []).slice().sort((a, b) => a.t.localeCompare(b.t)).map((x) => `<tr><td class="m">${esc(x.t)}</td><td><span class="k k-${esc(x.kind || "duty")}">${esc((DUTY_STYLE[x.kind] || DUTY_STYLE.duty)[2])}</span></td><td class="l">${esc(x.label)}</td><td class="l">${esc((x.slots || []).slice().sort((a, b) => cfg.days.indexOf(a[0]) - cfg.days.indexOf(b[0]) || a[1] - b[1]).map(([d, p]) => `${(DAY_FULL[d] || d).slice(0, 3)} P${+p + 1}`).join(", "))}</td><td>${(x.slots || []).length}</td><td>${dutyCover(x) ? "Yes" : "—"}</td></tr>`).join("");
+  const css = "@page{size:A4 portrait;margin:1cm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact;box-sizing:border-box} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#16213a}" + lhCss() +
+    " table{border-collapse:collapse;width:100%;border:2px solid #0e6b73;margin-bottom:12px} th,td{border:1px solid #b9d3d3;padding:5px 7px;font-size:11.5px;text-align:center} thead th{background:#0e6b73;color:#fff} thead{display:table-header-group} tr{page-break-inside:avoid} td.l{text-align:left} td.m{font-family:'Courier New',monospace;font-weight:800} h3{font-size:14px;color:#0a4f55;margin:12px 0 6px} .k{display:inline-block;padding:1px 8px;border-radius:9px;color:#fff;font-weight:800;font-size:10px} .k-class{background:#7c3aed} .k-lss{background:#2563eb} .k-duty{background:#647189} td.b{font-weight:800;background:#eef7f7}";
+  const body = pdfLetterhead(cfg, "Extra duties", "Periods outside this timetable", `${rows.length} teacher${rows.length === 1 ? "" : "s"} · ${(cfg.extraDuties || []).length} dut${(cfg.extraDuties || []).length === 1 ? "y" : "ies"}`) +
+    `<h3>Periods a week</h3><table><thead><tr><th>Teacher</th><th>In this timetable</th><th>Classes outside</th><th>LSS / USS</th><th>Non-teaching</th><th>Total busy</th><th>Free</th></tr></thead><tbody>${rows.map((o) => `<tr><td class="m">${esc(o.t)}</td><td>${o.tt}</td><td>${o.class || "—"}</td><td>${o.lss || "—"}</td><td>${o.duty || "—"}</td><td class="b">${o.tt + o.class + o.lss + o.duty}</td><td>${o.free}</td></tr>`).join("") || '<tr><td colspan="7">No extra duties.</td></tr>'}</tbody></table>` +
+    `<h3>All extra duties</h3><table><thead><tr><th>Teacher</th><th>Type</th><th>What</th><th>When</th><th>Periods</th><th>Substitute when absent</th></tr></thead><tbody>${det || '<tr><td colspan="6">None</td></tr>'}</tbody></table>` +
+    pdfFooter(esc(cfg.school || "") + " &middot; Extra duties", ["Headmaster"], cfg, "teacher");
+  openPrint(esc(cfg.school) + " - Extra duties", css, body);
+}
 function fillSubs(n, date) {
   const r = n.subs && n.subs[date]; if (!r) return 0;
   r.assign = r.assign || {};
   const cnt = subCounts(n, date); let k = 0;
   for (const nd of subsNeeds(n, date)) {
     if (r.assign[nd.key]) continue;
-    const c = subCandidates(n, date, nd, cnt)[0];
+    const c = subCandidates(n, date, nd, cnt).find((x) => !x.blocked);
     if (c) { r.assign[nd.key] = c.u; k++; cnt.month[c.u] = (cnt.month[c.u] || 0) + 1; cnt.rot[c.u] = (cnt.rot[c.u] || 0) + 1; if (n.subsOwed && n.subsOwed[c.u] > 0) { n.subsOwed = { ...n.subsOwed }; n.subsOwed[c.u]--; if (!n.subsOwed[c.u]) delete n.subsOwed[c.u]; } }
   }
   return k;
@@ -4761,6 +4804,7 @@ var ACCESS_PRESETS = {
   subs: { label: "Daily substitution only", tabs: ["subs"], reset: false, manage: false },
   none: { label: "No access", tabs: [], reset: false, manage: false },
 };
+var SETUP_PARTS = [["school", "School name, logo, signature & seal"], ["year", "New academic year"], ["days", "Working days & periods"], ["classes", "Classes, subjects & teacher lists"], ["ctimport", "Class teachers (import)"], ["availability", "Teacher availability"], ["duties", "Extra duties"], ["password", "Admin password"]];
 function normUser(u) { return String(u || "").trim().toLowerCase().replace(/@.*$/, ""); }
 function accessEntry(cfg, k) {
   const a = (cfg.access || {})[k]; if (a) return a;
@@ -4772,7 +4816,7 @@ function accessFor(cfg, me) {
   if (me === "") { const d = cfg.accessDefault || "full"; return { ...(ACCESS_PRESETS[d] || ACCESS_PRESETS.full), preset: d, who: "", listed: false }; }
   const k = normUser(me); let e = accessEntry(cfg, k); const listed = !!e;
   if (!e) e = { preset: cfg.accessDefault || "full" };
-  const p = e.preset === "custom" ? { label: "Custom access", tabs: (e.tabs || []).filter((t) => TABS.some((x) => x[0] === t)), reset: !!e.reset, manage: !!e.manage } : (ACCESS_PRESETS[e.preset] || ACCESS_PRESETS.full);
+  const p = e.preset === "custom" ? { label: "Custom access", tabs: (e.tabs || []).filter((t) => TABS.some((x) => x[0] === t)), reset: !!e.reset, manage: !!e.manage, setup: Array.isArray(e.setup) ? e.setup.filter((k) => SETUP_PARTS.some((x) => x[0] === k)) : null } : (ACCESS_PRESETS[e.preset] || ACCESS_PRESETS.full);
   return { ...p, preset: e.preset, who: k, listed };
 }
 function StaffAccessCard({ cfg, update, me }) {
@@ -4816,6 +4860,11 @@ function StaffAccessCard({ cfg, update, me }) {
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                     {TABS.map(([k, l]) => { const on = (e.tabs || []).includes(k); return <span key={k} role="checkbox" aria-checked={on} onClick={() => setUser(u, { ...e, tabs: on ? (e.tabs || []).filter((x) => x !== k) : [...(e.tabs || []), k] })} style={chk(on)}><Icon name={k} size={14} />{l}</span>; })}
                   </div>
+                  {(e.tabs || []).includes("setup") && (() => { const parts = Array.isArray(e.setup) ? e.setup : SETUP_PARTS.map((x) => x[0]); return (
+                    <div style={{ display: "grid", gap: 6, padding: "8px 10px", borderRadius: 10, background: "#f8fafc", border: `1px dashed ${C.line}` }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: C.sub }}>Classes & setup — which parts:</div>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{SETUP_PARTS.map(([k, l]) => { const on = parts.includes(k); return <span key={k} role="checkbox" aria-checked={on} onClick={() => setUser(u, { ...e, setup: on ? parts.filter((x) => x !== k) : [...parts, k] })} style={{ ...chk(on), fontSize: 12, padding: "4px 9px" }}>{on ? "✓ " : ""}{l}</span>; })}</div>
+                    </div>); })()}
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                     <span role="checkbox" aria-checked={!!e.reset} onClick={() => setUser(u, { ...e, reset: !e.reset })} style={{ ...chk(!!e.reset), ...(e.reset ? { borderColor: C.clash, color: C.clash, background: C.clashSoft } : {}) }}>⚠ Reset & Master reset buttons</span>
                     <span role="checkbox" aria-checked={!!e.manage} onClick={() => setUser(u, { ...e, manage: !e.manage })} style={{ ...chk(!!e.manage), ...(e.manage ? { borderColor: C.clash, color: C.clash, background: C.clashSoft } : {}) }}>⚠ Can change Staff access</span>
@@ -4835,8 +4884,197 @@ function StaffAccessCard({ cfg, update, me }) {
     </div>
   );
 }
+/* ---------------- Substitution exemptions ---------------- */
+// cfg.subsExempt[t] = { mode: "always" | "dates" | "reduce", from, to, count, maxWeek, note }
+function exemptInfo(cfg, t, date) {
+  const x = (cfg.subsExempt || {})[t]; if (!x) return null;
+  if (x.mode === "always") return { off: true, text: "exempt" + (x.note ? ` — ${x.note}` : "") };
+  if (x.mode === "dates") { const on = (!x.from || date >= x.from) && (!x.to || date <= x.to); return on ? { off: true, text: `exempt until ${x.to ? isoNice(x.to) : "further notice"}` + (x.note ? ` — ${x.note}` : "") } : null; }
+  return null;
+}
+function weekDuties(cfg, t, date) {
+  const wd = new Date(date + "T00:00").getDay(), mon = isoShift(date, -((wd + 6) % 7)), sun = isoShift(mon, 6); let n = 0;
+  for (const [dt, r] of Object.entries(cfg.subs || {})) if (dt >= mon && dt <= sun) for (const u of Object.values(r.assign || {})) if (u === t) n++;
+  return n;
+}
+function SubsExemptPanel({ cfg, update, ask, date, limited }) {
+  const th = CUR_TH || THEMES.teal;
+  const [form, setForm] = useState(null);
+  const ex = cfg.subsExempt || {};
+  const list = Object.keys(ex).sort();
+  const leisure = useMemo(() => rotationRank({ ...cfg, subsExempt: {} }).leisure, [cfg]);
+  const describe = (t) => { const x = ex[t]; const bits = [];
+    if (x.mode === "always") bits.push("Never given substitution");
+    if (x.mode === "dates") bits.push(`No substitution ${x.from ? "from " + isoNice(x.from) : ""}${x.to ? " to " + isoNice(x.to) : ""}`);
+    if (x.mode === "reduce") bits.push(+x.count < (leisure[t] || 0) ? `Counted as ${x.count} free period${+x.count === 1 ? "" : "s"} a week (has ${leisure[t] || 0}) — a smaller share` : `Normal share (${leisure[t] || 0} free periods a week)`);
+    if (+x.maxWeek > 0) bits.push(`at most ${x.maxWeek} a week`);
+    return bits.join(" · ") + (x.note ? ` — ${x.note}` : ""); };
+  const save = () => { if (!form.t) return; update((n) => { n.subsExempt = { ...(n.subsExempt || {}) }; const x = { mode: form.mode, note: (form.note || "").trim() || undefined }; if (form.mode === "dates") { x.from = form.from || undefined; x.to = form.to || undefined; } if (form.mode === "reduce") x.count = Math.max(0, +form.count || 0); if (+form.maxWeek > 0) x.maxWeek = +form.maxWeek; Object.keys(x).forEach((k) => x[k] === undefined && delete x[k]); n.subsExempt[form.t] = x; }); setForm(null); };
+  const lab = { display: "grid", gap: 4, fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.3 };
+  return (
+    <div style={card}>
+      <Panelhead text="Exemptions & reduced share" count={list.length ? `${list.length} teacher${list.length === 1 ? "" : "s"}` : "none"} />
+      <div style={{ padding: 12, display: "grid", gap: 10 }}>
+        <div className="tt-callout">Keep some teachers out of substitution — always, or between two dates (for example while on a special duty) — or give them a <b>smaller share</b> by counting fewer of their free periods. You can also limit how many duties anyone gets in a week. Exempt teachers are never filled in automatically; you can still choose them by hand.</div>
+        {list.map((t) => { const on = exemptInfo(cfg, t, date); return (
+          <div key={t} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "8px 10px", border: `1px solid ${C.line}`, borderRadius: 12, background: on ? "#fdf6ec" : "#fff" }}>
+            <b style={{ fontFamily: mono, minWidth: 60 }}>{t}</b>
+            <span style={{ flex: "1 1 220px", fontSize: 12.5, color: C.ink }}>{describe(t)}</span>
+            {on && <span style={{ fontSize: 10.5, fontWeight: 800, padding: "2px 8px", borderRadius: 10, background: C.accent, color: "#fff" }}>EXEMPT ON {isoNice(date).toUpperCase()}</span>}
+            {!limited && <><button className="tt-btn" onClick={() => setForm({ t, ...ex[t], count: ex[t].count ?? Math.max(0, (leisure[t] || 0) - 3), maxWeek: ex[t].maxWeek || "" })} style={{ ...ghostBtn, padding: "4px 10px", fontSize: 12 }}>Edit</button>
+              <button className="tt-btn" onClick={() => ask(`Remove the exemption for ${t}?`, () => update((n) => { const e = { ...(n.subsExempt || {}) }; delete e[t]; n.subsExempt = e; }))} style={{ ...ghostBtn, padding: "4px 10px", fontSize: 12, color: C.clash }}>Remove</button></>}
+          </div>); })}
+        {!limited && !form && <div><button className="tt-btn" onClick={() => setForm({ t: cfg.singles.find((t) => !ex[t]) || cfg.singles[0], mode: "always", from: date, to: isoShift(date, 30), count: 2, maxWeek: "", note: "" })} style={solidBtn}>+ Add exemption / reduction</button></div>}
+        {form && (
+          <div style={{ border: `1.5px solid ${th.accent}55`, borderRadius: 14, padding: 12, display: "grid", gap: 10, background: "#fbfdfd" }}>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+              <label style={lab}>Teacher<select className="tt-sel" value={form.t} onChange={(e) => setForm({ ...form, t: e.target.value, count: Math.max(0, (leisure[e.target.value] || 0) - 3) })} style={{ width: 120, height: 34 }}>{cfg.singles.map((t) => <option key={t}>{t}</option>)}</select></label>
+              <label style={lab}>What<select className="tt-sel" value={form.mode} onChange={(e) => setForm({ ...form, mode: e.target.value })} style={{ width: 250, height: 34, fontFamily: sans }}>
+                <option value="always">Exempt — never give substitution</option><option value="dates">Exempt between two dates</option><option value="reduce">Reduce share (count fewer free periods)</option></select></label>
+              {form.mode === "dates" && <><label style={lab}>From<input type="date" className="tt-in" value={form.from || ""} onChange={(e) => setForm({ ...form, from: e.target.value })} style={{ height: 34, fontFamily: sans }} /></label>
+                <label style={lab}>To<input type="date" className="tt-in" value={form.to || ""} onChange={(e) => setForm({ ...form, to: e.target.value })} style={{ height: 34, fontFamily: sans }} /></label></>}
+              {form.mode === "reduce" && <label style={lab}>Count as free periods / week<input type="number" min={0} max={leisure[form.t] || 0} className="tt-in" value={form.count} onChange={(e) => setForm({ ...form, count: e.target.value })} style={{ width: 120, height: 34, textAlign: "center" }} /></label>}
+              <label style={lab}>Max duties / week (optional)<input type="number" min={0} className="tt-in" value={form.maxWeek} onChange={(e) => setForm({ ...form, maxWeek: e.target.value })} placeholder="no limit" style={{ width: 130, height: 34, textAlign: "center", fontFamily: sans }} /></label>
+              <label style={{ ...lab, flex: "1 1 160px" }}>Reason (optional)<input className="tt-in" value={form.note || ""} onChange={(e) => setForm({ ...form, note: e.target.value })} placeholder="e.g. LSS coaching, HM duties" style={{ height: 34, fontFamily: sans }} /></label>
+            </div>
+            {form.mode === "reduce" && <div style={{ fontSize: 12, color: C.sub }}>{form.t} has <b>{leisure[form.t] || 0}</b> free periods a week. Counting them as <b>{form.count || 0}</b> gives about {Math.round(((+form.count || 0) / Math.max(1, leisure[form.t] || 0)) * 100)}% of their normal share.</div>}
+            <div style={{ display: "flex", gap: 8 }}><button className="tt-btn" onClick={save} style={solidBtn}>Save</button><button className="tt-btn" onClick={() => setForm(null)} style={ghostBtn}>Cancel</button></div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+/* ---------------- Change history: who changed what, and when ---------------- */
+var LOG_NAMES = { school: "school name", year: "academic year", days: "working days", periods: "periods per day", fnCount: "FN / AN split", classes: "classes", singles: "teachers", subjects: "subjects", classTeacher: "class teachers", bkey: "mapping", stdPeriods: "standard periods", combined: "combined subjects", rules: "scheduling rules", classRules: "class rules", twice: "twice-a-day rules", locked: "frozen periods", commonPeriods: "common periods", teacherDays: "teacher availability", classMaxP: "periods per class", access: "staff access", accessDefault: "staff access", roles: "staff access", subsExempt: "substitution exemptions", subsMode: "substitution method", subsAuto: "substitution settings", subsPreferClass: "substitution settings", subsRotationStart: "substitution counting", extraDuties: "extra duties", rooms: "rooms & labs", prefs: "teaching-quality settings", logo: "school logo", logoIcon: "school logo", wmApp: "watermark", wmPdf: "watermark", hmSign: "HM signature", seal: "school seal", hmTitle: "signature title", hmName: "signature name", signOnClass: "signature settings", signOnTeacher: "signature settings", signSize: "signature settings", sealSize: "signature settings", sealPos: "signature settings", versions: "saved versions", teacherLinks: "teacher links", adminPw: "admin password", snapshots: "safety copies" };
+var LOG_SKIP = ["grid", "subs", "calendar", "changeLog", "subsOwed", "lastBackupDl", "combinedV2", "combinedV3"];
+function describeChange(a, b) {
+  const out = []; if (!a || !b) return out;
+  const ds = (d) => (DAY_FULL[d] || d || "").slice(0, 3);
+  const cells = [];
+  for (const c of b.classes || []) for (const d of b.days || []) {
+    const x = (a.grid && a.grid[c] && a.grid[c][d]) || [], y = (b.grid && b.grid[c] && b.grid[c][d]) || [];
+    for (let p = 0, n = Math.max(x.length, y.length); p < n; p++) { const u = x[p] || [], v = y[p] || []; if ((u[0] || "") !== (v[0] || "") || (u[1] || "") !== (v[1] || "")) cells.push([c, d, p, u, v]); }
+  }
+  if (cells.length) {
+    const txt = (s) => (s && s[0] ? `${s[1] || ""} ${s[0]}`.trim() : "free"), cl = [...new Set(cells.map((x) => x[0]))];
+    out.push({ area: cells.length <= 3 ? "grid" : "grid+", text: cells.length <= 3 ? cells.map(([c, d, p, u, v]) => `${c} ${ds(d)} P${p + 1}: ${txt(u)} → ${txt(v)}`).join("; ") : `${cells.length} timetable periods changed in ${cl.length} class${cl.length === 1 ? "" : "es"} (${cl.slice(0, 6).join(", ")}${cl.length > 6 ? " …" : ""})` });
+  }
+  const sa = a.subs || {}, sb = b.subs || {};
+  for (const dt of new Set([...Object.keys(sa), ...Object.keys(sb)])) {
+    const x = sa[dt] || {}, y = sb[dt] || {}; if (JSON.stringify(x) === JSON.stringify(y)) continue;
+    const bits = [], ax = x.absent || {}, ay = y.absent || {};
+    const added = Object.keys(ay).filter((t) => !ax[t]), gone = Object.keys(ax).filter((t) => !ay[t]), part = Object.keys(ay).filter((t) => ax[t] && ax[t] !== ay[t]);
+    if (added.length) bits.push(`marked ${added.join(", ")} absent`);
+    if (gone.length) bits.push(`${gone.join(", ")} no longer absent`);
+    if (part.length) bits.push(`changed the absent periods of ${part.join(", ")}`);
+    const gx = x.assign || {}, gy = y.assign || {}, ch = [...new Set([...Object.keys(gx), ...Object.keys(gy)])].filter((k) => gx[k] !== gy[k]);
+    const hand = ch.filter((k) => gx[k] && gy[k]), set = ch.filter((k) => gy[k] && !gx[k]).length, cut = ch.filter((k) => gx[k] && !gy[k]).length;
+    if (hand.length) bits.push(hand.slice(0, 3).map((k) => `P${+k.split("|")[1] + 1} for ${k.split("|")[0]}: ${gx[k]} → ${gy[k]}`).join("; "));
+    if (set) bits.push(`${set} substitute${set === 1 ? "" : "s"} chosen`);
+    if (cut && !gone.length) bits.push(`${cut} choice${cut === 1 ? "" : "s"} cleared`);
+    if ((x.note || "") !== (y.note || "")) bits.push("slip note edited");
+    if (JSON.stringify(x.work || {}) !== JSON.stringify(y.work || {})) bits.push("work note edited");
+    if (JSON.stringify(x.reason || {}) !== JSON.stringify(y.reason || {}) && !added.length && !gone.length) bits.push("reason changed");
+    if (bits.length) out.push({ area: "subs:" + dt, text: `Substitution ${isoNice(dt)}: ${bits.join(", ")}` });
+  }
+  const ca = a.calendar || {}, cb = b.calendar || {}, calCh = {};
+  for (const dt of [...new Set([...Object.keys(ca), ...Object.keys(cb)])].sort()) {
+    if (JSON.stringify(ca[dt] || null) === JSON.stringify(cb[dt] || null)) continue;
+    const edited = ca[dt] && cb[dt] && ca[dt].kind === "special" && cb[dt].kind === "special" && JSON.stringify(ca[dt].grid) !== JSON.stringify(cb[dt].grid);
+    const what = edited ? "special timetable edited" : cb[dt] ? dayLabel(b, dt) : "back to a normal day";
+    (calCh[what] || (calCh[what] = [])).push(dt);
+  }
+  for (const [what, ds] of Object.entries(calCh)) out.push({ area: "cal:" + ds[0], text: ds.length > 2 ? `Calendar ${isoNice(ds[0])} – ${isoNice(ds[ds.length - 1])} (${ds.length} days): ${what}` : ds.map((dt) => `Calendar ${isoNice(dt)}: ${what}`).join("; ") });
+  const named = new Set(), ids = (L) => (L || []).map((x) => x && (x.id || x.at || x.name)).join(",");
+  for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) {
+    if (LOG_SKIP.includes(k)) continue;
+    const u = a[k], v = b[k]; if (u === v) continue;
+    if (k === "snapshots" || k === "versions") { if (ids(u) === ids(v)) continue; }
+    else if (typeof u === "string" || typeof v === "string" || typeof u === "number" || typeof v === "number" || typeof u === "boolean" || typeof v === "boolean") { if (u === v) continue; }
+    else if (JSON.stringify(u) === JSON.stringify(v)) continue;
+    const nm = LOG_NAMES[k] || k; if (named.has(nm)) continue; named.add(nm);
+    let text = `Changed ${nm}`;
+    const diffList = (word) => { const add = (v || []).filter((t) => !(u || []).includes(t)), del = (u || []).filter((t) => !(v || []).includes(t)); return [add.length ? `Added ${word} ${add.join(", ")}` : "", del.length ? `Removed ${word} ${del.join(", ")}` : ""].filter(Boolean).join("; ") || `Changed ${nm}`; };
+    if (k === "singles") text = diffList("teacher");
+    else if (k === "classes") text = diffList("class");
+    else if (k === "subjects") text = diffList("subject");
+    else if (k === "bkey" || k === "classTeacher") { const ch = Object.keys({ ...(u || {}), ...(v || {}) }).filter((c) => JSON.stringify((u || {})[c]) !== JSON.stringify((v || {})[c])); text = `Changed ${nm} of ${ch.slice(0, 6).join(", ")}${ch.length > 6 ? " …" : ""}`; }
+    else if (k === "snapshots") text = (v || []).length >= (u || []).length ? "Saved a safety copy" : "Deleted a safety copy";
+    else if (k === "versions") text = (v || []).length >= (u || []).length ? "Saved a timetable version" : "Deleted a saved version";
+    else if (k === "school") text = `School name → ${v || ""}`;
+    else if (k === "subsMode") text = `Substitution method → ${v === "turn" ? "equal turns" : v === "fit" ? "best fit" : "fair share"}`;
+    out.push({ area: "k:" + nm, text });
+  }
+  return out;
+}
+function logChange(prev, next, by) {
+  let ch; try { ch = describeChange(prev, next); } catch (e) { return; }
+  if (!ch.length) return;
+  const L = Array.isArray(next.changeLog) ? next.changeLog.slice(-299) : [], now = Date.now(), who = by || "";
+  for (const c of ch) {
+    let hit = null;
+    for (let i = L.length - 1; i >= Math.max(0, L.length - 6); i--) { const x = L[i]; if (x && x.area === c.area && (x.by || "") === who && now - x.at < 180000) { hit = x; break; } }
+    if (hit) { hit.at = now; if (c.area.startsWith("k:")) hit.parts = [c.text]; else if (!hit.parts.includes(c.text)) { hit.parts.push(c.text); if (hit.parts.length > 8) hit.parts.splice(0, hit.parts.length - 8); } }
+    else L.push({ at: now, by: who, area: c.area, parts: [c.text] });
+  }
+  next.changeLog = L.slice(-300);
+}
+function logKind(a) { return a === "grid" || a === "grid+" ? "tt" : a.startsWith("subs:") || a.startsWith("cal:") ? "subs" : a === "undo" ? "undo" : "setup"; }
+var LOG_KINDS = { tt: ["Timetable", "#2b5fa8", "#e8f2ff"], subs: ["Substitution & calendar", "#94620b", "#fbf2dd"], setup: ["Setup & settings", "#0a4f55", "#e1f0f0"], undo: ["Undo / redo", "#647189", "#eef1f5"] };
+function ChangeLogPanel({ cfg }) {
+  const th = CUR_TH || THEMES.teal;
+  const [who, setWho] = useState(""), [kind, setKind] = useState(""), [q, setQ] = useState(""), [more, setMore] = useState(60);
+  const all = (cfg.changeLog || []).slice().reverse();
+  const people = [...new Set(all.map((x) => x.by || "—"))].sort();
+  const list = all.filter((x) => (!who || (x.by || "—") === who) && (!kind || logKind(x.area) === kind) && (!q.trim() || x.parts.join(" ").toLowerCase().includes(q.trim().toLowerCase())));
+  const dayK = (t) => new Date(t).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+  const csv = () => downloadText("change_history.csv", ["When,Who,Type,What"].concat(list.map((x) => [new Date(x.at).toLocaleString(), x.by || "", LOG_KINDS[logKind(x.area)][0], x.parts.join(" | ")].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","))).join("\n"));
+  let lastDay = "";
+  return (
+    <div style={{ ...card, padding: 18, position: "relative" }}>
+      <span aria-hidden="true" style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 4, background: `linear-gradient(180deg, ${th.g1}, ${th.g2})` }} />
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8, flexWrap: "wrap" }}>
+        <span style={{ width: 40, height: 40, borderRadius: 12, display: "grid", placeItems: "center", background: `${th.accent}14`, color: th.accent, flexShrink: 0, fontSize: 18 }}>🕘</span>
+        <div style={{ fontSize: 15.5, fontWeight: 800, color: C.ink }}>Change history</div>
+        <span style={{ marginLeft: "auto", fontSize: 11.5, fontWeight: 700, padding: "2px 10px", borderRadius: 20, background: `${th.accent}14`, color: th.accent }}>{all.length} change{all.length === 1 ? "" : "s"} kept</span>
+      </div>
+      <div className="tt-callout" style={{ marginBottom: 12 }}>Every change is recorded with <b>who</b> made it and <b>when</b> — timetable periods, substitution, the calendar and settings. Changes made by one person within a few minutes are grouped together. The latest 300 are kept.</div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+        <select className="tt-sel" value={who} onChange={(e) => setWho(e.target.value)} style={{ width: 150, height: 34, fontFamily: sans, fontSize: 13 }}><option value="">Everyone</option>{people.map((p) => <option key={p} value={p}>{p}</option>)}</select>
+        <select className="tt-sel" value={kind} onChange={(e) => setKind(e.target.value)} style={{ width: 200, height: 34, fontFamily: sans, fontSize: 13 }}><option value="">All changes</option>{Object.entries(LOG_KINDS).map(([k, [l]]) => <option key={k} value={k}>{l}</option>)}</select>
+        <input className="tt-in" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search, e.g. 7 B or AB" style={{ flex: "1 1 160px", maxWidth: 260, height: 34, fontFamily: sans, fontSize: 13 }} />
+        {list.length > 0 && <button className="tt-btn" onClick={csv} style={{ ...ghostBtn, fontSize: 12.5 }}>Download (CSV)</button>}
+      </div>
+      {list.length === 0 ? <div style={{ fontSize: 12.5, color: C.sub }}>{all.length ? "Nothing matches." : "No changes recorded yet — they appear here from now on."}</div> : (
+        <div className="tt-scroll" style={{ display: "grid", gap: 6, maxHeight: 460, overflowY: "auto" }}>
+          {list.slice(0, more).map((x, i) => { const dk = dayK(x.at), head = dk !== lastDay; lastDay = dk; const [kl, fg, bg] = LOG_KINDS[logKind(x.area)]; return (
+            <React.Fragment key={x.at + "-" + i}>
+              {head && <div style={{ fontSize: 11.5, fontWeight: 800, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5, marginTop: i ? 6 : 0 }}>{dk}</div>}
+              <div style={{ display: "grid", gridTemplateColumns: "54px 1fr", gap: 10, padding: "7px 10px", borderRadius: 10, border: `1px solid ${C.line}`, background: "#fff" }}>
+                <span style={{ fontFamily: mono, fontSize: 12, color: C.sub, paddingTop: 1 }}>{new Date(x.at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}</span>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginBottom: 2 }}>
+                    <b style={{ fontFamily: mono, fontSize: 12.5 }}>👤 {x.by || "—"}</b>
+                    <span style={{ fontSize: 10, fontWeight: 800, padding: "1px 7px", borderRadius: 9, background: bg, color: fg, textTransform: "uppercase", letterSpacing: 0.3 }}>{kl}</span>
+                  </div>
+                  {x.parts.map((p, j) => <div key={j} style={{ fontSize: 12.5, color: C.ink, wordBreak: "break-word" }}>{p}</div>)}
+                </div>
+              </div>
+            </React.Fragment>); })}
+          {list.length > more && <button className="tt-btn" onClick={() => setMore(more + 100)} style={{ ...ghostBtn, justifySelf: "start", fontSize: 12.5 }}>Show older ({list.length - more} more)</button>}
+        </div>
+      )}
+    </div>
+  );
+}
+function downloadBackup(cfg) {
+  const o = {}; for (const k of Object.keys(cfg)) if (k !== "snapshots") o[k] = cfg[k];
+  const d = new Date(), stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  downloadText(`timetable_backup_${stamp}.json`, JSON.stringify(o, null, 1), "application/json");
+}
 /* ---------------- Undo & safety copies ---------------- */
-var SNAP_SKIP = ["logo", "logoIcon", "hmSign", "seal", "versions", "snapshots", "adminPw", "subs"];
+var SNAP_SKIP = ["logo", "logoIcon", "hmSign", "seal", "versions", "snapshots", "adminPw", "subs", "changeLog", "lastBackupDl", "calendar"];
 var SNAP_HINT = { text: "", at: 0 };
 function setSnapHint(text) {
   const t = String(text || "");
@@ -4887,8 +5125,9 @@ async function readSnapshot(rec) {
 function pruneSnaps(list) {
   const arc = list.filter((x) => x.kind === "archive").sort((a, b) => b.at - a.at).slice(0, 6);
   const man = list.filter((x) => x.kind === "manual").sort((a, b) => b.at - a.at).slice(0, 6);
-  const aut = list.filter((x) => x.kind !== "manual" && x.kind !== "archive").sort((a, b) => b.at - a.at).slice(0, 8);
-  return [...arc, ...man, ...aut].sort((a, b) => b.at - a.at);
+  const wk = list.filter((x) => x.kind === "weekly").sort((a, b) => b.at - a.at).slice(0, 5);
+  const aut = list.filter((x) => x.kind !== "manual" && x.kind !== "archive" && x.kind !== "weekly").sort((a, b) => b.at - a.at).slice(0, 8);
+  return [...arc, ...man, ...wk, ...aut].sort((a, b) => b.at - a.at);
 }
 function SafetyPanel({ cfg, update, ask }) {
   const [name, setName] = useState("");
@@ -4926,7 +5165,7 @@ function SafetyPanel({ cfg, update, ask }) {
         <div style={{ fontSize: 15.5, fontWeight: 800, color: C.ink }}>Safety copies & undo</div>
         <span style={{ marginLeft: "auto", fontSize: 11.5, fontWeight: 700, padding: "2px 10px", borderRadius: 20, background: C.freeSoft, color: C.free }}>{list.length} kept</span>
       </div>
-      <div className="tt-callout" style={{ marginBottom: 12 }}>Before every big change — Auto-generate, Reset, Master reset, Clear all, imports, Fix clashes, using a version — the app <b>automatically keeps a copy</b> of everything as it was. Restore any copy here with one click. For small slips use <b>↶ Undo</b> at the top of the screen (Ctrl+Z on a computer). Copies are saved with your timetable, so they work on every device.</div>
+      <div className="tt-callout" style={{ marginBottom: 12 }}>Before every big change — Auto-generate, Reset, Master reset, Clear all, imports, Fix clashes, using a version — the app <b>automatically keeps a copy</b> of everything as it was, and it also keeps a <b>weekly copy</b> (the last 5 weeks). Restore any copy here with one click. For small slips use <b>↶ Undo</b> at the top of the screen (Ctrl+Z on a computer). Copies are saved with your timetable, so they work on every device.</div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
         <input className="tt-in" style={{ flex: "1 1 220px", maxWidth: 360, fontFamily: sans, fontSize: 13, height: 36 }} placeholder="Name this copy (optional)" value={name} onChange={(e) => setName(e.target.value)} />
         <PrintBtn onClick={saveNow} icon="download" label={busy === "save" ? "Saving…" : "Save a safety copy now"} sub="kept until you delete it" />
@@ -4936,7 +5175,7 @@ function SafetyPanel({ cfg, update, ask }) {
         <div style={{ display: "grid", gap: 8 }}>
           {list.map((r) => (
             <div key={r.id} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "9px 12px", border: `1px solid ${r.kind === "manual" ? `${th.accent}55` : C.line}`, borderRadius: 12, background: r.kind === "manual" ? `${th.accent}08` : "#fff" }}>
-              <span style={{ fontSize: 10.5, fontWeight: 800, padding: "2px 8px", borderRadius: 10, background: r.kind === "manual" ? th.accent : r.kind === "archive" ? C.accent : "#eef1f5", color: r.kind === "manual" || r.kind === "archive" ? "#fff" : C.sub, textTransform: "uppercase", letterSpacing: 0.4 }}>{r.kind === "manual" ? "Saved" : r.kind === "archive" ? "Year" : "Auto"}</span>
+              <span style={{ fontSize: 10.5, fontWeight: 800, padding: "2px 8px", borderRadius: 10, background: r.kind === "manual" ? th.accent : r.kind === "archive" ? C.accent : r.kind === "weekly" ? "#2b5fa8" : "#eef1f5", color: r.kind === "manual" || r.kind === "archive" || r.kind === "weekly" ? "#fff" : C.sub, textTransform: "uppercase", letterSpacing: 0.4 }}>{r.kind === "manual" ? "Saved" : r.kind === "archive" ? "Year" : r.kind === "weekly" ? "Weekly" : "Auto"}</span>
               <div style={{ minWidth: 0, flex: "1 1 220px" }}>
                 <div style={{ fontSize: 13, fontWeight: 700, color: C.ink, wordBreak: "break-word" }}>{r.label}</div>
                 <div style={{ fontSize: 11.5, color: C.sub }}>{fmt(r.at)}{r.sum ? ` · ${r.sum.classes} classes · ${r.sum.teachers} teachers · ${r.sum.filled} periods filled` : ""}</div>
@@ -4960,13 +5199,181 @@ function isoToday() { const d = new Date(); return `${d.getFullYear()}-${String(
 function isoShift(iso, n) { const [y, m, d] = iso.split("-").map(Number); const t = new Date(y, m - 1, d + n); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`; }
 function isoDay(iso) { const [y, m, d] = iso.split("-").map(Number); return WD[new Date(y, m - 1, d).getDay()]; }
 function isoNice(iso, long) { const [y, m, d] = iso.split("-").map(Number); return new Date(y, m - 1, d).toLocaleDateString(undefined, long ? { weekday: "long", day: "numeric", month: "long", year: "numeric" } : { weekday: "short", day: "numeric", month: "short" }); }
-function partPeriods(cfg, part) { if (typeof part === "string" && part.startsWith("p:")) return part.slice(2).split(",").filter((x) => x !== "").map(Number).filter((x) => x >= 0 && x < cfg.periods.length); const h = fnCount(cfg); return cfg.periods.map((_, i) => i).filter((i) => part === "am" ? i < h : part === "pm" ? i >= h : true); }
+function partPeriods(cfg, part) { if (typeof part === "string" && part.startsWith("p:")) return part.slice(2).split(",").filter((x) => x !== "").map(Number).filter((x) => x >= 0 && x < cfg.periods.length); const h = fnCount(cfg._base || cfg); return cfg.periods.map((_, i) => i).filter((i) => part === "am" ? i < h : part === "pm" ? i >= h : true); }
+/* ---------------- School calendar: holidays, days that follow another day's timetable, one-day special timetables ---------------- */
+// cfg.calendar[date] = { kind: "holiday" | "follow" | "special", label, day, n, grid: { [class]: [[code, sub], …] } }
+var CAL_KINDS = { holiday: "Holiday / no classes", follow: "Follows another day's timetable", special: "Special timetable (this day only)" };
+function calEntry(cfg, date) { const e = (cfg.calendar || {})[date]; return e && CAL_KINDS[e.kind] ? e : null; }
+// the timetable day actually followed on a date (null = no school)
+function dayOf(cfg, date) {
+  const e = calEntry(cfg, date);
+  if (e && e.kind === "holiday") return null;
+  if (e && e.day && cfg.days.includes(e.day)) return e.day;
+  const d = isoDay(date); if (cfg.days.includes(d)) return d;
+  return e ? cfg.days[0] || null : null;
+}
+function specialN(cfg, e) { return Math.max(1, Math.min(cfg.periods.length, +e.n || cfg.periods.length)); }
+var VCFG = new WeakMap();
+// the timetable as it runs on that date (a special day replaces the followed day's grid)
+function cfgOn(cfg, date) {
+  const e = calEntry(cfg, date); if (!e || e.kind !== "special" || !e.grid) return cfg;
+  const d = dayOf(cfg, date); if (!d) return cfg;
+  let m = VCFG.get(cfg); if (!m) { m = new Map(); VCFG.set(cfg, m); }
+  const hit = m.get(date); if (hit && hit.e === e) return hit.v;
+  const n = specialN(cfg, e), grid = {};
+  for (const c of cfg.classes) { const row = (e.grid[c] || []).slice(0, n).map((s) => (Array.isArray(s) ? s : [null, null])); while (row.length < n) row.push([null, null]); grid[c] = { ...(cfg.grid[c] || {}), [d]: row }; }
+  const v = { ...cfg, grid, periods: cfg.periods.slice(0, n), _base: cfg };
+  m.set(date, { e, v }); return v;
+}
+function makeSpecial(cfg, day, label, n) { const grid = {}; for (const c of cfg.classes) grid[c] = clone(((cfg.grid[c] || {})[day]) || emptyDay(cfg.periods.length)); return { kind: "special", day, label: label || "", n: n || cfg.periods.length, grid }; }
+function dayLabel(cfg, date) {
+  const e = calEntry(cfg, date), own = isoDay(date);
+  if (!e) return cfg.days.includes(own) ? `${DAY_FULL[own] || own} timetable` : "Not a working day";
+  if (e.kind === "holiday") return `Holiday${e.label ? " — " + e.label : ""}`;
+  const d = dayOf(cfg, date), dn = DAY_FULL[d] || d;
+  if (e.kind === "follow") return `Follows ${dn}'s timetable${e.label ? " — " + e.label : ""}`;
+  return `Special timetable${e.label ? " — " + e.label : ""} · ${specialN(cfg, e)} periods`;
+}
+// after absences or the calendar change: drop choices no longer needed, prune old records, fill the gaps
+function tidySubs(n, date, auto) {
+  const r = n.subs && n.subs[date];
+  if (r) {
+    r.assign = r.assign || {}; r.absent = r.absent || {};
+    const keys = new Set(subsNeeds(n, date).map((x) => x.key)); for (const k of Object.keys(r.assign)) if (!keys.has(k) || !r.assign[k]) delete r.assign[k];
+    if (r.work) { for (const t of Object.keys(r.work)) if (!r.absent[t] || !r.work[t]) delete r.work[t]; if (!Object.keys(r.work).length) delete r.work; }
+    if (!Object.keys(r.absent).length && !Object.keys(r.assign).length && !r.note) delete n.subs[date];
+  }
+  const cut = isoShift(isoToday(), -400);
+  for (const k of Object.keys(n.subs || {})) if (k < cut) delete n.subs[k];
+  if (n.calendar) for (const k of Object.keys(n.calendar)) if (k < cut) delete n.calendar[k];
+  if (auto && n.subsAuto !== false && n.subs && n.subs[date]) fillSubs(n, date);
+}
+function classWeekCovers(cfg, date) {
+  const wd = new Date(date + "T00:00").getDay(), mon = isoShift(date, -((wd + 6) % 7)), out = {};
+  for (let dt = mon; dt <= date; dt = isoShift(dt, 1)) { const r = (cfg.subs || {})[dt]; if (!r || !Object.keys(r.absent || {}).length) continue; for (const n of subsNeeds(cfg, dt)) for (const c of String(n.cls).split(", ")) (out[c] || (out[c] = [])).push(n.key + "@" + dt); }
+  return out;
+}
+function DayStatus({ cfg, date, setCal, mobile }) {
+  const th = CUR_TH || THEMES.teal;
+  const e = calEntry(cfg, date), own = isoDay(date), ownWorks = cfg.days.includes(own);
+  const kind = e ? e.kind : "normal";
+  const base = ownWorks ? own : cfg.days[0];
+  const choose = (k) => setCal(() => k === "normal" ? null : k === "holiday" ? { kind: "holiday", label: (e && e.label) || "" } : k === "follow" ? { kind: "follow", day: (e && e.day) || (ownWorks ? own : cfg.days[0]), label: (e && e.label) || "" } : makeSpecial(cfg, (e && e.day) || base, (e && e.label) || ""));
+  const segs = [["normal", ownWorks ? "Normal day" : "No school (off day)"], ["holiday", "Holiday / no classes"], ["follow", "Follows another day"], ["special", "Special timetable"]];
+  const lab = { display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 700, color: C.sub };
+  return (
+    <div style={{ display: "grid", gap: 8, padding: "10px 14px 12px", borderTop: `1px solid ${C.line}`, background: e ? `${th.accent}08` : "transparent" }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, fontWeight: 800, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4 }}>This day</span>
+        <div style={{ display: "inline-flex", flexWrap: "wrap", border: `1px solid ${C.line}`, borderRadius: 10, overflow: "hidden", background: "#fff" }}>
+          {segs.map(([k, l]) => <button key={k} className="tt-btn" onClick={() => kind !== k && choose(k)} style={{ border: "none", padding: mobile ? "6px 9px" : "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", background: kind === k ? (k === "holiday" ? C.accent : C.primary) : "#fff", color: kind === k ? "#fff" : C.sub }}>{l}</button>)}
+        </div>
+      </div>
+      {kind === "follow" && <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <label style={lab}>Use the timetable of<select className="tt-sel" value={e.day || ""} onChange={(ev) => setCal((x) => ({ ...x, day: ev.target.value }))} style={{ width: 140, fontFamily: sans, fontSize: 13, height: 34 }}>{cfg.days.map((d) => <option key={d} value={d}>{DAY_FULL[d] || d}</option>)}</select></label>
+        <input className="tt-in" value={e.label || ""} onChange={(ev) => setCal((x) => ({ ...x, label: ev.target.value }))} placeholder="Note (optional), e.g. working Friday" style={{ flex: "1 1 180px", maxWidth: 300, fontFamily: sans, fontSize: 13, height: 34 }} />
+      </div>}
+      {kind === "holiday" && <input className="tt-in" value={e.label || ""} onChange={(ev) => setCal((x) => ({ ...x, label: ev.target.value }))} placeholder="Reason, e.g. Onam, strike, exam day" style={{ maxWidth: 340, fontFamily: sans, fontSize: 13, height: 34 }} />}
+      {kind === "special" && <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <input className="tt-in" value={e.label || ""} onChange={(ev) => setCal((x) => ({ ...x, label: ev.target.value }))} placeholder="Name, e.g. Half day, Sports day" style={{ flex: "1 1 160px", maxWidth: 240, fontFamily: sans, fontSize: 13, height: 34 }} />
+        <label style={lab}>Periods<select className="tt-sel" value={specialN(cfg, e)} onChange={(ev) => setCal((x) => ({ ...x, n: +ev.target.value }))} style={{ width: 70, height: 34, textAlign: "center" }}>{cfg.periods.map((p, i) => <option key={i} value={i + 1}>{i + 1}</option>)}</select></label>
+        <label style={lab}>Copied from<select className="tt-sel" value={e.day || base} onChange={(ev) => { const v = ev.target.value; setCal((x) => makeSpecial(cfg, v, x.label, x.n)); }} style={{ width: 130, fontFamily: sans, fontSize: 13, height: 34 }}>{cfg.days.map((d) => <option key={d} value={d}>{DAY_FULL[d] || d}</option>)}</select></label>
+        <span style={{ fontSize: 11.5, color: C.sub }}>Changing "copied from" starts again from that day.</span>
+      </div>}
+      <div style={{ fontSize: 12, color: C.sub }}>{kind === "normal" ? (ownWorks ? `Classes follow the ${DAY_FULL[own] || own} timetable.` : `${DAY_FULL[own] || own} is not in the timetable. If school works today, choose "Follows another day" and pick the day whose timetable is followed.`) : kind === "holiday" ? "No classes — nothing to cover, and teacher links show a holiday." : kind === "follow" ? `Substitution, free periods and teacher links use ${DAY_FULL[dayOf(cfg, date)] || ""}'s timetable on this date — including which teachers work that day and their extra duties.` : "A one-day timetable for this date only — edit it below. The main timetable is not changed."}</div>
+    </div>
+  );
+}
+function SpecialDayEditor({ cfg, date, setCal, mobile }) {
+  const [open, setOpen] = useState(true);
+  const th = CUR_TH || THEMES.teal;
+  const e = calEntry(cfg, date);
+  const n = e && e.kind === "special" ? specialN(cfg, e) : 0;
+  const cm = useMemo(() => { const m = {}; (cfg.combined || []).forEach((s) => (m[s.name] = s)); return m; }, [cfg.combined]);
+  const clash = useMemo(() => {
+    const bad = new Set(); if (!n) return bad;
+    for (let p = 0; p < n; p++) {
+      const who = {};
+      for (const c of cfg.classes) { const s = ((e.grid || {})[c] || [])[p]; const code = s && s[0]; if (!code) continue; const cs = cm[code] || cm[baseName(code)]; const ts = cs ? cs.teachers : String(code).split(" "); const key = cs ? "s:" + combGroupOf(cs) : "c:" + c; for (const t of ts) (who[t] || (who[t] = {}))[key] = (who[t][key] || []).concat(c); }
+      for (const t of Object.keys(who)) { const ks = Object.keys(who[t]); if (ks.length > 1) ks.forEach((k) => who[t][k].forEach((c) => bad.add(c + "|" + p))); }
+    }
+    return bad;
+  }, [e, n, cfg.classes, cm]);
+  if (!e || e.kind !== "special") return null;
+  const opts = (c) => { const L = [], seen = new Set(); for (const r of cfg.bkey[c] || []) { if (!r.sub || !r.teacher) continue; const v = `${r.teacher}|${r.sub}`; if (!seen.has(v)) { seen.add(v); L.push([v, `${r.sub} · ${r.teacher}`]); } } for (const s of cfg.combined || []) if ((s.divisions || []).includes(c)) { const v = `${s.name}|${s.sub}`; if (!seen.has(v)) { seen.add(v); L.push([v, `${s.sub} · ${s.name}`]); } } return L; };
+  const setCell = (c, p, v) => setCal((x) => { const grid = { ...(x.grid || {}) }; const row = (grid[c] || []).slice(); while (row.length < cfg.periods.length) row.push([null, null]); row[p] = v ? v.split("|") : [null, null]; grid[c] = row; return { ...x, grid }; });
+  return (
+    <div style={{ ...card, marginBottom: 16 }}>
+      <Panelhead text={`Special timetable — ${e.label || isoNice(date)}`} count={clash.size ? `${clash.size} clash${clash.size === 1 ? "" : "es"}` : `${n} periods`} tone={clash.size ? "clash" : undefined} />
+      <div style={{ padding: 12, display: "grid", gap: 10 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <div className="tt-callout" style={{ flex: "1 1 300px" }}>Copied from <b>{DAY_FULL[e.day] || e.day}</b>. Change any period for this day only — substitution and the teacher links use it; the main timetable stays as it is. Red boxes show a teacher in two places at once.</div>
+          <button className="tt-btn" onClick={() => setOpen(!open)} style={ghostBtn}>{open ? "Hide timetable" : "Edit timetable"}</button>
+        </div>
+        {open && <div className="tt-scroll" style={{ overflow: "auto", maxHeight: mobile ? 420 : 560 }}>
+          <table style={{ borderCollapse: "separate", borderSpacing: 3 }}>
+            <thead><tr><th style={{ position: "sticky", top: 0, left: 0, zIndex: 2, background: "#fff" }} />{Array.from({ length: n }, (_, p) => <th key={p} style={{ position: "sticky", top: 0, background: "#fff", fontSize: 11, color: C.sub, padding: "2px 4px" }}>P{cfg.periods[p]}</th>)}</tr></thead>
+            <tbody>{cfg.classes.map((c) => { const o = opts(c); return (
+              <tr key={c}><td style={{ position: "sticky", left: 0, background: "#fff", fontFamily: mono, fontWeight: 800, fontSize: 12, paddingRight: 6, whiteSpace: "nowrap" }}>{c}</td>
+                {Array.from({ length: n }, (_, p) => { const s = ((e.grid || {})[c] || [])[p] || [null, null], v = s[0] ? `${s[0]}|${s[1] || ""}` : "", bad = clash.has(c + "|" + p), has = !v || o.some((x) => x[0] === v); return (
+                  <td key={p}><select className="tt-sel" value={v} onChange={(ev) => setCell(c, p, ev.target.value)} title={v ? `${s[1]} · ${s[0]}` : "free"} style={{ width: mobile ? 88 : 104, height: 30, fontSize: 11, padding: "2px 3px", fontWeight: v ? 700 : 400, color: v ? SUBJECT_BAR[s[1]] || C.ink : "#b4bccb", borderColor: bad ? C.clash : undefined, background: bad ? C.clashSoft : v ? "#fff" : "#f8fafc" }}>
+                    <option value="">— free —</option>{!has && <option value={v}>{s[1]} · {s[0]}</option>}{o.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+                  </select></td>); })}
+              </tr>); })}</tbody>
+          </table>
+        </div>}
+      </div>
+    </div>
+  );
+}
+function CalendarPanel({ cfg, update, date, setDate, ask, mobile }) {
+  const th = CUR_TH || THEMES.teal;
+  const [f, setF] = useState({ kind: "holiday", from: "", to: "", day: cfg.days[0], label: "" });
+  const today = isoToday(), from = isoShift(today, -45);
+  const list = Object.keys(cfg.calendar || {}).filter((d) => d >= from && calEntry(cfg, d)).sort();
+  const add = () => {
+    if (!f.from) return; const to = f.kind === "holiday" && f.to && f.to >= f.from ? f.to : f.from;
+    update((n) => { n.calendar = { ...(n.calendar || {}) }; for (let d = f.from, i = 0; d <= to && i < 200; d = isoShift(d, 1), i++) { n.calendar[d] = f.kind === "follow" ? { kind: "follow", day: f.day, label: f.label.trim() } : { kind: "holiday", label: f.label.trim() }; tidySubs(n, d, true); } });
+    setF({ ...f, from: "", to: "", label: "" });
+  };
+  const lab = { display: "grid", gap: 4, fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.3 };
+  const tone = { holiday: [C.accent, "#fdf6ec"], follow: [th.accent, `${th.accent}0d`], special: ["#7c3aed", "#f4effb"] };
+  return (
+    <div style={card}>
+      <Panelhead text="School calendar — holidays & changed days" count={list.length ? `${list.length} day${list.length === 1 ? "" : "s"}` : "none"} />
+      <div style={{ padding: 12, display: "grid", gap: 10 }}>
+        <div className="tt-callout">Mark <b>holidays</b> (no substitution, teacher links say "Holiday"), and days when the school <b>follows another day's timetable</b> — for example a working Friday or Saturday that follows Monday. Substitution then uses the timetable actually followed. A <b>special timetable</b> for one day (half day, sports day) is set from the day bar above.</div>
+        {list.length === 0 ? <div style={{ fontSize: 12.5, color: C.sub }}>No holidays or changed days recorded.</div> : (
+          <div style={{ display: "grid", gap: 6, maxHeight: 300, overflowY: "auto" }} className="tt-scroll">
+            {list.map((d) => { const e = cfg.calendar[d], [fg, bg] = tone[e.kind] || tone.follow; return (
+              <div key={d} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "7px 10px", borderRadius: 11, border: `1px solid ${d === date ? fg : C.line}`, background: d < today ? "#fafbfc" : bg, opacity: d < today ? 0.75 : 1 }}>
+                <b style={{ minWidth: 112, fontSize: 13 }}>{isoNice(d)}</b>
+                <span style={{ fontSize: 10.5, fontWeight: 800, padding: "2px 8px", borderRadius: 10, background: fg, color: "#fff", textTransform: "uppercase", letterSpacing: 0.4 }}>{e.kind === "holiday" ? "Holiday" : e.kind === "follow" ? `${(DAY_FULL[dayOf(cfg, d)] || "").slice(0, 3)} timetable` : "Special"}</span>
+                <span style={{ flex: "1 1 160px", fontSize: 12.5, color: C.ink }}>{dayLabel(cfg, d)}</span>
+                <button className="tt-btn" onClick={() => setDate(d)} style={{ ...ghostBtn, padding: "4px 10px", fontSize: 12 }}>Open</button>
+                <button className="tt-btn" onClick={() => ask(`Make ${isoNice(d)} a normal day again?`, () => update((n) => { n.calendar = { ...(n.calendar || {}) }; delete n.calendar[d]; tidySubs(n, d, true); }))} style={{ ...ghostBtn, padding: "4px 10px", fontSize: 12, color: C.clash }}>Remove</button>
+              </div>); })}
+          </div>
+        )}
+        <div style={{ border: `1.5px dashed ${C.line}`, borderRadius: 12, padding: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <label style={lab}>Add<select className="tt-sel" value={f.kind} onChange={(e) => setF({ ...f, kind: e.target.value })} style={{ width: 200, height: 34, fontFamily: sans }}><option value="holiday">Holiday(s) — no classes</option><option value="follow">Day following another day</option></select></label>
+          <label style={lab}>{f.kind === "holiday" ? "From" : "Date"}<input type="date" className="tt-in" value={f.from} onChange={(e) => setF({ ...f, from: e.target.value })} style={{ height: 34, fontFamily: sans }} /></label>
+          {f.kind === "holiday" && <label style={lab}>To (optional)<input type="date" className="tt-in" value={f.to} onChange={(e) => setF({ ...f, to: e.target.value })} style={{ height: 34, fontFamily: sans }} /></label>}
+          {f.kind === "follow" && <label style={lab}>Follows<select className="tt-sel" value={f.day} onChange={(e) => setF({ ...f, day: e.target.value })} style={{ width: 130, height: 34, fontFamily: sans }}>{cfg.days.map((d) => <option key={d} value={d}>{DAY_FULL[d] || d}</option>)}</select></label>}
+          <label style={{ ...lab, flex: "1 1 150px" }}>Note<input className="tt-in" value={f.label} onChange={(e) => setF({ ...f, label: e.target.value })} placeholder={f.kind === "holiday" ? "e.g. Christmas vacation" : "e.g. working Friday"} style={{ height: 34, fontFamily: sans }} /></label>
+          <button className="tt-btn" onClick={add} disabled={!f.from} style={{ ...solidBtn, opacity: f.from ? 1 : 0.5 }}>Add</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 function subsNeeds(cfg, date) {
-  const rec = (cfg.subs || {})[date] || {}, abs = rec.absent || {}, d = isoDay(date), out = [];
-  if (!cfg.days.includes(d)) return out;
+  const rec = (cfg.subs || {})[date] || {}, abs = rec.absent || {}, d = dayOf(cfg, date), out = [];
+  if (!d) return out;
+  const g = cfgOn(cfg, date), work = rec.work || {};
   for (const t of Object.keys(abs)) {
     if (!cfg.singles.includes(t)) continue;
-    for (const p of partPeriods(cfg, abs[t])) { const r = teacherAt(cfg, t, d, p); if (r && !(r.extra && r.kind !== "class")) out.push({ key: `${t}|${p}`, t, p, cls: r.c, sub: r.sub, combined: !!r.combined }); }
+    for (const p of partPeriods(g, abs[t])) { const r = teacherAt(g, t, d, p); if (r && !(r.extra && !r.cover)) out.push({ key: `${t}|${p}`, t, p, cls: r.c, sub: r.sub, combined: !!r.combined, work: work[t] || "" }); }
   }
   return out.sort((a, b) => a.p - b.p || cmpClass(a.cls, b.cls));
 }
@@ -4987,7 +5394,7 @@ function subCounts(cfg, date) {
 // turn order: most leisure (free) periods in the week first
 function rotationRank(cfg) {
   const leisure = {};
-  for (const t of cfg.singles) { let f = 0; for (const d of teacherWorkDays(cfg, t)) for (let p = 0; p < cfg.periods.length; p++) if (!teacherAt(cfg, t, d, p)) f++; leisure[t] = f; }
+  for (const t of cfg.singles) { let f = 0; for (const d of teacherWorkDays(cfg, t)) for (let p = 0; p < cfg.periods.length; p++) if (!teacherAt(cfg, t, d, p)) f++; const x = (cfg.subsExempt || {})[t]; leisure[t] = x && x.mode === "always" ? 0 : x && x.mode === "reduce" ? Math.min(f, Math.max(0, +x.count || 0)) : f; }
   const order = cfg.singles.slice().sort((a, b) => leisure[b] - leisure[a] || a.localeCompare(b));
   const rank = {}; order.forEach((t, i) => (rank[t] = i + 1));
   return { order, rank, leisure };
@@ -5002,9 +5409,23 @@ function rotKey(cfg, counts, u, done, round, pointer) {
   return { eff, owed, passed, key: eff * 1000 - (owed ? 600 : 0) - (passed ? 300 : 0) + (counts.rank[u] || 99) };
 }
 function rotRound(cfg, counts) { const act = cfg.singles.filter((t) => counts.leisure[t] > 0); if (!act.length) return 1; return Math.min(...act.map((t) => rotEff(counts, t))) + 1; }
+// Fair share: duties in proportion to each teacher's free periods, preferring whoever is freest on the day itself
+function subsModeOf(cfg) { return cfg.subsMode === "turn" ? "turn" : cfg.subsMode === "fit" ? "fit" : "fair"; }
+function freeOnDay(cfg, date, u) { const d = dayOf(cfg, date); if (!d || isOffDay(cfg, u, d)) return 0; const g = cfgOn(cfg, date); let f = 0; for (let p = 0; p < g.periods.length; p++) if (!teacherAt(g, u, d, p) && !absentAt(cfg, date, u, p)) f++; return f; }
+function fairKey(cfg, counts, u, done, remainToday, owed) {
+  const L = Math.max(1, counts.leisure[u] || 0);
+  const avg = L / Math.max(1, teacherWorkDays(cfg, u).length);          // their usual free periods per day
+  const dayFit = Math.min(2, remainToday / Math.max(0.5, avg));        // above 1 = freer than usual today
+  let key = (done + 1) / L;                                            // share of their free periods used after this duty
+  key = key / (0.55 + 0.45 * dayFit);
+  if (remainToday <= 1) key *= 2.5;                                    // don't take someone's last free period of the day
+  if (owed) key *= 0.6;
+  return key;
+}
 function subCandidates(cfg, date, need, counts) {
-  const d = isoDay(date), rec = (cfg.subs || {})[date] || {}, assign = rec.assign || {};
-  const mode = cfg.subsMode || "rotation";
+  const d = dayOf(cfg, date), g = cfgOn(cfg, date), rec = (cfg.subs || {})[date] || {}, assign = rec.assign || {};
+  if (!d) return [];
+  const mode = subsModeOf(cfg);
   const takenAt = new Set(Object.entries(assign).filter(([k, u]) => u && +k.split("|")[1] === need.p && k !== need.key).map(([, u]) => u));
   const today = {}; Object.entries(assign).forEach(([k, u]) => { if (u && k !== need.key) today[u] = (today[u] || 0) + 1; });
   const cls = String(need.cls).split(", ");
@@ -5013,22 +5434,72 @@ function subCandidates(cfg, date, need, counts) {
   const out = [];
   for (const u of cfg.singles) {
     if (u === need.t || isOffDay(cfg, u, d) || absentAt(cfg, date, u, need.p) || takenAt.has(u)) continue;
-    if (teacherAt(cfg, u, d, need.p)) continue;
-    let freeToday = 0; for (let p = 0; p < cfg.periods.length; p++) if (!teacherAt(cfg, u, d, p) && !absentAt(cfg, date, u, p)) freeToday++;
+    const exi = exemptInfo(cfg, u, date), xw = (cfg.subsExempt || {})[u], capHit = xw && +xw.maxWeek > 0 && weekDuties(cfg, u, date) - (assign[need.key] === u ? 1 : 0) >= +xw.maxWeek;
+    const blocked = exi ? exi.text : capHit ? `already ${xw.maxWeek} this week (limit)` : (xw && xw.mode === "reduce" && !(+xw.count > 0)) ? "counted as 0 free periods" : null;
+    if (teacherAt(g, u, d, need.p)) continue;
+    let freeToday = 0; for (let p = 0; p < g.periods.length; p++) if (!teacherAt(g, u, d, p) && !absentAt(cfg, date, u, p)) freeToday++;
     const knows = cls.some((c) => cfg.classTeacher[c] === u || (cfg.bkey[c] || []).some((r) => String(r.teacher || "").split(" ").includes(u)));
     const ct = cls.some((c) => cfg.classTeacher[c] === u);
     const sameSub = cls.some((c) => (cfg.bkey[c] || []).some((r) => r.sub === need.sub && String(r.teacher || "").split(" ").includes(u)));
     const m = counts.month[u] || 0, td = today[u] || 0;
     const done = (counts.rot[u] || 0) - (own === u ? 1 : 0), rk = rotKey(cfg, counts, u, done, round, pointer), eff = rk.eff;
-    const score = mode === "rotation"
+    const remain = freeToday - td, owedM = ((cfg.subsOwed || {})[u] || 0) > 0;
+    const fk = mode === "fair" ? fairKey(cfg, counts, u, done, remain, owedM && own !== u) * (cfg.subsPreferClass === false ? 1 : ct ? 0.85 : sameSub ? 0.9 : knows ? 0.93 : 1) : 0;
+    const pct = Math.round((done / Math.max(1, counts.leisure[u] || 0)) * 100);
+    const avgDay = (counts.leisure[u] || 0) / Math.max(1, teacherWorkDays(cfg, u).length);
+    const score = mode === "fair"
+      ? -fk * 100000 + remain
+      : mode === "turn"
       ? -rk.key - td * 100
       : (ct ? 40 : knows ? 30 : 0) + (sameSub ? 10 : 0) - m * 6 - td * 12 + Math.min(freeToday, 5) * 3;
-    const why = mode === "rotation"
+    const why = mode === "fair"
+      ? [own !== u && owedM ? "missed a duty — first in line" : null, `${remain} free today${remain <= 1 ? " (last one)" : remain > avgDay + 0.5 ? " — freer than usual" : ""}`, `${done} dut${done === 1 ? "y" : "ies"} = ${pct}% of ${counts.leisure[u] || 0} free/wk`, ct ? "class teacher" : knows ? `teaches ${cls[0]}` : null].filter(Boolean)
+      : mode === "turn"
       ? [own === u ? null : rk.owed ? "missed a turn — first in line" : rk.passed ? "skipped earlier — owed" : null, `rank ${counts.rank[u]}`, `${done} turn${done === 1 ? "" : "s"} done`, ct ? "class teacher" : knows ? `teaches ${cls[0]}` : null].filter(Boolean)
       : [ct ? "class teacher" : knows ? `teaches ${cls[0]}` : null, sameSub ? `teaches ${need.sub}` : null, `${freeToday} free today`, `${m} this month`].filter(Boolean);
-    out.push({ u, score, why, m, freeToday, eff, done });
+    out.push(blocked ? { u, score: -1e12, why: [blocked], m, freeToday, eff, done, remain, pct, blocked: true } : { u, score, why, m, freeToday, eff, done, remain, pct });
   }
   return out.sort((a, b) => b.score - a.score || a.m - b.m || a.u.localeCompare(b.u));
+}
+function FairPanel({ cfg, update, date, counts, ask, limited }) {
+  const th = CUR_TH || THEMES.teal;
+  const d = dayOf(cfg, date), working = !!d;
+  const rec = (cfg.subs || {})[date] || {}, today = {}; Object.values(rec.assign || {}).forEach((u) => { if (u) today[u] = (today[u] || 0) + 1; });
+  const rows = cfg.singles.map((u) => {
+    const L = counts.leisure[u] || 0, done = counts.rot[u] || 0, free = working ? freeOnDay(cfg, date, u) : 0, remain = free - (today[u] || 0);
+    const avg = L / Math.max(1, teacherWorkDays(cfg, u).length), owed = ((cfg.subsOwed || {})[u] || 0) > 0;
+    const exi = exemptInfo(cfg, u, date);
+    const away = !working || !!((rec.absent || {})[u]) || isOffDay(cfg, u, d) || !!exi || !(counts.leisure[u] > 0);
+    return { exi, u, L, done, pct: Math.round((done / Math.max(1, L)) * 100), free, remain, avg, owed, away, key: away || remain <= 0 ? 1e9 : fairKey(cfg, counts, u, done, remain, owed) };
+  }).sort((a, b) => a.key - b.key || b.remain - a.remain || a.u.localeCompare(b.u));
+  const next = rows.filter((r) => r.key < 1e9).slice(0, 6).map((r) => r.u);
+  const avgPct = rows.length ? rows.reduce((a, r) => a + r.pct, 0) / rows.length : 0;
+  const bar = (p) => <span style={{ display: "inline-block", width: 70, height: 8, borderRadius: 5, background: "#eef1f5", overflow: "hidden", verticalAlign: "middle", marginRight: 6 }}><span style={{ display: "block", height: "100%", width: `${Math.min(100, p)}%`, background: p > avgPct + 10 ? C.warn : `linear-gradient(90deg, ${th.g1}, ${th.g2})` }} /></span>;
+  return (
+    <div style={card}>
+      <Panelhead text={`Fair share — ${isoNice(date)}`} count={cfg.subsRotationStart ? `counted since ${isoNice(cfg.subsRotationStart)}` : "counted since the start"} />
+      <div style={{ padding: 12, display: "grid", gap: 10 }}>
+        <div className="tt-callout">Duties are shared <b>in proportion to free periods</b>: a teacher with 20 free periods a week does about twice as many as one with 10. On each day the teacher who is <b>freest that day</b> comes first, and nobody loses their <b>last free period</b> of a day while someone else has more — they take their share on a day they are freer. A teacher replaced by hand comes first next time.</div>
+        {working && <div style={{ fontSize: 12.5 }}><b>First choices today:</b> {next.map((t, i) => <span key={t} style={{ display: "inline-block", fontFamily: mono, fontWeight: 800, padding: "2px 8px", borderRadius: 8, margin: "2px 4px 2px 0", background: i === 0 ? th.accent : `${th.accent}14`, color: i === 0 ? "#fff" : th.g2 }}>{t}</span>)}</div>}
+        <div className="tt-scroll" style={{ maxHeight: 320, overflowY: "auto" }}>
+          <table style={{ ...tbl, tableLayout: "auto" }}>
+            <thead><tr><th style={{ ...th0, textAlign: "left" }}>Teacher</th><th style={th0}>Free / week</th><th style={th0}>Free today</th><th style={th0}>Duties</th><th style={{ ...th0, textAlign: "left" }}>Share of free periods used</th><th style={th0}>Today</th></tr></thead>
+            <tbody>{rows.map((r) => (
+              <tr key={r.u}>
+                <td style={{ ...cellTd, height: 30, textAlign: "left", fontFamily: mono, fontWeight: 800 }}>{r.u}</td>
+                <td style={{ ...cellTd, height: 30, fontFamily: mono }}>{r.L}{(cfg.subsExempt || {})[r.u] && cfg.subsExempt[r.u].mode === "reduce" ? <span style={{ color: C.accent }}> (reduced)</span> : null}</td>
+                <td style={{ ...cellTd, height: 30, fontFamily: mono, fontWeight: 700, color: r.away ? C.sub : r.remain <= 1 ? C.warn : r.remain > r.avg + 0.5 ? C.free : C.ink }}>{r.away ? "—" : `${r.remain}${today[r.u] ? ` (+${today[r.u]} duty)` : ""}`}</td>
+                <td style={{ ...cellTd, height: 30, fontFamily: mono, fontWeight: 700 }}>{r.done}</td>
+                <td style={{ ...cellTd, height: 30, textAlign: "left", fontSize: 12 }}>{bar(r.pct)}{r.pct}%</td>
+                <td style={{ ...cellTd, height: 30, fontSize: 11.5 }}>{!working ? <span style={{ color: C.sub }}>no school</span> : r.exi ? <span style={{ color: C.accent, fontWeight: 700 }}>{r.exi.text}</span> : !(r.L > 0) ? <span style={{ color: C.accent, fontWeight: 700 }}>exempt</span> : r.away ? <span style={{ color: C.sub }}>absent / off</span> : next[0] === r.u ? <b style={{ color: th.accent }}>first choice</b> : r.owed ? <span style={{ color: C.warn, fontWeight: 700 }}>missed a duty — first in line</span> : r.remain <= 1 ? <span style={{ color: C.warn }}>last free period — kept</span> : r.remain > r.avg + 0.5 ? <span style={{ color: C.free }}>freer than usual</span> : <span style={{ color: C.sub }}>—</span>}</td>
+              </tr>))}</tbody>
+          </table>
+        </div>
+        {!limited && <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}><button className="tt-btn" onClick={() => ask("Start counting again from today? Everyone's duties go back to 0 (past substitutions stay in the record).", () => update((n) => { n.subsRotationStart = date; delete n.subsOwed; }))} style={{ ...ghostBtn, fontSize: 12 }}>Start counting again from {isoNice(date)}</button>
+          {cfg.subsRotationStart && <button className="tt-btn" onClick={() => update((n) => { delete n.subsRotationStart; })} style={{ ...ghostBtn, fontSize: 12 }}>Count from the beginning</button>}</div>}
+      </div>
+    </div>
+  );
 }
 function RotationPanel({ cfg, update, date, counts, ask, limited }) {
   const th = CUR_TH || THEMES.teal;
@@ -5065,20 +5536,22 @@ function RotationPanel({ cfg, update, date, counts, ask, limited }) {
 const th0 = { padding: "8px 8px", fontSize: 11, fontWeight: 800, color: "#647189", textTransform: "uppercase", letterSpacing: 0.4, background: "#f6f8fa", borderBottom: "1px solid #e4e8ef", textAlign: "center" };
 function subsText(cfg, date) {
   const needs = subsNeeds(cfg, date), a = (((cfg.subs || {})[date] || {}).assign) || {};
-  const L = [`*${cfg.school || "School"} — Substitution*`, `${isoNice(date, true)}`, ""];
+  const cal = calEntry(cfg, date), L = [`*${cfg.school || "School"} — Substitution*`, `${isoNice(date, true)}${cal ? ` (${dayLabel(cfg, date)})` : ""}`, ""];
   if (!needs.length) L.push("No substitutions needed.");
   for (const n of needs) L.push(`P${cfg.periods[n.p]} · ${n.cls} · ${n.sub} — ${n.t} absent → *${a[n.key] || "not covered"}*`);
+  const w = ((cfg.subs || {})[date] || {}).work || {}; const wk = Object.keys(w).filter((t) => w[t]);
+  if (wk.length) { L.push("", "*Work for the classes*"); wk.forEach((t) => L.push(`${t}: ${w[t]}`)); }
   return L.join("\n");
 }
 function exportSubSlipPDF(cfg, date) {
   const needs = subsNeeds(cfg, date), rec = (cfg.subs || {})[date] || {}, a = rec.assign || {}, abs = rec.absent || {};
   const css = "@page{size:A4 portrait;margin:1cm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact;box-sizing:border-box} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#16213a}" + lhCss() +
     " table{border-collapse:collapse;width:100%;border:2px solid #0e6b73} th,td{border:1px solid #b9d3d3;padding:7px 8px;font-size:13px;text-align:center} thead th{background:#0e6b73;color:#fff;font-weight:800} td.l{text-align:left} td.p{font-weight:800;font-size:15px;color:#0a4f55;background:#e1f0f0;width:16mm}" +
-    " .sub{font-family:'Courier New',monospace;font-weight:800;font-size:15px;color:#0a3d42} .nc{color:#b3261e;font-weight:800} .ab{margin:6px 0 10px;font-size:12.5px} .ab span{display:inline-block;margin:2px 6px 2px 0;padding:2px 9px;border-radius:12px;background:#fbe0dd;color:#8a1f17;font-weight:700} td.sg{width:34mm} .nt{margin-top:8px;font-size:12px;color:#33415c}";
+    " .sub{font-family:'Courier New',monospace;font-weight:800;font-size:15px;color:#0a3d42} .wk{font-size:11px;color:#5a4a12;margin-top:2px;text-align:left} .nc{color:#b3261e;font-weight:800} .ab{margin:6px 0 10px;font-size:12.5px} .ab span{display:inline-block;margin:2px 6px 2px 0;padding:2px 9px;border-radius:12px;background:#fbe0dd;color:#8a1f17;font-weight:700} td.sg{width:34mm} .nt{margin-top:8px;font-size:12px;color:#33415c}";
   const part = (x) => x === "am" ? " (FN)" : x === "pm" ? " (AN)" : String(x).startsWith("p:") ? ` (${partPeriods(cfg, x).map((p) => "P" + cfg.periods[p]).join(", ") || "no periods"})` : "";
   const why = (t) => ((rec.reason || {})[t] && rec.reason[t] !== "Leave" ? ` — ${rec.reason[t]}` : "");
-  const rows = needs.map((n) => `<tr><td class="p">P${cfg.periods[n.p]}</td><td><b>${esc(n.cls)}</b></td><td>${esc(n.sub)}</td><td>${esc(n.t)}</td><td>${a[n.key] ? `<span class="sub">${esc(a[n.key])}</span>` : '<span class="nc">not covered</span>'}</td><td class="sg"></td></tr>`).join("");
-  const body = pdfLetterhead(cfg, "Substitution", isoNice(date, true), `${Object.keys(abs).length} absent · ${needs.length} period${needs.length === 1 ? "" : "s"} to cover`) +
+  const rows = needs.map((n) => `<tr><td class="p">P${cfg.periods[n.p]}</td><td><b>${esc(n.cls)}</b></td><td>${esc(n.sub)}${n.work ? `<div class="wk">Work: ${esc(n.work)}</div>` : ""}</td><td>${esc(n.t)}</td><td>${a[n.key] ? `<span class="sub">${esc(a[n.key])}</span>` : '<span class="nc">not covered</span>'}</td><td class="sg"></td></tr>`).join("");
+  const body = pdfLetterhead(cfg, "Substitution", isoNice(date, true) + (calEntry(cfg, date) ? " · " + dayLabel(cfg, date) : ""), `${Object.keys(abs).length} absent · ${needs.length} period${needs.length === 1 ? "" : "s"} to cover`) +
     `<div class="ab"><b>Absent:</b> ${Object.keys(abs).map((t) => `<span>${esc(t)}${part(abs[t])}${esc(why(t))}</span>`).join("") || "none"}</div>` +
     `<table><thead><tr><th>Period</th><th>Class</th><th>Subject</th><th>Absent teacher</th><th>Substitute</th><th>Substitute's sign</th></tr></thead><tbody>${rows || '<tr><td colspan="6">No substitutions needed.</td></tr>'}</tbody></table>` +
     (rec.note ? `<div class="nt"><b>Note:</b> ${esc(rec.note)}</div>` : "") + pdfFooter(esc(cfg.school || "") + " &middot; Substitution " + esc(date), ["Headmaster"], cfg, "class");
@@ -5097,25 +5570,109 @@ function exportSubMonthPDF(cfg, month) {
     `<h3>All substitutions</h3><table><thead><tr><th>Date</th><th>Period</th><th>Class</th><th>Subject</th><th>Absent</th><th>Substitute</th></tr></thead><tbody>${rows || '<tr><td colspan="6">None</td></tr>'}</tbody></table>` +
     pdfFooter(esc(cfg.school || ""), ["Headmaster"], cfg, "class"));
 }
+/* ---------------- Monthly substitution & absence report ---------------- */
+function acadYear(date) { const [y, m] = date.split("-").map(Number); const s = m >= 6 ? y : y - 1; return { from: `${s}-06-01`, to: `${s + 1}-05-31`, label: `${s}–${String(s + 1).slice(2)}` }; }
+function monthName(month) { const [y, m] = month.split("-").map(Number); return new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" }); }
+function schoolDaysIn(cfg, month) { const [y, m] = month.split("-").map(Number), last = new Date(y, m, 0).getDate(); let n = 0; for (let i = 1; i <= last; i++) if (dayOf(cfg, `${month}-${String(i).padStart(2, "0")}`)) n++; return n; }
+function subsReport(cfg, month) {
+  const ay = acadYear(month + "-01");
+  const L = rotationRank({ ...cfg, subsExempt: {} }).leisure;
+  const blank = () => ({ full: 0, fn: 0, an: 0, per: 0 });
+  const R = {}; cfg.singles.forEach((t) => (R[t] = { t, free: L[t] || 0, dm: 0, dy: 0, am: blank(), ay: blank(), why: {} }));
+  const absList = [], subList = []; let need = 0, cov = 0;
+  for (const dt of Object.keys(cfg.subs || {}).sort()) {
+    if (!dayOf(cfg, dt)) continue;
+    const r = cfg.subs[dt], inM = dt.slice(0, 7) === month, inY = dt >= ay.from && dt <= ay.to;
+    if (!inM && !inY) continue;
+    for (const u of Object.values(r.assign || {})) if (u && R[u]) { if (inM) R[u].dm++; if (inY) R[u].dy++; }
+    for (const [t, part] of Object.entries(r.absent || {})) {
+      if (!R[t]) continue;
+      const k = part === "full" ? "full" : part === "am" ? "fn" : part === "pm" ? "an" : "per", why = (r.reason || {})[t] || "Leave";
+      if (inY) R[t].ay[k]++;
+      if (inM) { R[t].am[k]++; R[t].why[why] = (R[t].why[why] || 0) + 1; absList.push({ dt, t, part, why }); }
+    }
+    if (inM) for (const n of subsNeeds(cfg, dt)) { need++; const u = (r.assign || {})[n.key]; if (u) cov++; subList.push({ dt, n, u }); }
+  }
+  const days = (x) => x.full + 0.5 * (x.fn + x.an);
+  const rows = cfg.singles.map((t) => { const x = R[t], ex = (cfg.subsExempt || {})[t]; return { ...x, dmDays: days(x.am), dyDays: days(x.ay), pct: Math.round((x.dm / Math.max(1, x.free)) * 100), ex: ex ? (ex.mode === "always" ? "exempt" : ex.mode === "dates" ? `exempt ${ex.from ? isoNice(ex.from) : ""}–${ex.to ? isoNice(ex.to) : ""}` : `reduced share${+ex.maxWeek > 0 ? `, max ${ex.maxWeek}/wk` : ""}`) : "" }; });
+  return { rows, absList, subList, need, cov, ay, schoolDays: schoolDaysIn(cfg, month) };
+}
+function partText(cfg, part) { return part === "full" ? "Whole day" : part === "am" ? "FN" : part === "pm" ? "AN" : String(part).startsWith("p:") ? partPeriods(cfg, part).map((p) => "P" + cfg.periods[p]).join(", ") || "—" : String(part); }
+function fmtDays(n) { return n ? String(n).replace(".5", "½").replace(/^0½/, "½") : "—"; }
+function exportSubsReportPDF(cfg, month) {
+  const R = subsReport(cfg, month), title = monthName(month);
+  const css = "@page{size:A4 landscape;margin:9mm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact;box-sizing:border-box} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#16213a}" + lhCss() +
+    " table{border-collapse:collapse;width:100%;border:2px solid #0e6b73;margin-bottom:10px} th,td{border:1px solid #b9d3d3;padding:3px 6px;font-size:10.5px;text-align:center} thead th{background:#0e6b73;color:#fff;font-size:10px} thead tr.g th{background:#0a4f55} thead{display:table-header-group} tr{page-break-inside:avoid} td.m{font-family:'Courier New',monospace;font-weight:800;text-align:left} td.l{text-align:left} td.b{font-weight:800;background:#eef7f7} td.w{background:#fdf2e3} h3{font-size:13px;color:#0a4f55;margin:10px 0 5px} .sum{display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 8px} .sum span{border:1px solid #b9d3d3;border-radius:10px;padding:3px 10px;font-size:11px;background:#f4fafa} .sum b{color:#0a4f55} .pb{page-break-before:always}";
+  const rows = R.rows.map((x) => { const w = Object.entries(x.why).filter(([k]) => k !== "Leave").map(([k, v]) => `${k} ${v}`).join(", "); return `<tr><td class="m">${esc(x.t)}</td><td>${x.free}</td><td class="b">${x.dm || "—"}</td><td>${x.dy || "—"}</td><td>${x.dm ? x.pct + "%" : "—"}</td><td>${x.am.full || "—"}</td><td>${x.am.fn || "—"}</td><td>${x.am.an || "—"}</td><td>${x.am.per || "—"}</td><td class="${x.dmDays ? "w" : ""}"><b>${fmtDays(x.dmDays)}</b></td><td>${fmtDays(x.dyDays)}</td><td class="l">${esc([w, x.ex].filter(Boolean).join(" · "))}</td></tr>`; }).join("");
+  const abs = R.absList.map((a) => `<tr><td>${esc(isoNice(a.dt))}</td><td class="m">${esc(a.t)}</td><td>${esc(partText(cfg, a.part))}</td><td>${esc(a.why)}</td></tr>`).join("");
+  const subs = R.subList.map(({ dt, n, u }) => `<tr><td>${esc(isoNice(dt))}</td><td>P${cfg.periods[n.p]}</td><td>${esc(n.cls)}</td><td>${esc(n.sub)}</td><td class="m">${esc(n.t)}</td><td class="m">${esc(u || "—")}</td></tr>`).join("");
+  const body = pdfLetterhead(cfg, "Substitution & absence report", title, `Academic year ${R.ay.label}`) +
+    `<div class="sum"><span>School days: <b>${R.schoolDays}</b></span><span>Absences recorded: <b>${R.absList.length}</b></span><span>Periods to cover: <b>${R.need}</b></span><span>Covered: <b>${R.cov}</b>${R.need ? ` (${Math.round((R.cov / R.need) * 100)}%)` : ""}</span><span>Substitutions given: <b>${R.rows.reduce((a, x) => a + x.dm, 0)}</b></span></div>` +
+    `<table><thead><tr class="g"><th rowspan="2">Teacher</th><th rowspan="2">Free / week</th><th colspan="3">Substitutions taken</th><th colspan="6">Absent (${esc(title)} · year)</th><th rowspan="2">Notes</th></tr><tr><th>${esc(title.split(" ")[0])}</th><th>Year ${esc(R.ay.label)}</th><th>vs free / week</th><th>Whole day</th><th>FN</th><th>AN</th><th>Some periods</th><th>Days (month)</th><th>Days (year)</th></tr></thead><tbody>${rows}</tbody></table>` +
+    `<div style="font-size:10px;color:#4b5870">Days = whole days + ½ for each FN or AN absence. "vs free / week" = substitutions this month as a share of the teacher's free periods in one week.</div>` +
+    pdfFooter(esc(cfg.school || "") + " &middot; " + esc(title), ["Headmaster"], cfg, "class") +
+    `<div class="pb"></div><h3>Absences — ${esc(title)}</h3><table><thead><tr><th>Date</th><th>Teacher</th><th>Part of the day</th><th>Reason</th></tr></thead><tbody>${abs || '<tr><td colspan="4">None</td></tr>'}</tbody></table>` +
+    `<h3>All substitutions — ${esc(title)}</h3><table><thead><tr><th>Date</th><th>Period</th><th>Class</th><th>Subject</th><th>Absent</th><th>Substitute</th></tr></thead><tbody>${subs || '<tr><td colspan="6">None</td></tr>'}</tbody></table>`;
+  openPrint(esc(cfg.school) + " - Substitution report " + month, css, body);
+}
+function SubsReportPanel({ cfg, date, mobile }) {
+  const th = CUR_TH || THEMES.teal;
+  const [month, setMonth] = useState(date.slice(0, 7));
+  const [sort, setSort] = useState("t");
+  useEffect(() => { setMonth(date.slice(0, 7)); }, [date.slice(0, 7)]);
+  const R = useMemo(() => subsReport(cfg, month), [cfg, month]);
+  const rows = R.rows.slice().sort((a, b) => sort === "dm" ? b.dm - a.dm || a.t.localeCompare(b.t) : sort === "abs" ? b.dmDays - a.dmDays || b.am.per - a.am.per || a.t.localeCompare(b.t) : a.t.localeCompare(b.t));
+  const title = monthName(month);
+  const Th = ({ k, children, left }) => <th onClick={k ? () => setSort(k) : undefined} style={{ ...th0, textAlign: left ? "left" : "center", cursor: k ? "pointer" : "default", color: sort === k ? th.accent : th0.color, whiteSpace: "nowrap" }}>{children}{sort === k ? " ↓" : ""}</th>;
+  const chip = (l, v, tone) => <span style={{ fontSize: 12, padding: "4px 11px", borderRadius: 20, border: `1px solid ${C.line}`, background: tone || "#fff" }}>{l}: <b>{v}</b></span>;
+  return (
+    <div style={card}>
+      <Panelhead text={`Monthly report — substitution & absence (${title})`} count={`year ${R.ay.label}`} />
+      <div style={{ padding: 12, display: "grid", gap: 10 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <input type="month" className="tt-in" value={month} onChange={(e) => e.target.value && setMonth(e.target.value)} style={{ width: 170, fontFamily: sans, fontSize: 13, height: 36 }} />
+          {chip("School days", R.schoolDays)}{chip("Absences", R.absList.length, R.absList.length ? C.warnSoft : undefined)}{chip("Covered", `${R.cov}/${R.need}`, R.need && R.cov === R.need ? C.freeSoft : undefined)}{chip("Substitutions", R.rows.reduce((a, x) => a + x.dm, 0))}
+          <span style={{ marginLeft: "auto" }}><PrintBtn onClick={() => exportSubsReportPDF(cfg, month)} icon="pdf" label="Print report" sub="A4 · with HM signature & seal" /></span>
+        </div>
+        <div className="tt-scroll" style={{ overflow: "auto", maxHeight: 460 }}>
+          <table style={{ ...tbl, tableLayout: "auto", minWidth: 760 }}>
+            <thead><tr><Th k="t" left>Teacher</Th><Th>Free / wk</Th><Th k="dm">Subs (month)</Th><Th>Subs (year)</Th><Th>Absent: day</Th><Th>FN</Th><Th>AN</Th><Th>Periods</Th><Th k="abs">Days (month)</Th><Th>Days (year)</Th><Th left>Notes</Th></tr></thead>
+            <tbody>{rows.map((x) => { const w = Object.entries(x.why).filter(([k]) => k !== "Leave").map(([k, v]) => `${k} ${v}`).join(", "); const td = { ...cellTd, height: 30, fontFamily: mono, fontSize: 12.5 }; return (
+              <tr key={x.t}>
+                <td style={{ ...td, textAlign: "left", fontWeight: 800 }}>{x.t}</td>
+                <td style={td}>{x.free}</td>
+                <td style={{ ...td, fontWeight: 800, color: x.dm ? th.g2 : C.sub }}>{x.dm || "—"}{x.dm ? <span style={{ fontSize: 10.5, color: C.sub, fontWeight: 600 }}> · {x.pct}%</span> : null}</td>
+                <td style={td}>{x.dy || "—"}</td>
+                <td style={td}>{x.am.full || "—"}</td><td style={td}>{x.am.fn || "—"}</td><td style={td}>{x.am.an || "—"}</td><td style={td}>{x.am.per || "—"}</td>
+                <td style={{ ...td, fontWeight: 800, background: x.dmDays ? C.warnSoft : undefined }}>{fmtDays(x.dmDays)}</td>
+                <td style={td}>{fmtDays(x.dyDays)}</td>
+                <td style={{ ...td, textAlign: "left", fontFamily: sans, fontSize: 11.5, color: C.sub }}>{[w, x.ex].filter(Boolean).join(" · ")}</td>
+              </tr>); })}</tbody>
+          </table>
+        </div>
+        <div style={{ fontSize: 11.5, color: C.sub }}>Days = whole days + ½ for each forenoon (FN) or afternoon (AN) absence. The year runs June–May. Holidays in the school calendar are not counted. Tap a column title to sort.</div>
+      </div>
+    </div>
+  );
+}
 function SubsView({ cfg, update, mobile, ask, limited }) {
   const [date, setDate] = useState(isoToday());
   const [q, setQ] = useState("");
   const [msg, setMsg] = useState("");
   const th = CUR_TH || THEMES.teal;
-  const d = isoDay(date), working = cfg.days.includes(d);
+  const d = dayOf(cfg, date), working = !!d, g = cfgOn(cfg, date), cal = calEntry(cfg, date);
   const rec = (cfg.subs || {})[date] || {}, abs = rec.absent || {}, assign = rec.assign || {};
+  const classCovers = useMemo(() => classWeekCovers(cfg, date), [cfg, date]);
   const needs = useMemo(() => subsNeeds(cfg, date), [cfg, date]);
   const counts = useMemo(() => subCounts(cfg, date), [cfg, date]);
   const covered = needs.filter((n) => assign[n.key]).length;
   const edit = (fn, auto) => update((n) => {
     n.subs = n.subs || {}; const r = n.subs[date] || (n.subs[date] = { absent: {}, assign: {} }); r.absent = r.absent || {}; r.assign = r.assign || {};
     fn(r, n);
-    // tidy: drop assignments that are no longer needed, empty days, and records older than ~13 months
-    const keys = new Set(subsNeeds(n, date).map((x) => x.key)); for (const k of Object.keys(r.assign)) if (!keys.has(k) || !r.assign[k]) delete r.assign[k];
-    if (!Object.keys(r.absent).length && !Object.keys(r.assign).length && !r.note) delete n.subs[date];
-    const cut = isoShift(isoToday(), -400); for (const k of Object.keys(n.subs)) if (k < cut) delete n.subs[k];
-    if (auto && n.subsAuto !== false && n.subs[date]) fillSubs(n, date);
+    tidySubs(n, date, auto);
   });
+  const setCal = (fn) => update((n) => { n.calendar = { ...(n.calendar || {}) }; const nx = fn(n.calendar[date] ? { ...n.calendar[date] } : null); if (nx) n.calendar[date] = nx; else delete n.calendar[date]; if (!Object.keys(n.calendar).length) delete n.calendar; tidySubs(n, date, true); });
+  const setWork = (t, v) => edit((r) => { r.work = { ...(r.work || {}) }; if (v) r.work[t] = v; else delete r.work[t]; });
   const toggleAbs = (t) => edit((r) => { if (r.absent[t]) { delete r.absent[t]; if (r.reason) delete r.reason[t]; } else r.absent[t] = "full"; }, true);
   const setPart = (t, p) => edit((r) => { r.absent[t] = p === "some" ? "p:" : p; }, true);
   const togglePeriod = (t, p) => edit((r) => { const cur = new Set(partPeriods(cfg, r.absent[t])); if (cur.has(p)) cur.delete(p); else cur.add(p); r.absent[t] = "p:" + [...cur].sort((a, b) => a - b).join(","); }, true);
@@ -5132,9 +5689,9 @@ function SubsView({ cfg, update, mobile, ask, limited }) {
     update((n) => {
       n.subs = n.subs || {}; const r = n.subs[date] || (n.subs[date] = { absent: {}, assign: {} }); r.assign = r.assign || {};
       const cnt = subCounts(n, date);
-      for (const nd of subsNeeds(n, date)) { if (r.assign[nd.key]) continue; const c = subCandidates(n, date, nd, cnt)[0]; if (c) { r.assign[nd.key] = c.u; cnt.month[c.u] = (cnt.month[c.u] || 0) + 1; cnt.rot[c.u] = (cnt.rot[c.u] || 0) + 1; if (n.subsOwed && n.subsOwed[c.u] > 0) { n.subsOwed = { ...n.subsOwed }; n.subsOwed[c.u]--; if (!n.subsOwed[c.u]) delete n.subsOwed[c.u]; } } }
+      for (const nd of subsNeeds(n, date)) { if (r.assign[nd.key]) continue; const c = subCandidates(n, date, nd, cnt).find((x) => !x.blocked); if (c) { r.assign[nd.key] = c.u; cnt.month[c.u] = (cnt.month[c.u] || 0) + 1; cnt.rot[c.u] = (cnt.rot[c.u] || 0) + 1; if (n.subsOwed && n.subsOwed[c.u] > 0) { n.subsOwed = { ...n.subsOwed }; n.subsOwed[c.u]--; if (!n.subsOwed[c.u]) delete n.subsOwed[c.u]; } } }
     });
-    setMsg((cfg.subsMode || "rotation") === "rotation" ? "Filled in by turn (rotation). Change any of them from the lists — a replaced teacher keeps their turn." : "Best substitutes filled in. Change any of them from the lists.");
+    setMsg(subsModeOf(cfg) === "fair" ? "Filled in by fair share — whoever is freest today and has used the smallest part of their free periods. Change any of them from the lists." : subsModeOf(cfg) === "turn" ? "Filled in by turn (rotation). Change any of them from the lists — a replaced teacher keeps their turn." : "Best substitutes filled in. Change any of them from the lists.");
   };
   const share = () => { const t = subsText(cfg, date); try { window.open("https://wa.me/?text=" + encodeURIComponent(t), "_blank"); } catch (e) { /* ignore */ } };
   const copy = async () => { try { await navigator.clipboard.writeText(subsText(cfg, date)); setMsg("Copied — paste it in WhatsApp or anywhere."); } catch (e) { setMsg("Couldn't copy on this device."); } };
@@ -5157,9 +5714,12 @@ function SubsView({ cfg, update, mobile, ask, limited }) {
           <button className="tt-btn" onClick={() => setDate(isoShift(date, 1))} style={navBtn} aria-label="Next day">›</button>
           {date !== isoToday() && <button className="tt-btn" onClick={() => setDate(isoToday())} style={{ ...ghostBtn, fontSize: 12.5 }}>Today</button>}
           <span style={{ fontSize: 15, fontWeight: 800, color: th.g2, marginLeft: 6 }}>{isoNice(date, true)}</span>
-          {!working && <span style={{ fontSize: 12, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: C.warnSoft, color: C.warn }}>Not a working day in the timetable</span>}
+          {(cal || !working) && <span style={{ fontSize: 12, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: !working ? C.warnSoft : `${th.accent}18`, color: !working ? C.warn : th.g2 }}>{dayLabel(cfg, date)}</span>}
         </div>
+        <DayStatus cfg={cfg} date={date} setCal={setCal} mobile={mobile} />
       </div>
+      <SpecialDayEditor cfg={cfg} date={date} setCal={setCal} mobile={mobile} />
+      {!working && <div style={{ ...card, marginBottom: 16, padding: "18px 16px", textAlign: "center", fontSize: 13.5, color: C.sub }}>{cal ? "🌿 Holiday — no classes, so there is nothing to cover." : `No school on ${DAY_FULL[isoDay(date)] || "this day"} in the timetable. If the school works today, choose "Follows another day" above.`}</div>}
 
       {working && <div style={{ display: "grid", gridTemplateColumns: mobile ? "minmax(0,1fr)" : "minmax(0, 340px) minmax(0, 1fr)", gap: 16, alignItems: "start" }}>
         <div style={{ ...card }}>
@@ -5177,7 +5737,8 @@ function SubsView({ cfg, update, mobile, ask, limited }) {
                       <select className="tt-sel" value={(rec.reason || {})[t] || "Leave"} onChange={(e) => setReason(t, e.target.value)} style={{ width: "auto", flex: "0 1 110px", fontFamily: sans, fontSize: 12.5 }}>{ABS_REASONS.map((x) => <option key={x}>{x}</option>)}</select>
                       <button className="tt-btn" onClick={() => toggleAbs(t)} aria-label={`Remove ${t}`} style={{ border: "none", background: "#fff", borderRadius: 20, width: 24, height: 24, cursor: "pointer", color: C.clash, fontWeight: 800 }}>×</button>
                     </div>
-                    {some && <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>{cfg.periods.map((pn, p) => <button key={p} className="tt-btn" onClick={() => togglePeriod(t, p)} style={{ minWidth: 38, padding: "4px 6px", borderRadius: 8, fontSize: 12, fontWeight: 800, cursor: "pointer", border: `1.5px solid ${sel.has(p) ? C.clash : C.line}`, background: sel.has(p) ? C.clash : "#fff", color: sel.has(p) ? "#fff" : C.sub }}>P{pn}</button>)}</div>}
+                    {some && <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>{g.periods.map((pn, p) => <button key={p} className="tt-btn" onClick={() => togglePeriod(t, p)} style={{ minWidth: 38, padding: "4px 6px", borderRadius: 8, fontSize: 12, fontWeight: 800, cursor: "pointer", border: `1.5px solid ${sel.has(p) ? C.clash : C.line}`, background: sel.has(p) ? C.clash : "#fff", color: sel.has(p) ? "#fff" : C.sub }}>P{pn}</button>)}</div>}
+                    <input className="tt-in" value={(rec.work || {})[t] || ""} onChange={(e) => setWork(t, e.target.value)} placeholder="Work for the class (optional), e.g. Maths p.42 Ex 3.1" style={{ fontFamily: sans, fontSize: 12, height: 30, background: "#fff" }} />
                   </div>); })}
               </div>
             )}
@@ -5200,8 +5761,9 @@ function SubsView({ cfg, update, mobile, ask, limited }) {
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                   <button className="tt-btn" onClick={autoAll} style={solidBtn}>✦ Suggest for all</button>
                   <label title="Substitutes are chosen by themselves as soon as a teacher is marked absent" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 700, color: C.ink, cursor: "pointer" }}><input type="checkbox" checked={cfg.subsAuto !== false} onChange={(e) => update((n) => { n.subsAuto = e.target.checked; })} /> Fill automatically</label>
+                  <label title="When the fair share is close, choose the class teacher or a teacher who already teaches the class, so lessons go on" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 700, color: C.ink, cursor: "pointer" }}><input type="checkbox" checked={cfg.subsPreferClass !== false} onChange={(e) => update((n) => { n.subsPreferClass = e.target.checked; })} /> Prefer teachers who know the class</label>
                   <div style={{ display: "inline-flex", border: `1px solid ${C.line}`, borderRadius: 10, overflow: "hidden" }}>
-                    {[["rotation", "By turn (rotation)"], ["fit", "Best fit for the class"]].map(([k, l]) => <button key={k} className="tt-btn" onClick={() => update((n) => { n.subsMode = k; })} style={{ border: "none", padding: "6px 11px", fontSize: 12, fontWeight: 700, cursor: "pointer", background: (cfg.subsMode || "rotation") === k ? C.primary : "#fff", color: (cfg.subsMode || "rotation") === k ? "#fff" : C.sub }}>{l}</button>)}
+                    {[["fair", "Fair share (free periods)"], ["turn", "Equal turns"], ["fit", "Best fit for the class"]].map(([k, l]) => <button key={k} className="tt-btn" onClick={() => update((n) => { n.subsMode = k; })} style={{ border: "none", padding: "6px 11px", fontSize: 12, fontWeight: 700, cursor: "pointer", background: subsModeOf(cfg) === k ? C.primary : "#fff", color: subsModeOf(cfg) === k ? "#fff" : C.sub }}>{l}</button>)}
                   </div>
                   <button className="tt-btn" onClick={() => edit((r) => { r.assign = {}; })} style={ghostBtn}>Clear choices</button>
                   <span style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -5211,19 +5773,20 @@ function SubsView({ cfg, update, mobile, ask, limited }) {
                 </div>
                 {msg && <div style={{ fontSize: 12.5, fontWeight: 600, color: C.free }}>{msg}</div>}
                 {needs.map((n) => {
-                  const cands = subCandidates(cfg, date, n, counts), cur = assign[n.key], best = cands[0];
+                  const cands = subCandidates(cfg, date, n, counts), cur = assign[n.key], best = cands.find((x) => !x.blocked);
                   const curC = cands.find((c) => c.u === cur);
                   return (
                     <div key={n.key} style={{ display: "grid", gridTemplateColumns: mobile ? "auto minmax(0,1fr)" : "auto minmax(0,1fr) minmax(0, 300px)", gap: 10, alignItems: "center", padding: "10px 12px", borderRadius: 12, border: `1.5px solid ${cur ? `${C.free}55` : `${C.warn}66`}`, background: cur ? "#f6fcf8" : "#fffaf0" }}>
                       <span style={{ width: 44, height: 44, borderRadius: 12, display: "grid", placeItems: "center", background: `linear-gradient(135deg, ${th.g1}, ${th.g2})`, color: "#fff", fontWeight: 800, fontSize: 15 }}>P{cfg.periods[n.p]}</span>
                       <div style={{ minWidth: 0 }}>
-                        <div style={{ fontSize: 14, fontWeight: 800, color: C.ink }}>{n.cls} · <span style={{ color: SUBJECT_BAR[n.sub] || C.ink }}>{n.sub}</span>{n.combined && <span style={{ fontSize: 11, color: C.sub, fontWeight: 600 }}> · combined</span>}</div>
+                        <div style={{ fontSize: 14, fontWeight: 800, color: C.ink }}>{n.cls} · <span style={{ color: SUBJECT_BAR[n.sub] || C.ink }}>{n.sub}</span>{n.combined && <span style={{ fontSize: 11, color: C.sub, fontWeight: 600 }}> · combined</span>}{(() => { const k = Math.max(0, ...String(n.cls).split(", ").map((c) => (classCovers[c] || []).length)); return k >= 3 ? <span title="Substitute periods for this class so far this week" style={{ marginLeft: 6, fontSize: 10.5, fontWeight: 800, padding: "1px 7px", borderRadius: 10, background: C.warnSoft, color: "#94620b", verticalAlign: "middle" }}>{k} covers this week</span> : null; })()}</div>
+                        {n.work && <div style={{ fontSize: 12, color: "#5a4a12", background: "#fff6dc", borderRadius: 7, padding: "2px 7px", margin: "2px 0", display: "inline-block" }}>📝 {n.work}</div>}
                         <div style={{ fontSize: 12, color: C.sub }}>for <b style={{ color: "#8a1f17", fontFamily: mono }}>{n.t}</b>{curC ? <> · {curC.why.join(" · ")}</> : best ? <> · best: <b style={{ fontFamily: mono, color: C.ink }}>{best.u}</b> ({best.why.slice(0, 2).join(", ")})</> : <span style={{ color: C.clash }}> · nobody is free this period</span>}</div>
                       </div>
                       <div style={{ gridColumn: mobile ? "1 / -1" : "auto", display: "flex", gap: 6 }}>
                         <select className="tt-sel" value={cur || ""} onChange={(e) => pick(n.key, e.target.value)} style={{ flex: 1, fontFamily: sans, fontSize: 13, height: 36, borderColor: cur ? C.free : undefined, fontWeight: cur ? 700 : 500 }}>
                           <option value="">— choose substitute —</option>
-                          {cands.map((c, i) => <option key={c.u} value={c.u}>{i === 0 ? "★ " : ""}{c.u} — {c.why.join(", ")}</option>)}
+                          {cands.map((c, i) => <option key={c.u} value={c.u}>{i === 0 && !c.blocked ? "★ " : c.blocked ? "⛔ " : ""}{c.u} — {c.why.join(", ")}</option>)}
                         </select>
                         {!cur && best && <button className="tt-btn" onClick={() => pick(n.key, best.u)} style={{ ...solidBtn, padding: "6px 12px" }}>Use {best.u}</button>}
                       </div>
@@ -5236,7 +5799,9 @@ function SubsView({ cfg, update, mobile, ask, limited }) {
         </div>
       </div>}
 
-      <div style={{ marginTop: 16 }}><RotationPanel cfg={cfg} update={update} date={date} counts={counts} ask={ask} limited={limited} /></div>
+      <div style={{ marginTop: 16 }}>{subsModeOf(cfg) === "turn" ? <RotationPanel cfg={cfg} update={update} date={date} counts={counts} ask={ask} limited={limited} /> : <FairPanel cfg={cfg} update={update} date={date} counts={counts} ask={ask} limited={limited} />}</div>
+      <div style={{ marginTop: 16 }}><SubsExemptPanel cfg={cfg} update={update} ask={ask} date={date} limited={limited} /></div>
+      <div style={{ marginTop: 16 }}><CalendarPanel cfg={cfg} update={update} date={date} setDate={setDate} ask={ask} mobile={mobile} /></div>
       <div style={{ display: "grid", gridTemplateColumns: mobile ? "minmax(0,1fr)" : "repeat(2, minmax(0,1fr))", gap: 16, marginTop: 16 }}>
         <div style={card}>
           <Panelhead text={`Fair share — substitutions taken (${new Date(date + "T00:00").toLocaleDateString(undefined, { month: "long" })})`} count={`${tally.reduce((a, x) => a + x.m, 0)} this month`} />
@@ -5251,7 +5816,7 @@ function SubsView({ cfg, update, mobile, ask, limited }) {
                   </div>); })}
               </div>
             )}
-            <div style={{ marginTop: 12 }}><PrintBtn onClick={() => exportSubMonthPDF(cfg, month)} icon="pdf" light label="Monthly record" sub="A4 · every substitution this month" /></div>
+            <div style={{ marginTop: 12 }}><PrintBtn onClick={() => exportSubsReportPDF(cfg, month)} icon="pdf" light label="Monthly report" sub="A4 · substitutions & absences" /></div>
           </div>
         </div>
         <div style={card}>
@@ -5270,6 +5835,7 @@ function SubsView({ cfg, update, mobile, ask, limited }) {
           </div>
         </div>
       </div>
+      <div style={{ marginTop: 16 }}><SubsReportPanel cfg={cfg} date={date} mobile={mobile} /></div>
     </div>
   );
 }
@@ -5665,6 +6231,7 @@ function TeacherAvailability({ cfg, update, ask, teacherLoad = {}, mobile }) {
 }
 
 function SetupView({ cfg, update, ask, askPw, mobile, teacherLoad, me, acc }) {
+  const can = (k) => !acc || !acc.setup || acc.setup.includes(k);
   const [name, setName] = useState("");
   const [ct, setCt] = useState("");
   const [clonefrom, setClonefrom] = useState(cfg.classes[0]);
@@ -5742,17 +6309,19 @@ function SetupView({ cfg, update, ask, askPw, mobile, teacherLoad, me, acc }) {
     <div>
       <ViewHeader title="Classes & setup" note="Add or remove classes each academic year, choose the working days, and maintain the subject and teacher lists." />
 
-      <div style={{ ...card, marginBottom: 16 }}>
+      {acc && acc.setup && !acc.setup.length && <EmptyState title="Nothing to set up" msg="Your login has Classes & setup turned on but no parts of it chosen. Ask the administrator to choose the parts in Staff access." />}
+      {can("school") && <div style={{ ...card, marginBottom: 16 }}>
         <Panelhead text="School name" />
         <div style={{ padding: 14 }}>
           <input className="tt-in" style={{ maxWidth: 380, fontSize: 14, padding: "9px 11px" }} value={cfg.school} onChange={(e) => update((n) => { n.school = e.target.value; })} placeholder="Your school name" />
         </div>
-      </div>
-      <YearCard cfg={cfg} update={update} askPw={askPw} />
+      </div>}
+      {can("year") && <YearCard cfg={cfg} update={update} askPw={askPw} />}
       {(!acc || acc.manage) && <StaffAccessCard cfg={cfg} update={update} me={me} />}
-      <LogoCard cfg={cfg} update={update} />
-      <StampCard cfg={cfg} update={update} mobile={mobile} />
+      {can("school") && <LogoCard cfg={cfg} update={update} />}
+      {can("school") && <StampCard cfg={cfg} update={update} mobile={mobile} />}
 
+      {can("days") && <>
       <div style={{ ...card, marginBottom: 16 }}>
         <Panelhead text="Working days" />
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: 14 }}>
@@ -5813,7 +6382,8 @@ function SetupView({ cfg, update, ask, askPw, mobile, teacherLoad, me, acc }) {
         </div>
       </div>
 
-      <div style={{ ...card, marginBottom: 16 }}>
+      </>}
+      {can("password") && <div style={{ ...card, marginBottom: 16 }}>
         <Panelhead text="Admin password" count={cfg.adminPw ? "set" : "not set"} tone={cfg.adminPw ? "free" : undefined} />
         <div style={{ padding: 14, display: "grid", gap: 10 }}>
           <div style={{ fontSize: 12.5, color: C.sub, lineHeight: 1.6 }}>Needed for <b>Reset</b>, <b>Master reset</b>, <b>Clear all</b> (Assign timetable) and <b>Clear all mapping</b>. Everyone who signs in uses the same password.</div>
@@ -5826,13 +6396,13 @@ function SetupView({ cfg, update, ask, askPw, mobile, teacherLoad, me, acc }) {
           </div>
           {pwMsg && <div style={{ fontSize: 12.5, color: pwMsg.ok ? C.free : C.clash, fontWeight: 600 }}>{pwMsg.text}</div>}
         </div>
-      </div>
+      </div>}
 
-      <ClassTeacherImport cfg={cfg} update={update} ask={ask} />
-      <TeacherAvailability cfg={cfg} update={update} ask={ask} teacherLoad={teacherLoad} mobile={mobile} />
-      <ExtraDutiesPanel cfg={cfg} update={update} ask={ask} mobile={mobile} />
+      {can("ctimport") && <ClassTeacherImport cfg={cfg} update={update} ask={ask} />}
+      {can("availability") && <TeacherAvailability cfg={cfg} update={update} ask={ask} teacherLoad={teacherLoad} mobile={mobile} />}
+      {can("duties") && <ExtraDutiesPanel cfg={cfg} update={update} ask={ask} mobile={mobile} />}
 
-      <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "minmax(0,1.2fr) minmax(0,1fr)", gap: 16, alignItems: "start" }}>
+      {can("classes") && <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "minmax(0,1.2fr) minmax(0,1fr)", gap: 16, alignItems: "start" }}>
         <div style={card}>
           <Panelhead text="Classes & divisions" count={cfg.classes.length} />
           <div style={{ display: "flex", flexWrap: "wrap", gap: 7, padding: 14, maxHeight: 260, overflowY: "auto" }}>
@@ -5886,7 +6456,7 @@ function SetupView({ cfg, update, ask, askPw, mobile, teacherLoad, me, acc }) {
             </div>
           </div>
         </div>
-      </div>
+      </div>}
     </div>
   );
 }
@@ -5947,7 +6517,7 @@ function teacherAt(cfg, t, d, p) {
   }
   if (hit) { hit.c = divs.join(", "); return hit; }
   var ex = extraAt(cfg, t, d, p);
-  if (ex) return { c: ex.label || "Duty", sub: ex.kind === "class" ? "Class" : "Duty", extra: true, kind: ex.kind };
+  if (ex) return { c: ex.label || "Duty", sub: ex.kind === "class" ? "Class" : ex.kind === "lss" ? "LSS/USS" : "Duty", extra: true, kind: ex.kind, cover: ex.cover !== undefined ? !!ex.cover : ex.kind === "class" };
   return null;
 }
 function isOffDay(cfg, t, d) { var a = (cfg.teacherDays || {})[t]; return !!(a && a.length && a.indexOf(d) < 0); }

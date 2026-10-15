@@ -50,10 +50,14 @@ export default function TeacherPage({ token }) {
   const school = st.school || {}, page = st.page;
   const days = school.days || [], periods = school.periods || [];
   const today = iso(now), dayCode = WD[now.getDay()];
-  const working = days.includes(dayCode);
-  const showDay = tab || (working ? dayCode : days[0]);
+  const cal = (page && page.cal) || {};
+  const calToday = cal[today] || null;                       // holiday, a day that follows another day's timetable, or a special timetable
+  const working = calToday ? calToday.k !== "h" : days.includes(dayCode);
+  const followDay = calToday && calToday.d ? calToday.d : dayCode;
+  const showDay = tab || (days.includes(followDay) ? followDay : days[0]);
   const subs = (page && page.subs) || {};
-  const upcoming = useMemo(() => Object.keys(subs).filter((d) => d > today && (subs[d].cover || []).length).sort(), [subs, today]);
+  const upcoming = useMemo(() => [...new Set([...Object.keys(subs).filter((d) => (subs[d].cover || []).length), ...Object.keys(cal)])].filter((d) => d > today).sort(), [subs, cal, today]);
+  const calText = (c) => !c ? "" : c.k === "h" ? `Holiday${c.l ? " — " + c.l : ""}` : c.k === "f" ? `Follows ${(school.dayNames || {})[c.d] || c.d}'s timetable${c.l ? " — " + c.l : ""}` : `Special timetable${c.l ? " — " + c.l : ""}`;
 
   const shell = (children) => (
     <div style={{ minHeight: "100vh", background: "#eef1f5", fontFamily: sans, color: C.ink }}>
@@ -79,9 +83,11 @@ export default function TeacherPage({ token }) {
   const absSet = typeof absentPart === "string" && absentPart.startsWith("p:") ? new Set(absentPart.slice(2).split(",").filter((x) => x !== "").map(Number)) : null;
   const absentAt = (p) => !!absentPart && (absSet ? absSet.has(p) : absentPart === "full" || (absentPart === "am" ? p < half : p >= half));
   const cell = (d, p) => (page.week[d] || [])[p];
+  const todayRow = calToday && calToday.row ? calToday.row : null;
+  const todayPeriods = todayRow ? periods.slice(0, todayRow.length) : periods;
   const subColor = (s) => SUB_COL[s] || C.g2;
   const coverToday = td.cover || [];
-  const myToday = periods.map((_, p) => ({ p, c: working ? cell(dayCode, p) : null, cover: coverToday.find((x) => x.p === p), away: absentAt(p), by: (td.coveredBy || []).find((x) => x.p === p) }));
+  const myToday = todayPeriods.map((_, p) => ({ p, c: !working ? null : todayRow ? todayRow[p] : cell(dayCode, p), cover: coverToday.find((x) => x.p === p), away: absentAt(p), by: (td.coveredBy || []).find((x) => x.p === p) }));
   const freeToday = myToday.filter((x) => x.c === null && !x.cover).length;
   const at = page._at ? new Date(page._at) : null;
 
@@ -106,14 +112,15 @@ export default function TeacherPage({ token }) {
             {working && <span style={{ marginLeft: "auto", fontSize: 12, fontWeight: 700, padding: "2px 10px", borderRadius: 20, background: C.freeSoft, color: C.free }}>{freeToday} free period{freeToday === 1 ? "" : "s"}</span>}
           </div>
           {absentPart && <div style={{ ...note, background: C.redSoft, color: "#8a1f17" }}>You are marked <b>absent</b> {absSet ? `for ${[...absSet].sort((x, y) => x - y).map((p) => "P" + periods[p]).join(", ")}` : absentPart === "full" ? "today" : absentPart === "am" ? "for the forenoon (FN)" : "for the afternoon (AN)"}. Your classes are covered by colleagues.</div>}
-          {coverToday.length > 0 && <div style={{ ...note, background: C.warnSoft, color: "#7a5310" }}><b>Substitution today:</b> {coverToday.sort((a, b) => a.p - b.p).map((x) => `P${periods[x.p]} ${x.cls} ${x.sub} (for ${x.for})`).join(" · ")}</div>}
-          {!working ? <div style={{ color: C.sub, fontSize: 14, padding: "8px 0" }}>No classes today. 🌿</div> : (
+          {calToday && <div style={{ ...note, background: calToday.k === "h" ? "#fdf2e3" : C.soft, color: calToday.k === "h" ? "#7a5310" : C.g2 }}><b>{calText(calToday)}</b>{calToday.k === "f" ? " — your periods below are from that day." : calToday.k === "s" ? " — today's periods are shown below." : ""}</div>}
+          {coverToday.length > 0 && <div style={{ ...note, background: C.warnSoft, color: "#7a5310" }}><b>Substitution today:</b> {coverToday.sort((a, b) => a.p - b.p).map((x) => `P${periods[x.p]} ${x.cls} ${x.sub} (for ${x.for})${x.w ? ` — work: ${x.w}` : ""}`).join(" · ")}</div>}
+          {!working ? <div style={{ color: C.sub, fontSize: 14, padding: "8px 0" }}>{calToday && calToday.k === "h" ? "Holiday — no classes today. 🌿" : "No classes today. 🌿"}</div> : (
             <div style={{ display: "grid", gap: 6 }}>
-              {myToday.flatMap((x) => [x.p === half && half > 0 && half < periods.length ? <div key={"lunch"} style={{ display: "flex", alignItems: "center", gap: 10, color: C.accent, fontSize: 11.5, fontWeight: 800, letterSpacing: 1, padding: "2px 4px" }}><span style={{ flex: 1, height: 1, background: "#f0d9b5" }} />LUNCH · AFTERNOON (AN)<span style={{ flex: 1, height: 1, background: "#f0d9b5" }} /></div> : null, x]).filter(Boolean).map((x) => {
+              {myToday.flatMap((x) => [x.p === half && half > 0 && half < todayPeriods.length ? <div key={"lunch"} style={{ display: "flex", alignItems: "center", gap: 10, color: C.accent, fontSize: 11.5, fontWeight: 800, letterSpacing: 1, padding: "2px 4px" }}><span style={{ flex: 1, height: 1, background: "#f0d9b5" }} />LUNCH · AFTERNOON (AN)<span style={{ flex: 1, height: 1, background: "#f0d9b5" }} /></div> : null, x]).filter(Boolean).map((x) => {
                 if (!x || x.p === undefined) return x;
                 const c = x.c;
                 let main, sub, bg = "#fff", bd = C.line, tag = null;
-                if (x.cover) { main = `${x.cover.cls} · ${x.cover.sub}`; sub = `Substitution for ${x.cover.for}`; bg = C.warnSoft; bd = `${C.warn}88`; tag = "COVER"; }
+                if (x.cover) { main = `${x.cover.cls} · ${x.cover.sub}`; sub = `Substitution for ${x.cover.for}${x.cover.w ? ` · Work: ${x.cover.w}` : ""}`; bg = C.warnSoft; bd = `${C.warn}88`; tag = "COVER"; }
                 else if (c === "off") { main = "Not working"; sub = ""; bg = "#f1f3f6"; }
                 else if (!c) { main = "Free"; sub = ""; bg = C.freeSoft; bd = `${C.free}55`; }
                 else { main = `${c.c} · ${c.s}`; sub = c.k ? "combined class" : ""; }
@@ -138,7 +145,7 @@ export default function TeacherPage({ token }) {
             <h2 style={{ margin: "0 0 8px", fontSize: 16 }}>Coming up</h2>
             {upcoming.map((d) => (
               <div key={d} style={{ padding: "6px 0", borderTop: `1px solid ${C.line}`, fontSize: 13.5 }}>
-                <b>{nice(d)}</b> — {subs[d].cover.sort((a, b) => a.p - b.p).map((x) => `P${periods[x.p]} ${x.cls} ${x.sub} (for ${x.for})`).join(" · ")}
+                <b>{nice(d)}</b>{cal[d] ? <span style={{ color: cal[d].k === "h" ? C.accent : C.g1, fontWeight: 700 }}> — {calText(cal[d])}</span> : null}{subs[d] && (subs[d].cover || []).length ? <> — {subs[d].cover.sort((a, b) => a.p - b.p).map((x) => `P${periods[x.p]} ${x.cls} ${x.sub} (for ${x.for})${x.w ? ` — work: ${x.w}` : ""}`).join(" · ")}</> : null}
               </div>
             ))}
           </section>
