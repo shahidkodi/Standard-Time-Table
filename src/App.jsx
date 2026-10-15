@@ -12,7 +12,7 @@ import { supabase } from "./supabaseClient";
    ============================================================ */
 
 const STORE_KEY = "tt_cfg_v2";
-const APP_VERSION = "2026-10-15 e";
+const APP_VERSION = "2026-10-15 f";
 
 const WEEK_ORDER = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const DAY_FULL = { MON: "Monday", TUE: "Tuesday", WED: "Wednesday", THU: "Thursday", FRI: "Friday", SAT: "Saturday", SUN: "Sunday" };
@@ -587,10 +587,10 @@ function SaveReport({ r, onClose }) {
 
 export default function App() {
   const [cfg, setCfg] = useState(null);
-  const [view, setView] = useState(() => lsGet("tt_view", "classes"));
+  const [view0, setView] = useState(() => lsGet("tt_view", "classes"));
   const [cls, setCls] = useState(() => lsGet("tt_cls", SEED.classes[0]));
   const [tch, setTch] = useState(() => lsGet("tt_tch", SEED.singles[0]));
-  useEffect(() => { lsSet("tt_view", view); }, [view]);
+  useEffect(() => { lsSet("tt_view", view0); }, [view0]);
   useEffect(() => { lsSet("tt_cls", cls); }, [cls]);
   useEffect(() => { lsSet("tt_tch", tch); }, [tch]);
   const [fday, setFday] = useState(SEED.days[0]);
@@ -766,8 +766,10 @@ export default function App() {
   const [showClashes, setShowClashes] = useState(false);
   const [me, setMe] = useState(null);
   useEffect(() => { try { if (typeof supabase !== "undefined" && supabase && supabase.auth) supabase.auth.getSession().then(({ data }) => { const em = data && data.session && data.session.user && data.session.user.email; if (em) setMe(String(em).split("@")[0].toLowerCase()); }).catch(() => {}); } catch (e) { /* preview */ } }, []);
-  const limited = !!(cfg && me && cfg.roles && cfg.roles[me] === "subs");
-  useEffect(() => { if (limited && view !== "subs") setView("subs"); }, [limited, view]);
+  const [unlocked, setUnlocked] = useState(false);
+  const acc = unlocked ? { ...ACCESS_PRESETS.full, preset: "full", who: me, listed: true } : accessFor(cfg, me);
+  const limited = !!acc.tabs;
+  const view = acc.tabs && !acc.tabs.includes(view0) ? (acc.tabs[0] || "__none") : view0;
   useEffect(() => {
     const href = cfg && cfg.logoIcon; if (!href) return;
     try {
@@ -847,7 +849,7 @@ export default function App() {
 
   SCHOOL_LOGO = cfg.logo || ""; SCHOOL_WM = cfg.wmPdf !== false; SCHOOL_NAME = cfg.school || ""; CUR_TH = TH; CUR_VIEW = view;
   const publishNow = (rows) => { if (rows) publishRows(rows); else if (cfg.teacherLinks && cfg.teacherLinks.on) publishRows(buildTeacherPages(cfg)); };
-  const ctx = { me, limited, pubState, publishNow, cfg, update, expand, occupancy, clashTokens, teacherLoad, ask, askPw, isCombined, combinedByBase, mobile };
+  const ctx = { me, acc, limited, pubState, publishNow, cfg, update, expand, occupancy, clashTokens, teacherLoad, ask, askPw, isCombined, combinedByBase, mobile };
 
   return (
     <div style={{ fontFamily: sans, color: C.ink, background: TH.bg, minHeight: "100vh" }}>
@@ -887,20 +889,22 @@ export default function App() {
           <div style={{ fontSize: 16.5, fontWeight: 800, letterSpacing: -0.3 }}>TIME TABLE</div>
           {!mobile && <div style={{ fontSize: 12, color: "rgba(255,255,255,.8)", marginTop: 1, fontWeight: 500 }}>{cfg.school} · {cfg.classes.length} classes · {cfg.singles.length} teachers · {cfg.days.length} days</div>}
         </div>
+        {me && acc.preset !== "full" && <span title={`Signed in as ${me}`} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 700, padding: "4px 10px", borderRadius: 20, background: "rgba(255,255,255,.16)", border: "1px solid rgba(255,255,255,.3)", whiteSpace: "nowrap" }}>👤 {me}{!mobile && ` · ${acc.label}`}</span>}
+        {me && !unlocked && acc.preset !== "full" && cfg.adminPw && <button className="tt-btn" title="Full access for this session with the admin password" onClick={() => askPw("Unlock full access on this device until you sign out?", () => setUnlocked(true))} style={{ ...headerBtn, padding: "5px 9px" }}>🔓</button>}
         <span style={{ display: "inline-flex", gap: 4 }}>
           <button className="tt-btn" onClick={undo} disabled={!histN[0]} title="Undo (Ctrl+Z)" aria-label="Undo" style={{ ...headerBtn, padding: "6px 10px", fontSize: 15, opacity: histN[0] ? 1 : 0.45 }}>↶</button>
           <button className="tt-btn" onClick={redo} disabled={!histN[1]} title="Redo (Ctrl+Y)" aria-label="Redo" style={{ ...headerBtn, padding: "6px 10px", fontSize: 15, opacity: histN[1] ? 1 : 0.45 }}>↷</button>
         </span>
-        {!limited && <ClashBadge n={totalClashes} onClick={() => setShowClashes(true)} />}
+        {(!acc.tabs || acc.tabs.includes("analysis") || acc.tabs.includes("edit")) && <ClashBadge n={totalClashes} onClick={() => setShowClashes(true)} />}
         <span style={{ fontSize: 12, color: "rgba(255,255,255,.85)", minWidth: 56, textAlign: "right", fontWeight: 500 }}>{saved}</span>
-        {!limited && <>
+        {acc.reset && <>
         <button className="tt-btn" onClick={() => askPw("Reset — clear ALL class timetables to blank? Your mapping, classes, teachers and rules are kept.", () => update((n) => { for (const c of n.classes) for (const d of n.days) n.grid[c][d] = emptyDay(n.periods.length); n.locked = {}; }))} style={headerBtn}>Reset</button>
         <button className="tt-btn" onClick={() => askPw("MASTER RESET  -  permanently delete EVERYTHING (all classes, teachers, subjects, mapping, combined subjects, rules, standard periods, and the whole timetable) and start from a blank app? This cannot be undone.", () => update((n) => { n.classes = []; n.singles = []; n.subjects = []; n.combined = []; n.bkey = {}; n.classTeacher = {}; n.grid = {}; n.stdPeriods = {}; n.rules = {}; n.twice = {}; n.classRules = {}; n.locked = {}; n.commonPeriods = []; n.teacherDays = {}; n.versions = []; n.classMaxP = {}; }))} style={{ ...headerBtn, border: "1px solid rgba(255,255,255,.5)", background: "rgba(214,69,69,.35)" }}>Master reset</button>
         </>}
       </header>
 
-      <NavTabs view={view} setView={setView} status={tabStatus} TH={TH} mobile={mobile} only={limited ? ["subs"] : null} />
-      <NavDrawer open={menuOpen} onClose={() => setMenuOpen(false)} view={view} setView={setView} TH={TH} school={cfg.school} logo={cfg.logo} status={tabStatus} only={limited ? ["subs"] : null} me={me} theme={theme} setTheme={persistTheme} onSignOut={handleSignOut} />
+      <NavTabs view={view} setView={setView} status={tabStatus} TH={TH} mobile={mobile} only={acc.tabs} />
+      <NavDrawer open={menuOpen} onClose={() => setMenuOpen(false)} view={view} setView={setView} TH={TH} school={cfg.school} logo={cfg.logo} status={tabStatus} only={acc.tabs} me={me} theme={theme} setTheme={persistTheme} onSignOut={handleSignOut} />
       <div className="tt-printhead" style={{ display: "none", alignItems: "center", gap: 12, borderBottom: `3px solid ${TH.g1}`, padding: "0 0 8px", margin: "0 0 10px" }}>
         {cfg.logo && <img src={cfg.logo} alt="" style={{ height: 52, width: 52, objectFit: "contain" }} />}
         <div><div style={{ fontSize: 19, fontWeight: 800, color: TH.g2, textTransform: "uppercase", letterSpacing: 0.6 }}>{cfg.school}</div><div style={{ fontSize: 11, fontWeight: 800, color: C.accent, letterSpacing: 2.2, textTransform: "uppercase" }}>{(TABS.find((t) => t[0] === view) || ["", ""])[1]}</div></div>
@@ -926,6 +930,7 @@ export default function App() {
           {view === "export" && <ExportView {...ctx} />}
           {view === "assistant" && <AssistantView {...ctx} />}
           {view === "setup" && <SetupView {...ctx} />}
+          {view === "__none" && <EmptyState title="No sections yet" msg={`Your login (${me || ""}) has not been given any part of the app yet. Ask the administrator to set your access in Classes & setup → Staff access.`} />}
         </section>
       </main>
       {conflict && (
@@ -4736,6 +4741,87 @@ function fillSubs(n, date) {
   return k;
 }
 var ABS_REASONS = ["Leave", "On duty", "Training", "Exam duty", "Other"];
+/* ---------------- Staff access (per login) ---------------- */
+var ACCESS_PRESETS = {
+  full: { label: "Full access", tabs: null, reset: true, manage: true },
+  editor: { label: "Timetable editor", tabs: ["classes", "teachers", "free", "subs", "bkey", "edit", "rules", "combined", "analysis", "export", "assistant"], reset: false, manage: false },
+  view: { label: "View & print only", tabs: ["classes", "teachers", "free", "analysis"], reset: false, manage: false },
+  subs: { label: "Daily substitution only", tabs: ["subs"], reset: false, manage: false },
+  none: { label: "No access", tabs: [], reset: false, manage: false },
+};
+function normUser(u) { return String(u || "").trim().toLowerCase().replace(/@.*$/, ""); }
+function accessEntry(cfg, k) {
+  const a = (cfg.access || {})[k]; if (a) return a;
+  const r = (cfg.roles || {})[k]; if (r) return { preset: r === "subs" ? "subs" : "full" };
+  return null;
+}
+function accessFor(cfg, me) {
+  if (!me || !cfg) return { ...ACCESS_PRESETS.full, preset: "full", who: null, listed: false };
+  const k = normUser(me); let e = accessEntry(cfg, k); const listed = !!e;
+  if (!e) e = { preset: cfg.accessDefault || "full" };
+  const p = e.preset === "custom" ? { label: "Custom access", tabs: (e.tabs || []).filter((t) => TABS.some((x) => x[0] === t)), reset: !!e.reset, manage: !!e.manage } : (ACCESS_PRESETS[e.preset] || ACCESS_PRESETS.full);
+  return { ...p, preset: e.preset, who: k, listed };
+}
+function StaffAccessCard({ cfg, update, me }) {
+  const [name, setName] = useState("");
+  const [preset, setPreset] = useState("subs");
+  const th = CUR_TH || THEMES.teal;
+  const users = [...new Set([...Object.keys(cfg.access || {}), ...Object.keys(cfg.roles || {})])].sort();
+  const meK = normUser(me);
+  const def = cfg.accessDefault || "full";
+  const setUser = (u, entry) => update((n) => { n.access = { ...(n.access || {}), [u]: entry }; if (n.roles && n.roles[u] !== undefined) { const r = { ...n.roles }; delete r[u]; n.roles = r; } });
+  const remove = (u) => update((n) => { const a = { ...(n.access || {}) }; delete a[u]; n.access = a; if (n.roles) { const r = { ...n.roles }; delete r[u]; n.roles = r; } });
+  const add = () => { const u = normUser(name); if (!u) return; setUser(u, u === meK ? { preset: "full" } : preset === "custom" ? { preset: "custom", tabs: ["subs"], reset: false, manage: false } : { preset }); setName(""); };
+  const setDefault = (v) => update((n) => { n.accessDefault = v; if (v !== "full" && meK && !accessEntry(n, meK)) n.access = { ...(n.access || {}), [meK]: { preset: "full" } }; });
+  const opts = [["full", "Full access"], ["editor", "Timetable editor (no setup, no reset)"], ["view", "View & print only"], ["subs", "Daily substitution only"], ["custom", "Custom — choose sections"], ["none", "No access"]];
+  const chk = (on) => ({ display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 10px", borderRadius: 9, fontSize: 12.5, fontWeight: 700, cursor: "pointer", border: `1.5px solid ${on ? th.accent : C.line}`, background: on ? `${th.accent}12` : "#fff", color: on ? th.g2 : C.sub, userSelect: "none" });
+  return (
+    <div style={{ ...card, marginBottom: 16 }}>
+      <Panelhead text="Staff access — who can see what" count={`${users.length} login${users.length === 1 ? "" : "s"} listed`} />
+      <div style={{ padding: 14, display: "grid", gap: 12 }}>
+        <div className="tt-callout">Choose, for each staff login, which sections of the app they see. Changes reach their device within seconds. You are signed in as <b>{meK || "—"}</b> ({accessFor(cfg, me).label}).</div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "10px 12px", borderRadius: 12, background: "#f8fafc", border: `1px solid ${C.line}` }}>
+          <span style={{ fontSize: 13, fontWeight: 700 }}>Logins not listed below get:</span>
+          <select className="tt-sel" value={def} onChange={(e) => setDefault(e.target.value)} style={{ width: 260, fontFamily: sans, fontSize: 13, height: 34 }}>{opts.filter((o) => o[0] !== "custom").map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
+          {def !== "full" && <span style={{ fontSize: 12, color: C.warn, fontWeight: 600 }}>New logins are limited until you list them here.</span>}
+        </div>
+        {users.map((u) => {
+          const e = accessEntry(cfg, u) || { preset: "full" }, isMe = u === meK, a = accessFor(cfg, u + "@x");
+          return (
+            <div key={u} style={{ border: `1.5px solid ${isMe ? `${th.accent}55` : C.line}`, borderRadius: 14, padding: 10, display: "grid", gap: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <span style={{ width: 34, height: 34, borderRadius: 10, display: "grid", placeItems: "center", background: a.manage ? `linear-gradient(135deg, ${th.g1}, ${th.g2})` : a.tabs && a.tabs.length <= 1 ? C.accentSoft : `${th.accent}14`, color: a.manage ? "#fff" : "#94620b", fontWeight: 800 }}>{u.slice(0, 2).toUpperCase()}</span>
+                <b style={{ fontFamily: mono, minWidth: 90 }}>{u}</b>
+                <select className="tt-sel" value={e.preset} disabled={isMe} onChange={(ev) => { const v = ev.target.value; setUser(u, v === "custom" ? { preset: "custom", tabs: a.tabs || TABS.map((x) => x[0]), reset: a.reset, manage: a.manage } : { preset: v }); }} style={{ width: 270, fontFamily: sans, fontSize: 13, height: 34 }}>
+                  {opts.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+                </select>
+                {isMe ? <span style={{ fontSize: 11.5, color: C.sub }}>(you — always full)</span> : <button className="tt-btn" onClick={() => remove(u)} style={{ ...ghostBtn, marginLeft: "auto", padding: "4px 10px", fontSize: 12, color: C.clash }}>Remove</button>}
+              </div>
+              {!isMe && e.preset !== "custom" && <div style={{ fontSize: 12, color: C.sub }}>Sees: {a.tabs === null ? "everything, including Reset and Staff access" : a.tabs.length ? a.tabs.map((t) => (TABS.find((x) => x[0] === t) || ["", t])[1]).join(" · ") : "nothing"}</div>}
+              {!isMe && e.preset === "custom" && (
+                <div style={{ display: "grid", gap: 8 }}>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {TABS.map(([k, l]) => { const on = (e.tabs || []).includes(k); return <span key={k} role="checkbox" aria-checked={on} onClick={() => setUser(u, { ...e, tabs: on ? (e.tabs || []).filter((x) => x !== k) : [...(e.tabs || []), k] })} style={chk(on)}><Icon name={k} size={14} />{l}</span>; })}
+                  </div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    <span role="checkbox" aria-checked={!!e.reset} onClick={() => setUser(u, { ...e, reset: !e.reset })} style={{ ...chk(!!e.reset), ...(e.reset ? { borderColor: C.clash, color: C.clash, background: C.clashSoft } : {}) }}>⚠ Reset & Master reset buttons</span>
+                    <span role="checkbox" aria-checked={!!e.manage} onClick={() => setUser(u, { ...e, manage: !e.manage })} style={{ ...chk(!!e.manage), ...(e.manage ? { borderColor: C.clash, color: C.clash, background: C.clashSoft } : {}) }}>⚠ Can change Staff access</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <input className="tt-in" placeholder="Login username, e.g. sreeja" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} style={{ flex: "1 1 180px", maxWidth: 240, fontFamily: sans, fontSize: 13, height: 36 }} />
+          <select className="tt-sel" value={preset} onChange={(e) => setPreset(e.target.value)} style={{ width: 240, fontFamily: sans, fontSize: 13, height: 36 }}>{opts.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
+          <button className="tt-btn" onClick={add} style={solidBtn}>+ Add login</button>
+        </div>
+        <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.6 }}><b>To create a login:</b> Supabase → <b>Authentication</b> → <b>Users</b> → <b>Add user</b> → email <span style={{ fontFamily: mono }}>username@amups.local</span>, a password, tick <b>Auto Confirm User</b>. Then add the same username here. The person sees their access in the top bar after signing in. These limits are on the app's screens — give logins only to staff you trust with the timetable data.</div>
+      </div>
+    </div>
+  );
+}
 /* ---------------- Undo & safety copies ---------------- */
 var SNAP_SKIP = ["logo", "logoIcon", "hmSign", "seal", "versions", "snapshots", "adminPw", "subs"];
 var SNAP_HINT = { text: "", at: 0 };
@@ -4964,40 +5050,6 @@ function RotationPanel({ cfg, update, date, counts, ask, limited }) {
   );
 }
 const th0 = { padding: "8px 8px", fontSize: 11, fontWeight: 800, color: "#647189", textTransform: "uppercase", letterSpacing: 0.4, background: "#f6f8fa", borderBottom: "1px solid #e4e8ef", textAlign: "center" };
-function StaffAccessCard({ cfg, update, me }) {
-  const [name, setName] = useState("");
-  const th = CUR_TH || THEMES.teal;
-  const roles = cfg.roles || {};
-  const add = () => { const n0 = name.trim().toLowerCase().replace(/@.*$/, ""); if (!n0) return; update((n) => { n.roles = { ...(n.roles || {}), [n0]: n0 === me ? "full" : "subs" }; }); setName(""); };
-  return (
-    <div style={{ ...card, marginBottom: 16 }}>
-      <Panelhead text="Staff access — who can see what" count={Object.values(roles).filter((r) => r === "subs").length ? `${Object.values(roles).filter((r) => r === "subs").length} substitution-only` : "everyone full"} />
-      <div style={{ padding: 14, display: "grid", gap: 12 }}>
-        <div className="tt-callout">Give a teacher the duty of marking absentees: they sign in with their own username and see <b>only Daily substitution</b> — no timetable editing, no setup, no reset. Everyone not listed here keeps full access.{me ? <> You are signed in as <b>{me}</b>.</> : null}</div>
-        {Object.keys(roles).length > 0 && (
-          <div style={{ display: "grid", gap: 6 }}>
-            {Object.entries(roles).map(([u, r]) => (
-              <div key={u} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "8px 10px", border: `1px solid ${C.line}`, borderRadius: 12 }}>
-                <span style={{ width: 32, height: 32, borderRadius: 10, display: "grid", placeItems: "center", background: r === "subs" ? C.accentSoft : `${th.accent}14`, color: r === "subs" ? "#94620b" : th.accent, fontWeight: 800 }}>{u.slice(0, 2).toUpperCase()}</span>
-                <b style={{ fontFamily: mono, minWidth: 90 }}>{u}</b>
-                <select className="tt-sel" value={r} disabled={u === me} onChange={(e) => update((n) => { n.roles = { ...(n.roles || {}), [u]: e.target.value }; })} style={{ width: 220, fontFamily: sans, fontSize: 13 }}>
-                  <option value="subs">Daily substitution only</option><option value="full">Full access</option>
-                </select>
-                {u === me && <span style={{ fontSize: 11.5, color: C.sub }}>(you — can't limit yourself)</span>}
-                <button className="tt-btn" onClick={() => update((n) => { const x = { ...(n.roles || {}) }; delete x[u]; n.roles = x; })} style={{ ...ghostBtn, marginLeft: "auto", padding: "4px 10px", fontSize: 12, color: C.clash }}>Remove</button>
-              </div>
-            ))}
-          </div>
-        )}
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <input className="tt-in" placeholder="Login username, e.g. sreeja" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} style={{ flex: "1 1 200px", maxWidth: 280, fontFamily: sans, fontSize: 13, height: 36 }} />
-          <button className="tt-btn" onClick={add} style={solidBtn}>+ Add as substitution-only</button>
-        </div>
-        <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.6 }}><b>To create the login:</b> Supabase → <b>Authentication</b> → <b>Users</b> → <b>Add user</b> → email <span style={{ fontFamily: mono }}>username@amups.local</span>, a password, tick <b>Auto Confirm User</b>. Then add the same username here. The limit is in the app's screens; give this login only to staff you trust with the timetable data.</div>
-      </div>
-    </div>
-  );
-}
 function subsText(cfg, date) {
   const needs = subsNeeds(cfg, date), a = (((cfg.subs || {})[date] || {}).assign) || {};
   const L = [`*${cfg.school || "School"} — Substitution*`, `${isoNice(date, true)}`, ""];
@@ -5599,7 +5651,7 @@ function TeacherAvailability({ cfg, update, ask, teacherLoad = {}, mobile }) {
   );
 }
 
-function SetupView({ cfg, update, ask, askPw, mobile, teacherLoad, me }) {
+function SetupView({ cfg, update, ask, askPw, mobile, teacherLoad, me, acc }) {
   const [name, setName] = useState("");
   const [ct, setCt] = useState("");
   const [clonefrom, setClonefrom] = useState(cfg.classes[0]);
@@ -5684,7 +5736,7 @@ function SetupView({ cfg, update, ask, askPw, mobile, teacherLoad, me }) {
         </div>
       </div>
       <YearCard cfg={cfg} update={update} askPw={askPw} />
-      <StaffAccessCard cfg={cfg} update={update} me={me} />
+      {(!acc || acc.manage) && <StaffAccessCard cfg={cfg} update={update} me={me} />}
       <LogoCard cfg={cfg} update={update} />
       <StampCard cfg={cfg} update={update} mobile={mobile} />
 
