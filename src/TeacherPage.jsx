@@ -76,7 +76,8 @@ export default function TeacherPage({ token }) {
 
   const td = subs[today] || {};
   const absentPart = td.absent, half = school.fn || Math.ceil(periods.length / 2);
-  const absentAt = (p) => !!absentPart && (absentPart === "full" || (absentPart === "am" ? p < half : p >= half));
+  const absSet = typeof absentPart === "string" && absentPart.startsWith("p:") ? new Set(absentPart.slice(2).split(",").filter((x) => x !== "").map(Number)) : null;
+  const absentAt = (p) => !!absentPart && (absSet ? absSet.has(p) : absentPart === "full" || (absentPart === "am" ? p < half : p >= half));
   const cell = (d, p) => (page.week[d] || [])[p];
   const subColor = (s) => SUB_COL[s] || C.g2;
   const coverToday = td.cover || [];
@@ -104,7 +105,7 @@ export default function TeacherPage({ token }) {
             <span style={{ color: C.sub, fontSize: 13 }}>{nice(today, true)}</span>
             {working && <span style={{ marginLeft: "auto", fontSize: 12, fontWeight: 700, padding: "2px 10px", borderRadius: 20, background: C.freeSoft, color: C.free }}>{freeToday} free period{freeToday === 1 ? "" : "s"}</span>}
           </div>
-          {absentPart && <div style={{ ...note, background: C.redSoft, color: "#8a1f17" }}>You are marked <b>absent</b> {absentPart === "full" ? "today" : absentPart === "am" ? "for the forenoon (FN)" : "for the afternoon (AN)"}. Your classes are covered by colleagues.</div>}
+          {absentPart && <div style={{ ...note, background: C.redSoft, color: "#8a1f17" }}>You are marked <b>absent</b> {absSet ? `for ${[...absSet].sort((x, y) => x - y).map((p) => "P" + periods[p]).join(", ")}` : absentPart === "full" ? "today" : absentPart === "am" ? "for the forenoon (FN)" : "for the afternoon (AN)"}. Your classes are covered by colleagues.</div>}
           {coverToday.length > 0 && <div style={{ ...note, background: C.warnSoft, color: "#7a5310" }}><b>Substitution today:</b> {coverToday.sort((a, b) => a.p - b.p).map((x) => `P${periods[x.p]} ${x.cls} ${x.sub} (for ${x.for})`).join(" · ")}</div>}
           {!working ? <div style={{ color: C.sub, fontSize: 14, padding: "8px 0" }}>No classes today. 🌿</div> : (
             <div style={{ display: "grid", gap: 6 }}>

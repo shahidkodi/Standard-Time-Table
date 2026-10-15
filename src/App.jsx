@@ -12,7 +12,7 @@ import { supabase } from "./supabaseClient";
    ============================================================ */
 
 const STORE_KEY = "tt_cfg_v2";
-const APP_VERSION = "2026-10-15 c";
+const APP_VERSION = "2026-10-15 e";
 
 const WEEK_ORDER = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const DAY_FULL = { MON: "Monday", TUE: "Tuesday", WED: "Wednesday", THU: "Thursday", FRI: "Friday", SAT: "Saturday", SUN: "Sunday" };
@@ -106,7 +106,7 @@ async function hashPw(s) {
   catch { let h = 5381; for (const ch of t) h = ((h << 5) + h + ch.charCodeAt(0)) >>> 0; return "h" + h.toString(16); }
 }
 function teacherWorkDays(cfg, t) { const a = (cfg.teacherDays || {})[t]; return a && a.length ? cfg.days.filter((d) => a.includes(d)) : cfg.days; }
-function teacherCap(cfg, t) { return teacherWorkDays(cfg, t).length * cfg.periods.length; }
+function teacherCap(cfg, t) { return teacherWorkDays(cfg, t).length * cfg.periods.length - extraCount(cfg, t); }
 
 function autoSchedule(cfg, mode = "all", onlyClass = null, opts = {}) {
   const res = autoScheduleCore(cfg, mode, onlyClass, opts);
@@ -167,6 +167,7 @@ function autoScheduleCore(cfg, mode = "all", onlyClass = null, opts = {}) {
     const extraUsed = {};
     const mark = (c, sub, d, p, k) => { const kd = `${c}|${sub}|${d}`, before = subDay[kd] || 0; if (k > 0 && before >= 1) extraUsed[c + "|" + sub] = (extraUsed[c + "|" + sub] || 0) + 1; if (k < 0 && before >= 2) extraUsed[c + "|" + sub] = (extraUsed[c + "|" + sub] || 0) - 1; subDay[kd] = before + k; subPer[`${c}|${sub}|${p}`] = (subPer[`${c}|${sub}|${p}`] || 0) + k; };
     const tcls = Array.from({ length: D }, () => Array.from({ length: P }, () => new Map()));
+    for (const x of cfg.extraDuties || []) { if (!singles.has(x.t)) continue; for (const sl of x.slots || []) { const d = DAYS.indexOf(sl[0]), p = +sl[1]; if (d >= 0 && p < P) tbusy[d][p].add(x.t); } }   // busy outside this timetable
     const put = (c, d, p, code, sub) => { const tk = cellToks(c, d, p, code, sub); grid[c][d][p] = [code, sub]; const comb = isC(code); tk.forEach((t) => { tbusy[d][p].add(t); if (!comb) tcls[d][p].set(t, c); }); mark(c, sub, d, p, 1); };
 
     // 1. keep what must stay: locked cells always; in fill modes, everything already placed
@@ -763,6 +764,10 @@ export default function App() {
     return out;
   }, [occupancy, cfg]);
   const [showClashes, setShowClashes] = useState(false);
+  const [me, setMe] = useState(null);
+  useEffect(() => { try { if (typeof supabase !== "undefined" && supabase && supabase.auth) supabase.auth.getSession().then(({ data }) => { const em = data && data.session && data.session.user && data.session.user.email; if (em) setMe(String(em).split("@")[0].toLowerCase()); }).catch(() => {}); } catch (e) { /* preview */ } }, []);
+  const limited = !!(cfg && me && cfg.roles && cfg.roles[me] === "subs");
+  useEffect(() => { if (limited && view !== "subs") setView("subs"); }, [limited, view]);
   useEffect(() => {
     const href = cfg && cfg.logoIcon; if (!href) return;
     try {
@@ -842,7 +847,7 @@ export default function App() {
 
   SCHOOL_LOGO = cfg.logo || ""; SCHOOL_WM = cfg.wmPdf !== false; SCHOOL_NAME = cfg.school || ""; CUR_TH = TH; CUR_VIEW = view;
   const publishNow = (rows) => { if (rows) publishRows(rows); else if (cfg.teacherLinks && cfg.teacherLinks.on) publishRows(buildTeacherPages(cfg)); };
-  const ctx = { pubState, publishNow, cfg, update, expand, occupancy, clashTokens, teacherLoad, ask, askPw, isCombined, combinedByBase, mobile };
+  const ctx = { me, limited, pubState, publishNow, cfg, update, expand, occupancy, clashTokens, teacherLoad, ask, askPw, isCombined, combinedByBase, mobile };
 
   return (
     <div style={{ fontFamily: sans, color: C.ink, background: TH.bg, minHeight: "100vh" }}>
@@ -886,14 +891,16 @@ export default function App() {
           <button className="tt-btn" onClick={undo} disabled={!histN[0]} title="Undo (Ctrl+Z)" aria-label="Undo" style={{ ...headerBtn, padding: "6px 10px", fontSize: 15, opacity: histN[0] ? 1 : 0.45 }}>↶</button>
           <button className="tt-btn" onClick={redo} disabled={!histN[1]} title="Redo (Ctrl+Y)" aria-label="Redo" style={{ ...headerBtn, padding: "6px 10px", fontSize: 15, opacity: histN[1] ? 1 : 0.45 }}>↷</button>
         </span>
-        <ClashBadge n={totalClashes} onClick={() => setShowClashes(true)} />
+        {!limited && <ClashBadge n={totalClashes} onClick={() => setShowClashes(true)} />}
         <span style={{ fontSize: 12, color: "rgba(255,255,255,.85)", minWidth: 56, textAlign: "right", fontWeight: 500 }}>{saved}</span>
+        {!limited && <>
         <button className="tt-btn" onClick={() => askPw("Reset — clear ALL class timetables to blank? Your mapping, classes, teachers and rules are kept.", () => update((n) => { for (const c of n.classes) for (const d of n.days) n.grid[c][d] = emptyDay(n.periods.length); n.locked = {}; }))} style={headerBtn}>Reset</button>
         <button className="tt-btn" onClick={() => askPw("MASTER RESET  -  permanently delete EVERYTHING (all classes, teachers, subjects, mapping, combined subjects, rules, standard periods, and the whole timetable) and start from a blank app? This cannot be undone.", () => update((n) => { n.classes = []; n.singles = []; n.subjects = []; n.combined = []; n.bkey = {}; n.classTeacher = {}; n.grid = {}; n.stdPeriods = {}; n.rules = {}; n.twice = {}; n.classRules = {}; n.locked = {}; n.commonPeriods = []; n.teacherDays = {}; n.versions = []; n.classMaxP = {}; }))} style={{ ...headerBtn, border: "1px solid rgba(255,255,255,.5)", background: "rgba(214,69,69,.35)" }}>Master reset</button>
+        </>}
       </header>
 
-      <NavTabs view={view} setView={setView} status={tabStatus} TH={TH} mobile={mobile} />
-      <NavDrawer open={menuOpen} onClose={() => setMenuOpen(false)} view={view} setView={setView} TH={TH} school={cfg.school} logo={cfg.logo} status={tabStatus} theme={theme} setTheme={persistTheme} onSignOut={handleSignOut} />
+      <NavTabs view={view} setView={setView} status={tabStatus} TH={TH} mobile={mobile} only={limited ? ["subs"] : null} />
+      <NavDrawer open={menuOpen} onClose={() => setMenuOpen(false)} view={view} setView={setView} TH={TH} school={cfg.school} logo={cfg.logo} status={tabStatus} only={limited ? ["subs"] : null} me={me} theme={theme} setTheme={persistTheme} onSignOut={handleSignOut} />
       <div className="tt-printhead" style={{ display: "none", alignItems: "center", gap: 12, borderBottom: `3px solid ${TH.g1}`, padding: "0 0 8px", margin: "0 0 10px" }}>
         {cfg.logo && <img src={cfg.logo} alt="" style={{ height: 52, width: 52, objectFit: "contain" }} />}
         <div><div style={{ fontSize: 19, fontWeight: 800, color: TH.g2, textTransform: "uppercase", letterSpacing: 0.6 }}>{cfg.school}</div><div style={{ fontSize: 11, fontWeight: 800, color: C.accent, letterSpacing: 2.2, textTransform: "uppercase" }}>{(TABS.find((t) => t[0] === view) || ["", ""])[1]}</div></div>
@@ -1192,7 +1199,7 @@ function TeacherView({ cfg, tch, occupancy, teacherLoad, combinedByBase }) {
       <div className="tt-printarea" style={card}>
         <GridTable cfg={cfg} render={(d, pi) => {
           const r = lookup(d, pi);
-          if (!r) return { free: true, bg: C.freeSoft };
+          if (!r) { const ex = extraAt(cfg, tch, d, pi); if (ex) return { t: ex.label, s: ex.kind === "class" ? "outside this timetable" : "non-teaching duty", bg: "#f1ecfa" }; return { free: true, bg: C.freeSoft }; }
           return { t: r.cn, s: `${r.subj || ""}${r.combined ? " · combined" : r.code !== tch ? " · " + r.code : ""}`, bg: r.combined ? C.accentSoft : SUBJECT_TINT[r.subj] || "#fff", sub: r.subj };
         }} />
       </div>
@@ -1221,7 +1228,7 @@ function tabTone(tone, TH) {
   if (tone === "bad") return { bg: C.clashSoft, fg: C.clash };
   return { bg: `${TH.accent}14`, fg: TH.accent };
 }
-function NavTabs({ view, setView, status, TH, mobile }) {
+function NavTabs({ view, setView, status, TH, mobile, only }) {
   const ref = useRef(null);
   useEffect(() => {
     if (!mobile || !ref.current) return;
@@ -1231,7 +1238,7 @@ function NavTabs({ view, setView, status, TH, mobile }) {
     <nav ref={ref} role="tablist" className="tt-noprint tt-scroll" style={mobile
       ? { display: "flex", gap: 8, padding: "10px 12px", background: C.surface, borderBottom: `1px solid ${C.line}`, overflowX: "auto", WebkitOverflowScrolling: "touch" }
       : { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(176px, 1fr))", gap: 10, padding: "14px 18px", background: C.surface, borderBottom: `1px solid ${C.line}` }}>
-      {TABS.map(([k, label]) => {
+      {TABS.filter(([k]) => !only || only.includes(k)).map(([k, label]) => {
         const on = view === k, st = status[k] || {}, tn = tabTone(st.tone, TH);
         return (
           <button key={k} role="tab" aria-selected={on} className="tt-btn tt-navcard" onClick={() => setView(k)} title={label}
@@ -1520,7 +1527,7 @@ function LogoCard({ cfg, update }) {
   );
 }
 
-function NavDrawer({ open, onClose, view, setView, TH, school, logo, status = {}, theme, setTheme, onSignOut }) {
+function NavDrawer({ open, onClose, view, setView, TH, school, logo, status = {}, theme, setTheme, onSignOut, only, me }) {
   if (!open) return null;
   return (
     <div onClick={onClose} className="tt-noprint" style={{ position: "fixed", inset: 0, background: "rgba(16,25,40,.45)", zIndex: 90 }}>
@@ -1529,12 +1536,12 @@ function NavDrawer({ open, onClose, view, setView, TH, school, logo, status = {}
           {logo && <div style={{ width: 44, height: 44, borderRadius: 12, background: "#fff", display: "grid", placeItems: "center", padding: 3, marginRight: 10, flexShrink: 0 }}><img src={logo} alt="" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} /></div>}
           <div style={{ marginRight: "auto" }}>
             <div style={{ fontWeight: 800, fontSize: 15 }}>TIME TABLE</div>
-            <div style={{ fontSize: 11.5, color: "rgba(255,255,255,.8)" }}>{school}</div>
+            <div style={{ fontSize: 11.5, color: "rgba(255,255,255,.8)" }}>{school}{me ? ` · signed in as ${me}` : ""}</div>
           </div>
           <button className="tt-btn" onClick={onClose} aria-label="Close" style={{ border: "none", background: "transparent", color: "#fff", fontSize: 24, cursor: "pointer", lineHeight: 1 }}>×</button>
         </div>
         <div style={{ overflowY: "auto", padding: "8px 0", flex: 1 }}>
-          {TABS.map(([k, label]) => {
+          {TABS.filter(([k]) => !only || only.includes(k)).map(([k, label]) => {
             const on = view === k, st = status[k] || {}, tn = tabTone(st.tone, TH);
             return (
               <div key={k} onClick={() => { setView(k); onClose(); }} style={{ margin: "3px 10px", padding: "8px 10px", borderRadius: 12, display: "flex", alignItems: "center", gap: 11, cursor: "pointer", border: `2px solid ${on ? TH.accent : "transparent"}`, background: on ? `${TH.accent}10` : "transparent" }}>
@@ -3832,6 +3839,7 @@ function qState(cfg, grid) {
       for (const r of roomsFor[sl[1]] || []) rc[r][d][p]++;
     }
   }
+  for (const x of cfg.extraDuties || []) if (tb[x.t]) for (const sl of x.slots || []) { const d = DAYS.indexOf(sl[0]), p = +sl[1]; if (d >= 0 && p < P) tb[x.t][d][p]++; }
   return { DAYS, D, P, cm, isC, toks, roomsFor, cap, tb, rc, sdc };
 }
 function tdPen(arr, pr, P) {
@@ -4636,6 +4644,98 @@ function CropModal({ src: src0, title, square, onDone, onCancel }) {
   );
 }
 function readAsDataUrl(f) { return new Promise((res, rej) => { const rd = new FileReader(); rd.onload = () => res(rd.result); rd.onerror = () => rej(new Error("Couldn't read this file.")); rd.readAsDataURL(f); }); }
+/* ---------------- Extra duties: classes outside this timetable, non-teaching work ---------------- */
+var DUTY_KINDS = { class: "Class outside this timetable", duty: "Non-teaching duty" };
+function extraAt(cfg, t, d, p) { const L = cfg.extraDuties || []; for (let i = 0; i < L.length; i++) { const x = L[i]; if (x.t === t && (x.slots || []).some((s) => s[0] === d && +s[1] === p)) return x; } return null; }
+function extraCount(cfg, t) { let n = 0; const wd = teacherWorkDays(cfg, t); for (const x of cfg.extraDuties || []) if (x.t === t) for (const s of x.slots || []) if (wd.includes(s[0]) && +s[1] < cfg.periods.length) n++; return n; }
+function extraConflicts(cfg, x) {
+  const out = [];
+  for (const [dc, p] of x.slots || []) { for (const c of cfg.classes) { const sl = cfg.grid[c] && cfg.grid[c][dc] && cfg.grid[c][dc][p]; if (!sl || !sl[0]) continue; const cm = (cfg.combined || []).find((s) => s.name === sl[0]); const tk = cm ? cm.teachers : String(sl[0]).split(" "); if (tk.includes(x.t)) out.push({ c, d: dc, p, sub: sl[1], comb: !!cm }); } }
+  return out;
+}
+function ExtraDutiesPanel({ cfg, update, ask, mobile }) {
+  const th = CUR_TH || THEMES.teal;
+  const blank = { t: cfg.singles[0] || "", kind: "class", label: "", slots: [] };
+  const [form, setForm] = useState(null);
+  const [msg, setMsg] = useState("");
+  const list = cfg.extraDuties || [];
+  const save = () => {
+    if (!form.t || !form.label.trim() || !form.slots.length) { setMsg("Choose a teacher, write what it is, and tap at least one period."); return; }
+    update((n) => { const L = [...(n.extraDuties || [])]; const x = { ...form, label: form.label.trim(), id: form.id || "x" + Date.now() }; const i = L.findIndex((y) => y.id === x.id); if (i >= 0) L[i] = x; else L.push(x); n.extraDuties = L; });
+    setForm(null); setMsg("Saved. The generator keeps these periods free for the teacher, and substitution never picks them then.");
+  };
+  const toggle = (dc, p) => setForm((f) => { const has = f.slots.some((s) => s[0] === dc && s[1] === p); return { ...f, slots: has ? f.slots.filter((s) => !(s[0] === dc && s[1] === p)) : [...f.slots, [dc, p]] }; });
+  const freeConflicts = (x) => { const cf = extraConflicts(cfg, x); ask(`Take out the ${cf.length} lesson${cf.length === 1 ? "" : "s"} that clash with "${x.label}"? Then press Fill remaining on the Assign tab to place them at other times.`, () => update((n) => { for (const k of cf) { if (k.comb) { const nm = n.grid[k.c][k.d][k.p][0]; for (const c of n.classes) if (n.grid[c]?.[k.d]?.[k.p]?.[0] === nm) n.grid[c][k.d][k.p] = [null, null]; } else n.grid[k.c][k.d][k.p] = [null, null]; } })); };
+  const slotTxt = (x) => x.slots.slice().sort((a, b) => cfg.days.indexOf(a[0]) - cfg.days.indexOf(b[0]) || a[1] - b[1]).map(([dc, p]) => `${(DAY_FULL[dc] || dc).slice(0, 3)} P${p + 1}`).join(", ");
+  const byT = {}; list.forEach((x) => (byT[x.t] || (byT[x.t] = [])).push(x));
+  return (
+    <div style={{ ...card, marginBottom: 16 }}>
+      <Panelhead text="Extra duties — lower-section classes & non-teaching work" count={list.length ? `${list.length} dut${list.length === 1 ? "y" : "ies"}` : "none"} />
+      <div style={{ padding: 14, display: "grid", gap: 12 }}>
+        <div className="tt-callout">Some teachers also take classes that are <b>not in this timetable</b> (for example LP section) or have <b>weekly non-teaching work</b> (library, office, PTA). Add those periods here: the generator never puts a lesson there, they count as busy in the leisure reports, and Daily substitution never picks the teacher then. If the teacher is absent, a lower-section class is also listed for cover.</div>
+        {Object.keys(byT).sort().map((t) => (
+          <div key={t} style={{ border: `1px solid ${C.line}`, borderRadius: 14, padding: 10, display: "grid", gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ width: 32, height: 32, borderRadius: 10, display: "grid", placeItems: "center", background: `linear-gradient(135deg, ${th.g1}, ${th.g2})`, color: "#fff", fontFamily: mono, fontWeight: 800, fontSize: 11 }}>{t.slice(0, 3)}</span><b style={{ fontFamily: mono }}>{t}</b><span style={{ fontSize: 12, color: C.sub }}>{byT[t].reduce((a, x) => a + x.slots.length, 0)} period(s) a week outside the timetable</span></div>
+            {byT[t].map((x) => { const cf = extraConflicts(cfg, x); return (
+              <div key={x.id} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "8px 10px", borderRadius: 10, background: x.kind === "class" ? "#f4effb" : "#f6f8fa" }}>
+                <span style={{ fontSize: 10.5, fontWeight: 800, padding: "2px 8px", borderRadius: 10, background: x.kind === "class" ? "#7c3aed" : "#647189", color: "#fff", textTransform: "uppercase", letterSpacing: 0.4 }}>{x.kind === "class" ? "Class" : "Duty"}</span>
+                <div style={{ minWidth: 0, flex: "1 1 200px" }}>
+                  <div style={{ fontWeight: 800, fontSize: 13.5 }}>{x.label}</div>
+                  <div style={{ fontSize: 12, color: C.sub }}>{slotTxt(x)}</div>
+                  {cf.length > 0 && <div style={{ fontSize: 12, color: C.clash, fontWeight: 600 }}>Clashes with the timetable: {cf.map((k) => `${k.c} ${(DAY_FULL[k.d] || k.d).slice(0, 3)} P${k.p + 1}`).join(", ")}</div>}
+                </div>
+                {cf.length > 0 && <button className="tt-btn" onClick={() => freeConflicts(x)} style={{ ...ghostBtn, padding: "4px 10px", fontSize: 12, color: C.clash }}>Free these periods</button>}
+                <button className="tt-btn" onClick={() => { setForm({ ...x, slots: x.slots.map((s) => [s[0], +s[1]]) }); setMsg(""); }} style={{ ...ghostBtn, padding: "4px 10px", fontSize: 12 }}>Edit</button>
+                <button className="tt-btn" onClick={() => ask(`Remove "${x.label}" for ${x.t}?`, () => update((n) => { n.extraDuties = (n.extraDuties || []).filter((y) => y.id !== x.id); }))} style={{ ...ghostBtn, padding: "4px 10px", fontSize: 12, color: C.clash }}>Remove</button>
+              </div>); })}
+          </div>
+        ))}
+        {!form && <div><button className="tt-btn" onClick={() => { setForm(blank); setMsg(""); }} style={solidBtn}>+ Add an extra duty</button></div>}
+        {form && (
+          <div style={{ border: `1.5px solid ${th.accent}55`, borderRadius: 14, padding: 12, display: "grid", gap: 10, background: "#fbfdfd" }}>
+            <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "160px 220px 1fr", gap: 10 }}>
+              <label style={{ display: "grid", gap: 4, fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase" }}>Teacher
+                <select className="tt-sel" value={form.t} onChange={(e) => setForm({ ...form, t: e.target.value })} style={{ height: 36 }}>{cfg.singles.map((t) => <option key={t}>{t}</option>)}</select>
+              </label>
+              <label style={{ display: "grid", gap: 4, fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase" }}>Type
+                <select className="tt-sel" value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })} style={{ height: 36, fontFamily: sans }}>{Object.entries(DUTY_KINDS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
+              </label>
+              <label style={{ display: "grid", gap: 4, fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase" }}>What is it
+                <input className="tt-in" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder={form.kind === "class" ? "e.g. LP 3 B — Maths" : "e.g. Library duty"} style={{ height: 36, fontFamily: sans, fontSize: 13 }} />
+              </label>
+            </div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.sub }}>Tap the periods every week:</div>
+            <div className="tt-scroll" style={{ overflowX: "auto" }}>
+              <table style={{ borderCollapse: "separate", borderSpacing: 3 }}>
+                <thead><tr><th />{cfg.periods.map((p, i) => <th key={i} style={{ fontSize: 11, color: C.sub }}>P{p}</th>)}</tr></thead>
+                <tbody>{cfg.days.map((dc) => (
+                  <tr key={dc}><td style={{ fontSize: 11.5, fontWeight: 800, color: C.sub, paddingRight: 6 }}>{(DAY_FULL[dc] || dc).slice(0, 3)}</td>
+                    {cfg.periods.map((_, p) => { const on = form.slots.some((s) => s[0] === dc && s[1] === p); const busy = !on && (() => { for (const c of cfg.classes) { const sl = cfg.grid[c]?.[dc]?.[p]; if (sl && sl[0]) { const cm = (cfg.combined || []).find((s) => s.name === sl[0]); if ((cm ? cm.teachers : String(sl[0]).split(" ")).includes(form.t)) return c; } } return null; })();
+                      return <td key={p}><button className="tt-btn" onClick={() => toggle(dc, p)} title={busy ? `${form.t} teaches ${busy} now` : ""} style={{ width: 44, height: 32, borderRadius: 8, cursor: "pointer", fontSize: 11, fontWeight: 800, border: `1.5px solid ${on ? "#7c3aed" : busy ? `${C.warn}88` : C.line}`, background: on ? "#7c3aed" : busy ? C.warnSoft : "#fff", color: on ? "#fff" : busy ? "#94620b" : "#b4bccb" }}>{on ? "✓" : busy ? busy.replace(" ", "") : "·"}</button></td>; })}
+                  </tr>))}</tbody>
+              </table>
+            </div>
+            <div style={{ fontSize: 11.5, color: C.sub }}>Amber boxes show where {form.t} already teaches in this timetable — choosing one creates a clash you can free afterwards.</div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}><button className="tt-btn" onClick={save} style={solidBtn}>Save duty</button><button className="tt-btn" onClick={() => setForm(null)} style={ghostBtn}>Cancel</button></div>
+          </div>
+        )}
+        {msg && <div style={{ fontSize: 12.5, fontWeight: 600, color: msg.startsWith("Saved") ? C.free : C.clash }}>{msg}</div>}
+      </div>
+    </div>
+  );
+}
+function fillSubs(n, date) {
+  const r = n.subs && n.subs[date]; if (!r) return 0;
+  r.assign = r.assign || {};
+  const cnt = subCounts(n, date); let k = 0;
+  for (const nd of subsNeeds(n, date)) {
+    if (r.assign[nd.key]) continue;
+    const c = subCandidates(n, date, nd, cnt)[0];
+    if (c) { r.assign[nd.key] = c.u; k++; cnt.month[c.u] = (cnt.month[c.u] || 0) + 1; cnt.rot[c.u] = (cnt.rot[c.u] || 0) + 1; if (n.subsOwed && n.subsOwed[c.u] > 0) { n.subsOwed = { ...n.subsOwed }; n.subsOwed[c.u]--; if (!n.subsOwed[c.u]) delete n.subsOwed[c.u]; } }
+  }
+  return k;
+}
+var ABS_REASONS = ["Leave", "On duty", "Training", "Exam duty", "Other"];
 /* ---------------- Undo & safety copies ---------------- */
 var SNAP_SKIP = ["logo", "logoIcon", "hmSign", "seal", "versions", "snapshots", "adminPw", "subs"];
 var SNAP_HINT = { text: "", at: 0 };
@@ -4761,32 +4861,56 @@ function isoToday() { const d = new Date(); return `${d.getFullYear()}-${String(
 function isoShift(iso, n) { const [y, m, d] = iso.split("-").map(Number); const t = new Date(y, m - 1, d + n); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`; }
 function isoDay(iso) { const [y, m, d] = iso.split("-").map(Number); return WD[new Date(y, m - 1, d).getDay()]; }
 function isoNice(iso, long) { const [y, m, d] = iso.split("-").map(Number); return new Date(y, m - 1, d).toLocaleDateString(undefined, long ? { weekday: "long", day: "numeric", month: "long", year: "numeric" } : { weekday: "short", day: "numeric", month: "short" }); }
-function partPeriods(cfg, part) { const h = fnCount(cfg); return cfg.periods.map((_, i) => i).filter((i) => part === "am" ? i < h : part === "pm" ? i >= h : true); }
+function partPeriods(cfg, part) { if (typeof part === "string" && part.startsWith("p:")) return part.slice(2).split(",").filter((x) => x !== "").map(Number).filter((x) => x >= 0 && x < cfg.periods.length); const h = fnCount(cfg); return cfg.periods.map((_, i) => i).filter((i) => part === "am" ? i < h : part === "pm" ? i >= h : true); }
 function subsNeeds(cfg, date) {
   const rec = (cfg.subs || {})[date] || {}, abs = rec.absent || {}, d = isoDay(date), out = [];
   if (!cfg.days.includes(d)) return out;
   for (const t of Object.keys(abs)) {
     if (!cfg.singles.includes(t)) continue;
-    for (const p of partPeriods(cfg, abs[t])) { const r = teacherAt(cfg, t, d, p); if (r) out.push({ key: `${t}|${p}`, t, p, cls: r.c, sub: r.sub, combined: !!r.combined }); }
+    for (const p of partPeriods(cfg, abs[t])) { const r = teacherAt(cfg, t, d, p); if (r && !(r.extra && r.kind !== "class")) out.push({ key: `${t}|${p}`, t, p, cls: r.c, sub: r.sub, combined: !!r.combined }); }
   }
   return out.sort((a, b) => a.p - b.p || cmpClass(a.cls, b.cls));
 }
 function absentAt(cfg, date, u, p) { const a = (((cfg.subs || {})[date] || {}).absent || {})[u]; return !!a && partPeriods(cfg, a).includes(p); }
 function subCounts(cfg, date) {
-  const mon = date.slice(0, 7), month = {}, total = {}, last = {};
+  const mon = date.slice(0, 7), month = {}, total = {}, last = {}, rot = {};
+  const start = cfg.subsRotationStart || "0000-00-00";
   for (const [dt, r] of Object.entries(cfg.subs || {})) for (const u of Object.values(r.assign || {})) {
     if (!u) continue;
     total[u] = (total[u] || 0) + 1;
     if (dt.slice(0, 7) === mon) month[u] = (month[u] || 0) + 1;
     if (!last[u] || dt > last[u]) last[u] = dt;
+    if (dt >= start) rot[u] = (rot[u] || 0) + 1;
   }
-  return { month, total, last };
+  const rk = rotationRank(cfg);
+  return { month, total, last, rot, rank: rk.rank, leisure: rk.leisure, start };
 }
+// turn order: most leisure (free) periods in the week first
+function rotationRank(cfg) {
+  const leisure = {};
+  for (const t of cfg.singles) { let f = 0; for (const d of teacherWorkDays(cfg, t)) for (let p = 0; p < cfg.periods.length; p++) if (!teacherAt(cfg, t, d, p)) f++; leisure[t] = f; }
+  const order = cfg.singles.slice().sort((a, b) => leisure[b] - leisure[a] || a.localeCompare(b));
+  const rank = {}; order.forEach((t, i) => (rank[t] = i + 1));
+  return { order, rank, leisure };
+}
+// a teacher who missed turns (leave, busy, or replaced by hand) is owed them — but never more than one round behind
+function rotEff(counts, u) { const vals = Object.values(counts.rot); const mx = vals.length ? Math.max(...vals) : 0; return Math.max(counts.rot[u] || 0, mx - 1); }
+// pointer = furthest rank that has already taken this round's turn; teachers before it who haven't are "passed over"
+function rotPointer(cfg, counts, round) { let pt = 0; for (const t of cfg.singles) if ((counts.rot[t] || 0) >= round && (counts.rank[t] || 0) > pt) pt = counts.rank[t]; return pt; }
+function rotKey(cfg, counts, u, done, round, pointer) {
+  const v = Object.values(counts.rot), mx = v.length ? Math.max(...v) : 0, eff = Math.max(done, mx - 1);
+  const owed = ((cfg.subsOwed || {})[u] || 0) > 0, passed = (counts.rank[u] || 0) < pointer && done < round;
+  return { eff, owed, passed, key: eff * 1000 - (owed ? 600 : 0) - (passed ? 300 : 0) + (counts.rank[u] || 99) };
+}
+function rotRound(cfg, counts) { const act = cfg.singles.filter((t) => counts.leisure[t] > 0); if (!act.length) return 1; return Math.min(...act.map((t) => rotEff(counts, t))) + 1; }
 function subCandidates(cfg, date, need, counts) {
   const d = isoDay(date), rec = (cfg.subs || {})[date] || {}, assign = rec.assign || {};
+  const mode = cfg.subsMode || "rotation";
   const takenAt = new Set(Object.entries(assign).filter(([k, u]) => u && +k.split("|")[1] === need.p && k !== need.key).map(([, u]) => u));
-  const today = {}; Object.values(assign).forEach((u) => { if (u) today[u] = (today[u] || 0) + 1; });
+  const today = {}; Object.entries(assign).forEach(([k, u]) => { if (u && k !== need.key) today[u] = (today[u] || 0) + 1; });
   const cls = String(need.cls).split(", ");
+  const own = assign[need.key];
+  const round = rotRound(cfg, counts), pointer = rotPointer(cfg, counts, round);
   const out = [];
   for (const u of cfg.singles) {
     if (u === need.t || isOffDay(cfg, u, d) || absentAt(cfg, date, u, need.p) || takenAt.has(u)) continue;
@@ -4796,11 +4920,83 @@ function subCandidates(cfg, date, need, counts) {
     const ct = cls.some((c) => cfg.classTeacher[c] === u);
     const sameSub = cls.some((c) => (cfg.bkey[c] || []).some((r) => r.sub === need.sub && String(r.teacher || "").split(" ").includes(u)));
     const m = counts.month[u] || 0, td = today[u] || 0;
-    const score = (ct ? 40 : knows ? 30 : 0) + (sameSub ? 10 : 0) - m * 6 - td * 12 + Math.min(freeToday, 5) * 3;
-    const why = [ct ? "class teacher" : knows ? `teaches ${cls[0]}` : null, sameSub ? `teaches ${need.sub}` : null, `${freeToday} free today`, `${m} this month`].filter(Boolean);
-    out.push({ u, score, why, m, freeToday });
+    const done = (counts.rot[u] || 0) - (own === u ? 1 : 0), rk = rotKey(cfg, counts, u, done, round, pointer), eff = rk.eff;
+    const score = mode === "rotation"
+      ? -rk.key - td * 100
+      : (ct ? 40 : knows ? 30 : 0) + (sameSub ? 10 : 0) - m * 6 - td * 12 + Math.min(freeToday, 5) * 3;
+    const why = mode === "rotation"
+      ? [own === u ? null : rk.owed ? "missed a turn — first in line" : rk.passed ? "skipped earlier — owed" : null, `rank ${counts.rank[u]}`, `${done} turn${done === 1 ? "" : "s"} done`, ct ? "class teacher" : knows ? `teaches ${cls[0]}` : null].filter(Boolean)
+      : [ct ? "class teacher" : knows ? `teaches ${cls[0]}` : null, sameSub ? `teaches ${need.sub}` : null, `${freeToday} free today`, `${m} this month`].filter(Boolean);
+    out.push({ u, score, why, m, freeToday, eff, done });
   }
   return out.sort((a, b) => b.score - a.score || a.m - b.m || a.u.localeCompare(b.u));
+}
+function RotationPanel({ cfg, update, date, counts, ask, limited }) {
+  const th = CUR_TH || THEMES.teal;
+  const order = cfg.singles.slice().sort((a, b) => (counts.rank[a] || 99) - (counts.rank[b] || 99));
+  const round = rotRound(cfg, counts);
+  const pointer = rotPointer(cfg, counts, round);
+  const next = order.filter((t) => counts.leisure[t] > 0).map((t) => ({ t, k: rotKey(cfg, counts, t, counts.rot[t] || 0, round, pointer) })).sort((a, b) => a.k.key - b.k.key);
+  const upNext = next.slice(0, 5).map((x) => x.t);
+  return (
+    <div style={card}>
+      <Panelhead text={`Rotation — round ${round}`} count={cfg.subsRotationStart ? `since ${isoNice(cfg.subsRotationStart)}` : "since the start"} />
+      <div style={{ padding: 12, display: "grid", gap: 10 }}>
+        <div className="tt-callout">Teachers take substitution turns in order of their <b>leisure periods</b> (most free periods first). When everyone has had a turn, round {round + 1} starts in the same order. A teacher who misses a turn — on leave, busy that period, or replaced by hand — keeps it and comes first next time (at most one round behind).</div>
+        <div style={{ fontSize: 12.5 }}><b>Next up:</b> {upNext.map((t, i) => <span key={t} style={{ display: "inline-block", fontFamily: mono, fontWeight: 800, padding: "2px 8px", borderRadius: 8, margin: "2px 4px 2px 0", background: i === 0 ? th.accent : `${th.accent}14`, color: i === 0 ? "#fff" : th.g2 }}>{t}</span>)}</div>
+        <div className="tt-scroll" style={{ maxHeight: 300, overflowY: "auto" }}>
+          <table style={{ ...tbl, tableLayout: "auto" }}>
+            <thead><tr><th style={th0}>#</th><th style={{ ...th0, textAlign: "left" }}>Teacher</th><th style={th0}>Leisure / week</th><th style={th0}>Turns done</th><th style={th0}>Status</th></tr></thead>
+            <tbody>{order.map((t) => { const done = counts.rot[t] || 0, eff = rotEff(counts, t), owed = eff > done ? 0 : eff < round - 1 ? 0 : (round - 1) - done; const inRound = done >= round; return (
+              <tr key={t}>
+                <td style={{ ...cellTd, height: 30, fontFamily: mono, color: C.sub }}>{counts.rank[t]}</td>
+                <td style={{ ...cellTd, height: 30, textAlign: "left", fontFamily: mono, fontWeight: 800 }}>{t}</td>
+                <td style={{ ...cellTd, height: 30, fontFamily: mono }}>{counts.leisure[t]}</td>
+                <td style={{ ...cellTd, height: 30, fontFamily: mono, fontWeight: 700 }}>{done}</td>
+                <td style={{ ...cellTd, height: 30, fontSize: 11.5 }}>{!counts.leisure[t] ? <span style={{ color: C.sub }}>no free periods</span> : upNext[0] === t ? <b style={{ color: th.accent }}>next</b> : ((cfg.subsOwed || {})[t] || 0) > 0 && !inRound ? <span style={{ color: C.warn, fontWeight: 700 }}>missed a turn — first in line</span> : inRound ? <span style={{ color: C.free }}>done this round</span> : done < round - 1 ? <span style={{ color: C.warn, fontWeight: 700 }}>owed {round - 1 - done}</span> : <span style={{ color: C.sub }}>waiting</span>}</td>
+              </tr>); })}</tbody>
+          </table>
+        </div>
+        {!limited && <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}><button className="tt-btn" onClick={() => ask("Start a new rotation from today? Everyone's turn count goes back to 0 (past substitutions stay in the record).", () => update((n) => { n.subsRotationStart = date; delete n.subsOwed; }))} style={{ ...ghostBtn, fontSize: 12 }}>Start a new rotation from {isoNice(date)}</button>
+          {cfg.subsRotationStart && <button className="tt-btn" onClick={() => update((n) => { delete n.subsRotationStart; })} style={{ ...ghostBtn, fontSize: 12 }}>Count from the beginning</button>}</div>}
+      </div>
+    </div>
+  );
+}
+const th0 = { padding: "8px 8px", fontSize: 11, fontWeight: 800, color: "#647189", textTransform: "uppercase", letterSpacing: 0.4, background: "#f6f8fa", borderBottom: "1px solid #e4e8ef", textAlign: "center" };
+function StaffAccessCard({ cfg, update, me }) {
+  const [name, setName] = useState("");
+  const th = CUR_TH || THEMES.teal;
+  const roles = cfg.roles || {};
+  const add = () => { const n0 = name.trim().toLowerCase().replace(/@.*$/, ""); if (!n0) return; update((n) => { n.roles = { ...(n.roles || {}), [n0]: n0 === me ? "full" : "subs" }; }); setName(""); };
+  return (
+    <div style={{ ...card, marginBottom: 16 }}>
+      <Panelhead text="Staff access — who can see what" count={Object.values(roles).filter((r) => r === "subs").length ? `${Object.values(roles).filter((r) => r === "subs").length} substitution-only` : "everyone full"} />
+      <div style={{ padding: 14, display: "grid", gap: 12 }}>
+        <div className="tt-callout">Give a teacher the duty of marking absentees: they sign in with their own username and see <b>only Daily substitution</b> — no timetable editing, no setup, no reset. Everyone not listed here keeps full access.{me ? <> You are signed in as <b>{me}</b>.</> : null}</div>
+        {Object.keys(roles).length > 0 && (
+          <div style={{ display: "grid", gap: 6 }}>
+            {Object.entries(roles).map(([u, r]) => (
+              <div key={u} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "8px 10px", border: `1px solid ${C.line}`, borderRadius: 12 }}>
+                <span style={{ width: 32, height: 32, borderRadius: 10, display: "grid", placeItems: "center", background: r === "subs" ? C.accentSoft : `${th.accent}14`, color: r === "subs" ? "#94620b" : th.accent, fontWeight: 800 }}>{u.slice(0, 2).toUpperCase()}</span>
+                <b style={{ fontFamily: mono, minWidth: 90 }}>{u}</b>
+                <select className="tt-sel" value={r} disabled={u === me} onChange={(e) => update((n) => { n.roles = { ...(n.roles || {}), [u]: e.target.value }; })} style={{ width: 220, fontFamily: sans, fontSize: 13 }}>
+                  <option value="subs">Daily substitution only</option><option value="full">Full access</option>
+                </select>
+                {u === me && <span style={{ fontSize: 11.5, color: C.sub }}>(you — can't limit yourself)</span>}
+                <button className="tt-btn" onClick={() => update((n) => { const x = { ...(n.roles || {}) }; delete x[u]; n.roles = x; })} style={{ ...ghostBtn, marginLeft: "auto", padding: "4px 10px", fontSize: 12, color: C.clash }}>Remove</button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <input className="tt-in" placeholder="Login username, e.g. sreeja" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} style={{ flex: "1 1 200px", maxWidth: 280, fontFamily: sans, fontSize: 13, height: 36 }} />
+          <button className="tt-btn" onClick={add} style={solidBtn}>+ Add as substitution-only</button>
+        </div>
+        <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.6 }}><b>To create the login:</b> Supabase → <b>Authentication</b> → <b>Users</b> → <b>Add user</b> → email <span style={{ fontFamily: mono }}>username@amups.local</span>, a password, tick <b>Auto Confirm User</b>. Then add the same username here. The limit is in the app's screens; give this login only to staff you trust with the timetable data.</div>
+      </div>
+    </div>
+  );
 }
 function subsText(cfg, date) {
   const needs = subsNeeds(cfg, date), a = (((cfg.subs || {})[date] || {}).assign) || {};
@@ -4814,10 +5010,11 @@ function exportSubSlipPDF(cfg, date) {
   const css = "@page{size:A4 portrait;margin:1cm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact;box-sizing:border-box} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#16213a}" + lhCss() +
     " table{border-collapse:collapse;width:100%;border:2px solid #0e6b73} th,td{border:1px solid #b9d3d3;padding:7px 8px;font-size:13px;text-align:center} thead th{background:#0e6b73;color:#fff;font-weight:800} td.l{text-align:left} td.p{font-weight:800;font-size:15px;color:#0a4f55;background:#e1f0f0;width:16mm}" +
     " .sub{font-family:'Courier New',monospace;font-weight:800;font-size:15px;color:#0a3d42} .nc{color:#b3261e;font-weight:800} .ab{margin:6px 0 10px;font-size:12.5px} .ab span{display:inline-block;margin:2px 6px 2px 0;padding:2px 9px;border-radius:12px;background:#fbe0dd;color:#8a1f17;font-weight:700} td.sg{width:34mm} .nt{margin-top:8px;font-size:12px;color:#33415c}";
-  const part = (x) => x === "am" ? " (FN)" : x === "pm" ? " (AN)" : "";
+  const part = (x) => x === "am" ? " (FN)" : x === "pm" ? " (AN)" : String(x).startsWith("p:") ? ` (${partPeriods(cfg, x).map((p) => "P" + cfg.periods[p]).join(", ") || "no periods"})` : "";
+  const why = (t) => ((rec.reason || {})[t] && rec.reason[t] !== "Leave" ? ` — ${rec.reason[t]}` : "");
   const rows = needs.map((n) => `<tr><td class="p">P${cfg.periods[n.p]}</td><td><b>${esc(n.cls)}</b></td><td>${esc(n.sub)}</td><td>${esc(n.t)}</td><td>${a[n.key] ? `<span class="sub">${esc(a[n.key])}</span>` : '<span class="nc">not covered</span>'}</td><td class="sg"></td></tr>`).join("");
   const body = pdfLetterhead(cfg, "Substitution", isoNice(date, true), `${Object.keys(abs).length} absent · ${needs.length} period${needs.length === 1 ? "" : "s"} to cover`) +
-    `<div class="ab"><b>Absent:</b> ${Object.keys(abs).map((t) => `<span>${esc(t)}${part(abs[t])}</span>`).join("") || "none"}</div>` +
+    `<div class="ab"><b>Absent:</b> ${Object.keys(abs).map((t) => `<span>${esc(t)}${part(abs[t])}${esc(why(t))}</span>`).join("") || "none"}</div>` +
     `<table><thead><tr><th>Period</th><th>Class</th><th>Subject</th><th>Absent teacher</th><th>Substitute</th><th>Substitute's sign</th></tr></thead><tbody>${rows || '<tr><td colspan="6">No substitutions needed.</td></tr>'}</tbody></table>` +
     (rec.note ? `<div class="nt"><b>Note:</b> ${esc(rec.note)}</div>` : "") + pdfFooter(esc(cfg.school || "") + " &middot; Substitution " + esc(date), ["Headmaster"], cfg, "class");
   openPrint(esc(cfg.school) + " - Substitution " + date, css, body);
@@ -4835,7 +5032,7 @@ function exportSubMonthPDF(cfg, month) {
     `<h3>All substitutions</h3><table><thead><tr><th>Date</th><th>Period</th><th>Class</th><th>Subject</th><th>Absent</th><th>Substitute</th></tr></thead><tbody>${rows || '<tr><td colspan="6">None</td></tr>'}</tbody></table>` +
     pdfFooter(esc(cfg.school || ""), ["Headmaster"], cfg, "class"));
 }
-function SubsView({ cfg, update, mobile }) {
+function SubsView({ cfg, update, mobile, ask, limited }) {
   const [date, setDate] = useState(isoToday());
   const [q, setQ] = useState("");
   const [msg, setMsg] = useState("");
@@ -4845,24 +5042,34 @@ function SubsView({ cfg, update, mobile }) {
   const needs = useMemo(() => subsNeeds(cfg, date), [cfg, date]);
   const counts = useMemo(() => subCounts(cfg, date), [cfg, date]);
   const covered = needs.filter((n) => assign[n.key]).length;
-  const edit = (fn) => update((n) => {
+  const edit = (fn, auto) => update((n) => {
     n.subs = n.subs || {}; const r = n.subs[date] || (n.subs[date] = { absent: {}, assign: {} }); r.absent = r.absent || {}; r.assign = r.assign || {};
     fn(r, n);
     // tidy: drop assignments that are no longer needed, empty days, and records older than ~13 months
     const keys = new Set(subsNeeds(n, date).map((x) => x.key)); for (const k of Object.keys(r.assign)) if (!keys.has(k) || !r.assign[k]) delete r.assign[k];
     if (!Object.keys(r.absent).length && !Object.keys(r.assign).length && !r.note) delete n.subs[date];
     const cut = isoShift(isoToday(), -400); for (const k of Object.keys(n.subs)) if (k < cut) delete n.subs[k];
+    if (auto && n.subsAuto !== false && n.subs[date]) fillSubs(n, date);
   });
-  const toggleAbs = (t) => edit((r) => { if (r.absent[t]) delete r.absent[t]; else r.absent[t] = "full"; });
-  const setPart = (t, p) => edit((r) => { r.absent[t] = p; });
-  const pick = (key, u) => edit((r) => { if (u) r.assign[key] = u; else delete r.assign[key]; });
+  const toggleAbs = (t) => edit((r) => { if (r.absent[t]) { delete r.absent[t]; if (r.reason) delete r.reason[t]; } else r.absent[t] = "full"; }, true);
+  const setPart = (t, p) => edit((r) => { r.absent[t] = p === "some" ? "p:" : p; }, true);
+  const togglePeriod = (t, p) => edit((r) => { const cur = new Set(partPeriods(cfg, r.absent[t])); if (cur.has(p)) cur.delete(p); else cur.add(p); r.absent[t] = "p:" + [...cur].sort((a, b) => a - b).join(","); }, true);
+  const setReason = (t, v) => edit((r) => { r.reason = { ...(r.reason || {}) }; if (v === "Leave") delete r.reason[t]; else r.reason[t] = v; });
+  const pick = (key, u) => edit((r, n) => {
+    const prev = r.assign[key];
+    n.subsOwed = { ...(n.subsOwed || {}) };
+    if (prev && u && prev !== u) n.subsOwed[prev] = (n.subsOwed[prev] || 0) + 1;   // replaced by hand: keeps the turn
+    if (u && n.subsOwed[u] > 0) { n.subsOwed[u]--; }
+    for (const k of Object.keys(n.subsOwed)) if (!n.subsOwed[k]) delete n.subsOwed[k];
+    if (u) r.assign[key] = u; else delete r.assign[key];
+  });
   const autoAll = () => {
     update((n) => {
       n.subs = n.subs || {}; const r = n.subs[date] || (n.subs[date] = { absent: {}, assign: {} }); r.assign = r.assign || {};
       const cnt = subCounts(n, date);
-      for (const nd of subsNeeds(n, date)) { if (r.assign[nd.key]) continue; const c = subCandidates(n, date, nd, cnt)[0]; if (c) { r.assign[nd.key] = c.u; cnt.month[c.u] = (cnt.month[c.u] || 0) + 1; } }
+      for (const nd of subsNeeds(n, date)) { if (r.assign[nd.key]) continue; const c = subCandidates(n, date, nd, cnt)[0]; if (c) { r.assign[nd.key] = c.u; cnt.month[c.u] = (cnt.month[c.u] || 0) + 1; cnt.rot[c.u] = (cnt.rot[c.u] || 0) + 1; if (n.subsOwed && n.subsOwed[c.u] > 0) { n.subsOwed = { ...n.subsOwed }; n.subsOwed[c.u]--; if (!n.subsOwed[c.u]) delete n.subsOwed[c.u]; } } }
     });
-    setMsg("Best substitutes filled in. Change any of them from the lists.");
+    setMsg((cfg.subsMode || "rotation") === "rotation" ? "Filled in by turn (rotation). Change any of them from the lists — a replaced teacher keeps their turn." : "Best substitutes filled in. Change any of them from the lists.");
   };
   const share = () => { const t = subsText(cfg, date); try { window.open("https://wa.me/?text=" + encodeURIComponent(t), "_blank"); } catch (e) { /* ignore */ } };
   const copy = async () => { try { await navigator.clipboard.writeText(subsText(cfg, date)); setMsg("Copied — paste it in WhatsApp or anywhere."); } catch (e) { setMsg("Couldn't copy on this device."); } };
@@ -4895,15 +5102,18 @@ function SubsView({ cfg, update, mobile }) {
           <div style={{ padding: 12, display: "grid", gap: 10 }}>
             {absList.length > 0 && (
               <div style={{ display: "grid", gap: 6 }}>
-                {absList.map((t) => (
-                  <div key={t} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 10, background: C.clashSoft, border: `1px solid ${C.clash}33` }}>
-                    <b style={{ fontFamily: mono, color: "#8a1f17", minWidth: 54 }}>{t}</b>
-                    <select className="tt-sel" value={abs[t]} onChange={(e) => setPart(t, e.target.value)} style={{ width: "auto", flex: 1, fontFamily: sans, fontSize: 12.5 }}>
-                      <option value="full">Whole day</option><option value="am">Forenoon — FN (P1–P{fnCount(cfg)})</option><option value="pm">Afternoon — AN (P{fnCount(cfg) + 1}–P{cfg.periods.length})</option>
-                    </select>
-                    <button className="tt-btn" onClick={() => toggleAbs(t)} aria-label={`Remove ${t}`} style={{ border: "none", background: "#fff", borderRadius: 20, width: 24, height: 24, cursor: "pointer", color: C.clash, fontWeight: 800 }}>×</button>
-                  </div>
-                ))}
+                {absList.map((t) => { const some = String(abs[t]).startsWith("p:"), sel = some ? new Set(partPeriods(cfg, abs[t])) : null; return (
+                  <div key={t} style={{ display: "grid", gap: 6, padding: "6px 8px", borderRadius: 10, background: C.clashSoft, border: `1px solid ${C.clash}33` }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      <b style={{ fontFamily: mono, color: "#8a1f17", minWidth: 50 }}>{t}</b>
+                      <select className="tt-sel" value={some ? "some" : abs[t]} onChange={(e) => setPart(t, e.target.value)} style={{ width: "auto", flex: "1 1 120px", fontFamily: sans, fontSize: 12.5 }}>
+                        <option value="full">Whole day</option><option value="am">Forenoon — FN (P1–P{fnCount(cfg)})</option><option value="pm">Afternoon — AN (P{fnCount(cfg) + 1}–P{cfg.periods.length})</option><option value="some">Some periods…</option>
+                      </select>
+                      <select className="tt-sel" value={(rec.reason || {})[t] || "Leave"} onChange={(e) => setReason(t, e.target.value)} style={{ width: "auto", flex: "0 1 110px", fontFamily: sans, fontSize: 12.5 }}>{ABS_REASONS.map((x) => <option key={x}>{x}</option>)}</select>
+                      <button className="tt-btn" onClick={() => toggleAbs(t)} aria-label={`Remove ${t}`} style={{ border: "none", background: "#fff", borderRadius: 20, width: 24, height: 24, cursor: "pointer", color: C.clash, fontWeight: 800 }}>×</button>
+                    </div>
+                    {some && <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>{cfg.periods.map((pn, p) => <button key={p} className="tt-btn" onClick={() => togglePeriod(t, p)} style={{ minWidth: 38, padding: "4px 6px", borderRadius: 8, fontSize: 12, fontWeight: 800, cursor: "pointer", border: `1.5px solid ${sel.has(p) ? C.clash : C.line}`, background: sel.has(p) ? C.clash : "#fff", color: sel.has(p) ? "#fff" : C.sub }}>P{pn}</button>)}</div>}
+                  </div>); })}
               </div>
             )}
             <input className="tt-in" placeholder="Search teacher" value={q} onChange={(e) => setQ(e.target.value)} style={{ fontFamily: sans, fontSize: 13, height: 34 }} />
@@ -4923,7 +5133,11 @@ function SubsView({ cfg, update, mobile }) {
             {needs.length === 0 ? <div style={{ padding: "18px 6px", textAlign: "center", fontSize: 13, color: C.sub }}>{absList.length ? "The absent teachers have no periods in this part of the day." : "Tap the absent teachers on the left. Their periods appear here."}</div> : (
               <>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <button className="tt-btn" onClick={autoAll} style={solidBtn}>✦ Suggest best for all</button>
+                  <button className="tt-btn" onClick={autoAll} style={solidBtn}>✦ Suggest for all</button>
+                  <label title="Substitutes are chosen by themselves as soon as a teacher is marked absent" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 700, color: C.ink, cursor: "pointer" }}><input type="checkbox" checked={cfg.subsAuto !== false} onChange={(e) => update((n) => { n.subsAuto = e.target.checked; })} /> Fill automatically</label>
+                  <div style={{ display: "inline-flex", border: `1px solid ${C.line}`, borderRadius: 10, overflow: "hidden" }}>
+                    {[["rotation", "By turn (rotation)"], ["fit", "Best fit for the class"]].map(([k, l]) => <button key={k} className="tt-btn" onClick={() => update((n) => { n.subsMode = k; })} style={{ border: "none", padding: "6px 11px", fontSize: 12, fontWeight: 700, cursor: "pointer", background: (cfg.subsMode || "rotation") === k ? C.primary : "#fff", color: (cfg.subsMode || "rotation") === k ? "#fff" : C.sub }}>{l}</button>)}
+                  </div>
                   <button className="tt-btn" onClick={() => edit((r) => { r.assign = {}; })} style={ghostBtn}>Clear choices</button>
                   <span style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>
                     <button className="tt-btn" onClick={share} style={{ ...ghostBtn, color: "#128c4b", borderColor: "#128c4b55" }}>WhatsApp</button>
@@ -4957,6 +5171,7 @@ function SubsView({ cfg, update, mobile }) {
         </div>
       </div>}
 
+      <div style={{ marginTop: 16 }}><RotationPanel cfg={cfg} update={update} date={date} counts={counts} ask={ask} limited={limited} /></div>
       <div style={{ display: "grid", gridTemplateColumns: mobile ? "minmax(0,1fr)" : "repeat(2, minmax(0,1fr))", gap: 16, marginTop: 16 }}>
         <div style={card}>
           <Panelhead text={`Fair share — substitutions taken (${new Date(date + "T00:00").toLocaleDateString(undefined, { month: "long" })})`} count={`${tally.reduce((a, x) => a + x.m, 0)} this month`} />
@@ -5384,7 +5599,7 @@ function TeacherAvailability({ cfg, update, ask, teacherLoad = {}, mobile }) {
   );
 }
 
-function SetupView({ cfg, update, ask, askPw, mobile, teacherLoad }) {
+function SetupView({ cfg, update, ask, askPw, mobile, teacherLoad, me }) {
   const [name, setName] = useState("");
   const [ct, setCt] = useState("");
   const [clonefrom, setClonefrom] = useState(cfg.classes[0]);
@@ -5469,6 +5684,7 @@ function SetupView({ cfg, update, ask, askPw, mobile, teacherLoad }) {
         </div>
       </div>
       <YearCard cfg={cfg} update={update} askPw={askPw} />
+      <StaffAccessCard cfg={cfg} update={update} me={me} />
       <LogoCard cfg={cfg} update={update} />
       <StampCard cfg={cfg} update={update} mobile={mobile} />
 
@@ -5549,6 +5765,7 @@ function SetupView({ cfg, update, ask, askPw, mobile, teacherLoad }) {
 
       <ClassTeacherImport cfg={cfg} update={update} ask={ask} />
       <TeacherAvailability cfg={cfg} update={update} ask={ask} teacherLoad={teacherLoad} mobile={mobile} />
+      <ExtraDutiesPanel cfg={cfg} update={update} ask={ask} mobile={mobile} />
 
       <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "minmax(0,1.2fr) minmax(0,1fr)", gap: 16, alignItems: "start" }}>
         <div style={card}>
@@ -5664,6 +5881,8 @@ function teacherAt(cfg, t, d, p) {
     if (code === t || (code.indexOf(" ") >= 0 && code.split(" ").indexOf(t) >= 0)) return { c: c, sub: slot[1] };
   }
   if (hit) { hit.c = divs.join(", "); return hit; }
+  var ex = extraAt(cfg, t, d, p);
+  if (ex) return { c: ex.label || "Duty", sub: ex.kind === "class" ? "Class" : "Duty", extra: true, kind: ex.kind };
   return null;
 }
 function isOffDay(cfg, t, d) { var a = (cfg.teacherDays || {})[t]; return !!(a && a.length && a.indexOf(d) < 0); }
