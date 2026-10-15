@@ -12,7 +12,7 @@ import { supabase } from "./supabaseClient";
    ============================================================ */
 
 const STORE_KEY = "tt_cfg_v2";
-const APP_VERSION = "2026-10-16 a";
+const APP_VERSION = "2026-10-16 c";
 
 const WEEK_ORDER = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const DAY_FULL = { MON: "Monday", TUE: "Tuesday", WED: "Wednesday", THU: "Thursday", FRI: "Friday", SAT: "Saturday", SUN: "Sunday" };
@@ -4415,6 +4415,7 @@ function YearCard({ cfg, update, askPw }) {
             <input className="tt-in" value={cfg.year || ""} onChange={(e) => update((n) => { if (e.target.value.trim()) n.year = e.target.value; else delete n.year; })} style={{ width: 130, fontFamily: sans, fontSize: 13.5, fontWeight: 700, height: 36 }} />
           </label>
           <span style={{ fontSize: 12, color: C.sub }}>Printed on PDFs and the Excel file.</span>
+          <div style={{ flexBasis: "100%" }}><YearRangePicker cfg={cfg} update={update} /></div>
           {!open && <button className="tt-btn" onClick={() => { setLabel(nextYearLabel(cfg.year)); setOpen(true); }} style={{ ...solidBtn, marginLeft: "auto" }}>Start a new academic year…</button>}
         </div>
         {msg && <div style={{ fontSize: 12.5, fontWeight: 600, color: msg.ok ? C.free : C.clash }}>{msg.text}</div>}
@@ -4476,7 +4477,7 @@ function buildTeacherPages(cfg) {
     for (const dt of dates) { const e = calEntry(cfg, dt); if (!e) continue; const dd = dayOf(cfg, dt);
       if (!dd) { cal[dt] = { k: "h", l: e.label || "" }; continue; }
       const g = cfgOn(cfg, dt), off = isOffDay(cfg, t, dd);
-      cal[dt] = { k: e.kind === "follow" ? "f" : "s", l: e.label || "", d: dd, row: g.periods.map((_, p) => { if (off) return "off"; const b = teacherAt(g, t, dd, p); return b ? { c: b.c, s: b.sub, k: b.combined ? 1 : 0 } : null; }) }; }
+      cal[dt] = { k: e.kind === "follow" ? "f" : "s", l: [CAL_TAGS[e.tag] || "", e.label || ""].filter(Boolean).join(" — "), d: dd, row: g.periods.map((_, p) => { if (off) return "off"; const b = teacherAt(g, t, dd, p); return b ? { c: b.c, s: b.sub, k: b.combined ? 1 : 0 } : null; }) }; }
     rows.push({ token, data: { t, ct: cfg.classes.filter((c) => cfg.classTeacher[c] === t), week, load, free: L.week[t], subs: by[t] || {}, ...(Object.keys(cal).length ? { cal } : {}) } });
   }
   return rows;
@@ -4946,7 +4947,7 @@ function SubsExemptPanel({ cfg, update, ask, date, limited }) {
   );
 }
 /* ---------------- Change history: who changed what, and when ---------------- */
-var LOG_NAMES = { school: "school name", year: "academic year", days: "working days", periods: "periods per day", fnCount: "FN / AN split", classes: "classes", singles: "teachers", subjects: "subjects", classTeacher: "class teachers", bkey: "mapping", stdPeriods: "standard periods", combined: "combined subjects", rules: "scheduling rules", classRules: "class rules", twice: "twice-a-day rules", locked: "frozen periods", commonPeriods: "common periods", teacherDays: "teacher availability", classMaxP: "periods per class", access: "staff access", accessDefault: "staff access", roles: "staff access", subsExempt: "substitution exemptions", subsMode: "substitution method", subsAuto: "substitution settings", subsPreferClass: "substitution settings", subsRotationStart: "substitution counting", extraDuties: "extra duties", rooms: "rooms & labs", prefs: "teaching-quality settings", logo: "school logo", logoIcon: "school logo", wmApp: "watermark", wmPdf: "watermark", hmSign: "HM signature", seal: "school seal", hmTitle: "signature title", hmName: "signature name", signOnClass: "signature settings", signOnTeacher: "signature settings", signSize: "signature settings", sealSize: "signature settings", sealPos: "signature settings", versions: "saved versions", teacherLinks: "teacher links", adminPw: "admin password", snapshots: "safety copies" };
+var LOG_NAMES = { school: "school name", year: "academic year", days: "working days", periods: "periods per day", fnCount: "FN / AN split", classes: "classes", singles: "teachers", subjects: "subjects", classTeacher: "class teachers", bkey: "mapping", stdPeriods: "standard periods", combined: "combined subjects", rules: "scheduling rules", classRules: "class rules", twice: "twice-a-day rules", locked: "frozen periods", commonPeriods: "common periods", teacherDays: "teacher availability", classMaxP: "periods per class", access: "staff access", accessDefault: "staff access", roles: "staff access", subsExempt: "substitution exemptions", subsMode: "substitution method", subsAuto: "substitution settings", subsPreferClass: "substitution settings", subsRotationStart: "substitution counting", extraDuties: "extra duties", rooms: "rooms & labs", prefs: "teaching-quality settings", logo: "school logo", logoIcon: "school logo", wmApp: "watermark", wmPdf: "watermark", hmSign: "HM signature", seal: "school seal", hmTitle: "signature title", hmName: "signature name", signOnClass: "signature settings", signOnTeacher: "signature settings", signSize: "signature settings", sealSize: "signature settings", sealPos: "signature settings", versions: "saved versions", yearStart: "academic year dates", yearEnd: "academic year dates", teacherLinks: "teacher links", adminPw: "admin password", snapshots: "safety copies" };
 var LOG_SKIP = ["grid", "subs", "calendar", "changeLog", "subsOwed", "lastBackupDl", "combinedV2", "combinedV3"];
 function describeChange(a, b) {
   const out = []; if (!a || !b) return out;
@@ -5231,7 +5232,7 @@ function dayLabel(cfg, date) {
   if (!e) return cfg.days.includes(own) ? `${DAY_FULL[own] || own} timetable` : "Not a working day";
   if (e.kind === "holiday") return `Holiday${e.label ? " — " + e.label : ""}`;
   const d = dayOf(cfg, date), dn = DAY_FULL[d] || d;
-  if (e.kind === "follow") return `Follows ${dn}'s timetable${e.label ? " — " + e.label : ""}`;
+  if (e.kind === "follow") return `${CAL_TAGS[e.tag] ? CAL_TAGS[e.tag] + " · f" : "F"}ollows ${dn}'s timetable${e.label ? " — " + e.label : ""}`;
   return `Special timetable${e.label ? " — " + e.label : ""} · ${specialN(cfg, e)} periods`;
 }
 // after absences or the calendar change: drop choices no longer needed, prune old records, fill the gaps
@@ -5270,10 +5271,14 @@ function DayStatus({ cfg, date, setCal, mobile }) {
         </div>
       </div>
       {kind === "follow" && <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <select className="tt-sel" value={e.tag || ""} onChange={(ev) => setCal((x) => { const y = { ...x }; if (ev.target.value) y.tag = ev.target.value; else delete y.tag; return y; })} style={{ width: 210, fontFamily: sans, fontSize: 13, height: 34 }}><option value="">Working day</option><option value="comp">Compensation working day</option><option value="special">Special working day</option></select>
         <label style={lab}>Use the timetable of<select className="tt-sel" value={e.day || ""} onChange={(ev) => setCal((x) => ({ ...x, day: ev.target.value }))} style={{ width: 140, fontFamily: sans, fontSize: 13, height: 34 }}>{cfg.days.map((d) => <option key={d} value={d}>{DAY_FULL[d] || d}</option>)}</select></label>
         <input className="tt-in" value={e.label || ""} onChange={(ev) => setCal((x) => ({ ...x, label: ev.target.value }))} placeholder="Note (optional), e.g. working Friday" style={{ flex: "1 1 180px", maxWidth: 300, fontFamily: sans, fontSize: 13, height: 34 }} />
       </div>}
-      {kind === "holiday" && <input className="tt-in" value={e.label || ""} onChange={(ev) => setCal((x) => ({ ...x, label: ev.target.value }))} placeholder="Reason, e.g. Onam, strike, exam day" style={{ maxWidth: 340, fontFamily: sans, fontSize: 13, height: 34 }} />}
+      {kind === "holiday" && <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+        <input className="tt-in" value={e.label || ""} onChange={(ev) => setCal((x) => ({ ...x, label: ev.target.value }))} placeholder="Reason, e.g. Onam, strike, exam day" style={{ flex: "1 1 200px", maxWidth: 300, fontFamily: sans, fontSize: 13, height: 34 }} />
+        {["Rain holiday", "Tour", "Hartal / strike", "Election", "Exam", "Local holiday"].map((r) => <button key={r} className="tt-btn" onClick={() => setCal((x) => ({ ...x, label: r }))} style={{ border: `1px solid ${e.label === r ? C.accent : C.line}`, background: e.label === r ? "#fdf2e3" : "#fff", color: e.label === r ? "#94620b" : C.sub, borderRadius: 20, padding: "4px 10px", fontSize: 12, fontWeight: 700 }}>{r}</button>)}
+      </div>}
       {kind === "special" && <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
         <input className="tt-in" value={e.label || ""} onChange={(ev) => setCal((x) => ({ ...x, label: ev.target.value }))} placeholder="Name, e.g. Half day, Sports day" style={{ flex: "1 1 160px", maxWidth: 240, fontFamily: sans, fontSize: 13, height: 34 }} />
         <label style={lab}>Periods<select className="tt-sel" value={specialN(cfg, e)} onChange={(ev) => setCal((x) => ({ ...x, n: +ev.target.value }))} style={{ width: 70, height: 34, textAlign: "center" }}>{cfg.periods.map((p, i) => <option key={i} value={i + 1}>{i + 1}</option>)}</select></label>
@@ -5326,14 +5331,203 @@ function SpecialDayEditor({ cfg, date, setCal, mobile }) {
     </div>
   );
 }
+/* ---------------- Reading Excel (.xlsx) files without a library ---------------- */
+async function unzipEntries(buf) {
+  const u = new Uint8Array(buf), dv = new DataView(buf); let e = u.length - 22;
+  while (e >= 0 && dv.getUint32(e, true) !== 0x06054b50) e--;
+  if (e < 0) throw new Error("this is not an Excel (.xlsx) file");
+  const n = dv.getUint16(e + 10, true); let p = dv.getUint32(e + 16, true); const out = {};
+  for (let i = 0; i < n; i++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const method = dv.getUint16(p + 10, true), csize = dv.getUint32(p + 20, true), nl = dv.getUint16(p + 28, true), xl = dv.getUint16(p + 30, true), cl = dv.getUint16(p + 32, true), off = dv.getUint32(p + 42, true);
+    const name = new TextDecoder().decode(u.subarray(p + 46, p + 46 + nl)); p += 46 + nl + xl + cl;
+    const start = off + 30 + dv.getUint16(off + 26, true) + dv.getUint16(off + 28, true);
+    out[name] = { method, data: u.subarray(start, start + csize) };
+  }
+  return out;
+}
+async function inflateEntry(x) { if (x.method === 0) return x.data; if (typeof DecompressionStream === "undefined") throw new Error("this browser can't open Excel files — save the sheet as CSV"); const st = new Blob([x.data]).stream().pipeThrough(new DecompressionStream("deflate-raw")); return new Uint8Array(await new Response(st).arrayBuffer()); }
+async function readXlsxRows(file) {
+  const z = await unzipEntries(await file.arrayBuffer());
+  const txt = async (n) => (z[n] ? new TextDecoder().decode(await inflateEntry(z[n])) : "");
+  const P = (s) => new DOMParser().parseFromString(s, "application/xml");
+  const ss = []; const sx = await txt("xl/sharedStrings.xml");
+  if (sx) for (const si of P(sx).getElementsByTagName("si")) ss.push([...si.getElementsByTagName("t")].map((t) => t.textContent).join(""));
+  let sheet = "xl/worksheets/sheet1.xml";
+  try {
+    const wb = P(await txt("xl/workbook.xml")), rels = P(await txt("xl/_rels/workbook.xml.rels")), first = wb.getElementsByTagName("sheet")[0];
+    const rid = first && (first.getAttribute("r:id") || first.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id"));
+    const rel = [...rels.getElementsByTagName("Relationship")].find((r) => r.getAttribute("Id") === rid);
+    if (rel) { const t = rel.getAttribute("Target").replace(/^\/?(xl\/)?/, "xl/"); if (z[t]) sheet = t; }
+  } catch (e) { /* use sheet1 */ }
+  const doc = P(await txt(sheet)), rows = [];
+  for (const row of doc.getElementsByTagName("row")) {
+    const r = [];
+    for (const c of row.getElementsByTagName("c")) {
+      const ref = c.getAttribute("r") || "", letters = (ref.match(/^[A-Z]+/) || [""])[0];
+      let col = 0; for (const ch of letters) col = col * 26 + (ch.charCodeAt(0) - 64); col = letters ? col - 1 : r.length;
+      const t = c.getAttribute("t"), v = c.getElementsByTagName("v")[0];
+      let val = t === "s" ? ss[+(v && v.textContent)] || "" : t === "inlineStr" ? [...c.getElementsByTagName("t")].map((x) => x.textContent).join("") : v ? v.textContent : "";
+      while (r.length < col) r.push(""); r[col] = String(val).trim();
+    }
+    rows.push(r);
+  }
+  return rows.filter((r) => r.some((x) => x !== ""));
+}
+/* ---------------- Importing the school calendar ---------------- */
+var CAL_TAGS = { comp: "Compensation working day", special: "Special working day" };
+var MON3 = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+function ymdOk(y, m, d) { if (m < 1 || m > 12 || d < 1 || d > 31 || y < 2000 || y > 2100) return null; const t = new Date(y, m - 1, d); if (t.getMonth() !== m - 1) return null; return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`; }
+function parseCalDate(v) {
+  const s = String(v == null ? "" : v).trim(); if (!s) return null;
+  if (/^\d{5}(\.\d+)?$/.test(s)) { const n = Math.floor(+s); if (n > 30000 && n < 80000) return new Date(Date.UTC(1899, 11, 30) + n * 864e5).toISOString().slice(0, 10); }
+  let m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/); if (m) return ymdOk(+m[1], +m[2], +m[3]);
+  m = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})/); if (m) { let y = +m[3]; if (y < 100) y += 2000; return ymdOk(y, +m[2], +m[1]); }   // day/month/year
+  m = s.match(/^(\d{1,2})(?:st|nd|rd|th)?[\s\-.]+([A-Za-z]{3,})[\s,\-.]+(\d{4})/); if (m) { const mo = MON3.indexOf(m[2].slice(0, 3).toLowerCase()); if (mo >= 0) return ymdOk(+m[3], mo + 1, +m[1]); }
+  m = s.match(/^([A-Za-z]{3,})[\s.]+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})/); if (m) { const mo = MON3.indexOf(m[1].slice(0, 3).toLowerCase()); if (mo >= 0) return ymdOk(+m[3], mo + 1, +m[2]); }
+  return null;
+}
+function calKindOf(type, note, hasDay) {
+  const t = String(type || "").toLowerCase(), n = String(note || "").toLowerCase();
+  if (/comp/.test(t)) return ["follow", "comp"];
+  if (/holiday|leave|vacation|closed|off|no class|bandh|hartal|strike/.test(t)) return ["holiday", ""];
+  if (/work|special|extra|class/.test(t)) return ["follow", "special"];
+  if (!t && /compensat/.test(n)) return ["follow", "comp"];
+  if (!t && /working/.test(n)) return ["follow", "special"];
+  return hasDay ? ["follow", "special"] : ["holiday", ""];
+}
+function parseCalendarImport(cfg, rows) {
+  const items = [], errors = []; let skipped = 0;
+  rows = (rows || []).filter((r) => r.some((c) => String(c == null ? "" : c).trim()));
+  if (!rows.length) return { items, errors: ["The file is empty."], skipped };
+  const head = rows[0].map((c) => String(c == null ? "" : c).trim().toLowerCase());
+  const used = new Set(), find = (re) => { const i = head.findIndex((h, k) => !used.has(k) && re.test(h)); if (i >= 0) used.add(i); return i; };
+  let iD = find(/^(date|dates|from|from date|start|start date|day\/date|date\(s\))$/); if (iD < 0) iD = find(/date|from/);
+  let iT = find(/^(to|to date|till|until|end|end date)$/), iK = find(/type|kind|category|status|working\s*\/\s*holiday/), iF = find(/follow|timetable|time table|as per|order|day order/), iN = find(/note|occasion|reason|description|event|name|holiday|details|remarks|particular/);
+  let body = rows.slice(1), off = 2;
+  if (iD < 0 || parseCalDate(rows[0][iD] != null ? rows[0][iD] : rows[0][0])) { body = rows; off = 1; iD = 0; iT = -1; iK = -1; iF = -1; iN = rows[0].length > 1 ? 1 : -1;
+    if (rows[0].length > 2 && rows.slice(0, 5).every((r) => !r[1] || parseCalDate(r[1]))) { iT = 1; iN = 2; } }
+  body.forEach((r, i) => {
+    const raw = String(r[iD] == null ? "" : r[iD]).trim(); if (!raw) return;
+    const parts = raw.split(/\s+(?:to|till|until|–|—|-)\s+/i);
+    const from = parseCalDate(parts[0]); if (!from) { errors.push(`Row ${i + off}: can't read the date "${raw}"`); return; }
+    let to = parts[1] ? parseCalDate(parts[1]) : iT >= 0 ? parseCalDate(r[iT]) : null; if (!to || to < from) to = from;
+    const note = iN >= 0 ? String(r[iN] || "").trim() : "", fol = iF >= 0 ? impDay(r[iF]) : null;
+    const [kind, tag] = calKindOf(iK >= 0 ? r[iK] : "", note, !!fol);
+    let k = 0;
+    for (let d = from; d <= to && k < 200; d = isoShift(d, 1), k++) {
+      const own = isoDay(d);
+      if (kind === "holiday" && !cfg.days.includes(own)) { skipped++; continue; }
+      items.push({ date: d, kind, tag, day: kind === "follow" ? (fol && cfg.days.includes(fol) ? fol : cfg.days.includes(own) ? own : "") : "", label: note, row: i + off });
+    }
+  });
+  const seen = new Map(); items.forEach((x) => seen.set(x.date, x));
+  return { items: [...seen.values()].sort((a, b) => (a.date < b.date ? -1 : 1)), errors, skipped };
+}
+function calendarCSV(cfg, from, to) {
+  const ds = Object.keys(cfg.calendar || {}).filter((d) => d >= from && d <= to && calEntry(cfg, d)).sort();
+  const fmt = (d) => { const [y, m, x] = d.split("-"); return `${x}/${m}/${y}`; }, q = (v) => `"${String(v || "").replace(/"/g, '""')}"`;
+  const L = ["Date,To,Type,Follows,Note"];
+  for (let i = 0; i < ds.length; i++) {
+    const e = cfg.calendar[ds[i]];
+    if (e.kind === "holiday") { let j = i; while (j + 1 < ds.length && cfg.calendar[ds[j + 1]].kind === "holiday" && (cfg.calendar[ds[j + 1]].label || "") === (e.label || "") && ds[j + 1] <= isoShift(ds[j], 3)) j++; L.push([fmt(ds[i]), j > i ? fmt(ds[j]) : "", "Holiday", "", q(e.label)].join(",")); i = j; }
+    else L.push([fmt(ds[i]), "", e.kind === "special" ? "Special timetable" : e.tag === "comp" ? "Compensation working" : "Special working", DAY_FULL[e.day] || e.day || "", q(e.label)].join(","));
+  }
+  return L.join("\n");
+}
+var CAL_TEMPLATE = "Date,To,Type,Follows,Note\n02/10/2026,,Holiday,,Gandhi Jayanti\n21/08/2026,30/08/2026,Holiday,,Onam vacation\n24/12/2026,01/01/2027,Holiday,,Christmas vacation\n17/10/2026,,Compensation working,Monday,For the rain holiday on 20 July\n31/10/2026,,Special working,Friday,Kerala Piravi programme";
+function CalendarImport({ cfg, update, onDone }) {
+  const th = CUR_TH || THEMES.teal;
+  const [res, setRes] = useState(null);
+  const [text, setText] = useState("");
+  const [replace, setReplace] = useState(true);
+  const [msg, setMsg] = useState(null);
+  const fileRef = useRef(null);
+  const read = (rows) => { const r = parseCalendarImport(cfg, rows); setRes(r); setMsg(null); };
+  const onFile = async (f) => {
+    if (!f) return; setMsg(null);
+    try {
+      if (/\.xlsx$/i.test(f.name)) read(await readXlsxRows(f));
+      else if (/\.xls$/i.test(f.name)) setMsg({ ok: false, text: "Old .xls files can't be read — in Excel choose File → Save As → Excel Workbook (.xlsx) or CSV, then import that." });
+      else { const t = await f.text(); setText(t.length > 100000 ? "" : t); read(parseDelimited(t)); }
+    } catch (e) { setMsg({ ok: false, text: "Couldn't read the file: " + ((e && e.message) || e) }); }
+  };
+  const items = res ? res.items : [];
+  const missing = items.filter((x) => x.kind === "follow" && !x.day).length;
+  const status = (x) => { const e = calEntry(cfg, x.date); if (!e) return ["new", C.free]; const same = e.kind === x.kind && (e.day || "") === (x.day || "") && (e.label || "") === (x.label || ""); return same ? ["already there", C.sub] : [replace ? `replaces: ${dayLabel(cfg, x.date)}` : `kept: ${dayLabel(cfg, x.date)}`, replace ? C.warn : C.sub]; };
+  const setDay = (date, day) => setRes((r) => ({ ...r, items: r.items.map((x) => (x.date === date ? { ...x, day } : x)) }));
+  const apply = () => {
+    if (missing) { setMsg({ ok: false, text: `Choose whose timetable is followed for the ${missing} working day${missing === 1 ? "" : "s"} marked in amber.` }); return; }
+    let n = 0;
+    update((c) => {
+      c.calendar = { ...(c.calendar || {}) };
+      for (const x of items) {
+        const cur = c.calendar[x.date]; if (cur && !replace) continue;
+        c.calendar[x.date] = x.kind === "holiday" ? { kind: "holiday", label: x.label } : { kind: "follow", day: x.day, label: x.label, ...(x.tag ? { tag: x.tag } : {}) };
+        n++; if (c.subs && c.subs[x.date]) tidySubs(c, x.date, true);
+      }
+    });
+    setMsg({ ok: true, text: `Done — ${items.length} day${items.length === 1 ? "" : "s"} put in the school calendar.` }); setRes(null); setText(""); onDone && onDone();
+  };
+  const hol = items.filter((x) => x.kind === "holiday").length, wk = items.length - hol;
+  return (
+    <div style={{ border: `1.5px solid ${th.accent}44`, borderRadius: 14, padding: 12, display: "grid", gap: 10, background: "#fbfdfd" }}>
+      <div style={{ fontSize: 14, fontWeight: 800, color: th.g2 }}>Import the school calendar</div>
+      <div style={{ fontSize: 12.5, color: C.sub, lineHeight: 1.6 }}>Use an Excel (.xlsx) or CSV file with the columns <b>Date, To, Type, Follows, Note</b>. Write dates as <b>day/month/year</b> (e.g. 15/08/2026). Type is <b>Holiday</b>, <b>Compensation working</b> or <b>Special working</b>; for a working day, Follows is the day whose timetable is used (Monday…). A holiday that runs for several days needs only the first and last date. You can also copy the rows from Excel or Google Sheets and paste them below.</div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <button className="tt-btn" onClick={() => fileRef.current && fileRef.current.click()} style={solidBtn}>Choose file (.xlsx / .csv)</button>
+        <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv,.tsv,.txt" style={{ display: "none" }} onChange={(e) => { onFile(e.target.files && e.target.files[0]); e.target.value = ""; }} />
+        <button className="tt-btn" onClick={() => downloadText("school_calendar_template.csv", CAL_TEMPLATE)} style={ghostBtn}>Download a sample file</button>
+      </div>
+      <textarea className="tt-in" value={text} onChange={(e) => { setText(e.target.value); if (e.target.value.trim()) read(parseDelimited(e.target.value)); else setRes(null); }} placeholder={"…or paste here, e.g.\nDate\tTo\tType\tFollows\tNote\n15/08/2026\t\tHoliday\t\tIndependence Day"} style={{ fontFamily: mono, fontSize: 12, minHeight: 70, resize: "vertical" }} />
+      {res && (
+        <>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", fontSize: 12.5 }}>
+            <span style={{ padding: "3px 10px", borderRadius: 20, background: "#fdf2e3", color: "#94620b", fontWeight: 700 }}>{hol} holiday{hol === 1 ? "" : "s"}</span>
+            <span style={{ padding: "3px 10px", borderRadius: 20, background: `${th.accent}14`, color: th.g2, fontWeight: 700 }}>{wk} working day{wk === 1 ? "" : "s"}</span>
+            {res.skipped > 0 && <span style={{ color: C.sub }}>{res.skipped} holiday date{res.skipped === 1 ? "" : "s"} left out (no school that weekday anyway)</span>}
+            {missing > 0 && <span style={{ display: "inline-flex", gap: 6, alignItems: "center", color: "#94620b", fontWeight: 700 }}>Set all missing to <select className="tt-sel" defaultValue="" onChange={(e) => e.target.value && setRes((r) => ({ ...r, items: r.items.map((x) => (x.kind === "follow" && !x.day ? { ...x, day: e.target.value } : x)) }))} style={{ width: 120, height: 30, fontFamily: sans }}><option value="">choose…</option>{cfg.days.map((d) => <option key={d} value={d}>{DAY_FULL[d] || d}</option>)}</select></span>}
+          </div>
+          {res.errors.length > 0 && <div style={{ fontSize: 12, color: C.clash }}>{res.errors.slice(0, 6).join(" · ")}{res.errors.length > 6 ? ` · and ${res.errors.length - 6} more` : ""}</div>}
+          {items.length > 0 && <div className="tt-scroll" style={{ maxHeight: 300, overflow: "auto" }}>
+            <table style={{ ...tbl, tableLayout: "auto" }}>
+              <thead><tr><th style={{ ...th0, textAlign: "left" }}>Date</th><th style={th0}>Type</th><th style={th0}>Timetable of</th><th style={{ ...th0, textAlign: "left" }}>Note</th><th style={{ ...th0, textAlign: "left" }}>In the calendar now</th></tr></thead>
+              <tbody>{items.map((x) => { const [st, col] = status(x); return (
+                <tr key={x.date}>
+                  <td style={{ ...cellTd, height: 30, textAlign: "left", fontWeight: 700, whiteSpace: "nowrap" }}>{isoNice(x.date)}</td>
+                  <td style={{ ...cellTd, height: 30 }}><span style={{ fontSize: 10.5, fontWeight: 800, padding: "2px 8px", borderRadius: 10, color: "#fff", background: x.kind === "holiday" ? C.accent : th.accent }}>{x.kind === "holiday" ? "Holiday" : x.tag === "comp" ? "Compensation" : "Special working"}</span></td>
+                  <td style={{ ...cellTd, height: 30 }}>{x.kind === "follow" ? <select className="tt-sel" value={x.day} onChange={(e) => setDay(x.date, e.target.value)} style={{ width: 120, height: 28, fontFamily: sans, borderColor: x.day ? undefined : C.warn, background: x.day ? "#fff" : C.warnSoft }}><option value="">choose…</option>{cfg.days.map((d) => <option key={d} value={d}>{DAY_FULL[d] || d}</option>)}</select> : "—"}</td>
+                  <td style={{ ...cellTd, height: 30, textAlign: "left", fontSize: 12.5 }}>{x.label}</td>
+                  <td style={{ ...cellTd, height: 30, textAlign: "left", fontSize: 11.5, color: col }}>{st}</td>
+                </tr>); })}</tbody>
+            </table>
+          </div>}
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <label style={{ display: "inline-flex", gap: 6, alignItems: "center", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}><input type="checkbox" checked={replace} onChange={(e) => setReplace(e.target.checked)} /> Replace days already in the calendar</label>
+            <button className="tt-btn" disabled={!items.length} onClick={apply} style={{ ...solidBtn, opacity: items.length ? 1 : 0.5 }}>Put {items.length} day{items.length === 1 ? "" : "s"} in the calendar</button>
+          </div>
+        </>
+      )}
+      {msg && <div style={{ fontSize: 12.5, fontWeight: 600, color: msg.ok ? C.free : C.clash }}>{msg.text}</div>}
+    </div>
+  );
+}
 function CalendarPanel({ cfg, update, date, setDate, ask, mobile }) {
   const th = CUR_TH || THEMES.teal;
   const [f, setF] = useState({ kind: "holiday", from: "", to: "", day: cfg.days[0], label: "" });
-  const today = isoToday(), from = isoShift(today, -45);
-  const list = Object.keys(cfg.calendar || {}).filter((d) => d >= from && calEntry(cfg, d)).sort();
+  const [show, setShow] = useState("upcoming");
+  const [imp, setImp] = useState(false);
+  const [yrEdit, setYrEdit] = useState(false);
+  const today = isoToday(), ay = acadYear(date, cfg), from = show === "year" ? ay.from : isoShift(today, -45), upto = show === "year" ? ay.to : "9999-12-31";
+  const list = Object.keys(cfg.calendar || {}).filter((d) => d >= from && d <= upto && calEntry(cfg, d)).sort();
+  const yr = useMemo(() => {
+    const endM = ay.to; let done = 0, left = 0, hol = 0, wk = 0;
+    for (let d = ay.from; d <= endM; d = isoShift(d, 1)) { const e = calEntry(cfg, d), on = !!dayOf(cfg, d); if (on) { if (d <= today) done++; else left++; } if (e && e.kind === "holiday" && cfg.days.includes(isoDay(d))) hol++; if (e && e.kind !== "holiday" && !cfg.days.includes(isoDay(d))) wk++; }
+    return { done, left, hol, wk, endM };
+  }, [cfg.calendar, cfg.days, ay.from, ay.to, today]);
   const add = () => {
     if (!f.from) return; const to = f.kind === "holiday" && f.to && f.to >= f.from ? f.to : f.from;
-    update((n) => { n.calendar = { ...(n.calendar || {}) }; for (let d = f.from, i = 0; d <= to && i < 200; d = isoShift(d, 1), i++) { n.calendar[d] = f.kind === "follow" ? { kind: "follow", day: f.day, label: f.label.trim() } : { kind: "holiday", label: f.label.trim() }; tidySubs(n, d, true); } });
+    update((n) => { n.calendar = { ...(n.calendar || {}) }; for (let d = f.from, i = 0; d <= to && i < 200; d = isoShift(d, 1), i++) { n.calendar[d] = f.kind === "holiday" ? { kind: "holiday", label: f.label.trim() } : { kind: "follow", day: f.day, label: f.label.trim(), ...(f.kind === "comp" || f.kind === "special" ? { tag: f.kind } : {}) }; tidySubs(n, d, true); } });
     setF({ ...f, from: "", to: "", label: "" });
   };
   const lab = { display: "grid", gap: 4, fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.3 };
@@ -5342,13 +5536,26 @@ function CalendarPanel({ cfg, update, date, setDate, ask, mobile }) {
     <div style={card}>
       <Panelhead text="School calendar — holidays & changed days" count={list.length ? `${list.length} day${list.length === 1 ? "" : "s"}` : "none"} />
       <div style={{ padding: 12, display: "grid", gap: 10 }}>
-        <div className="tt-callout">Mark <b>holidays</b> (no substitution, teacher links say "Holiday"), and days when the school <b>follows another day's timetable</b> — for example a working Friday or Saturday that follows Monday. Substitution then uses the timetable actually followed. A <b>special timetable</b> for one day (half day, sports day) is set from the day bar above.</div>
-        {list.length === 0 ? <div style={{ fontSize: 12.5, color: C.sub }}>No holidays or changed days recorded.</div> : (
+        <div className="tt-callout"><b>Import the year's calendar</b> once (holidays, compensation and special working days), then add sudden changes — a <b>rain holiday</b>, a <b>tour</b>, a hartal — from the day bar above on the day itself. On a working day that follows another day's timetable, substitution, free periods and teacher links use that day's timetable. A <b>special timetable</b> for one day (half day, sports day) is also set from the day bar.</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <button className="tt-btn" onClick={() => setYrEdit(!yrEdit)} title="Change the academic year dates" style={{ fontSize: 12, padding: "4px 11px", borderRadius: 20, border: `1px solid ${yrEdit ? th.accent : C.line}`, background: "#fff", color: C.ink, fontWeight: 600 }}>📅 Year {ay.label}: {isoNice(ay.from)} – {isoNice(ay.to)} ✎</button>
+          <span style={{ fontSize: 12, padding: "4px 11px", borderRadius: 20, border: `1px solid ${C.line}`, background: C.freeSoft }}>School days: <b>{yr.done}</b> so far · <b>{yr.left}</b> more</span>
+          <span style={{ fontSize: 12, padding: "4px 11px", borderRadius: 20, border: `1px solid ${C.line}`, background: "#fdf2e3" }}>Holidays: <b>{yr.hol}</b></span>
+          <span style={{ fontSize: 12, padding: "4px 11px", borderRadius: 20, border: `1px solid ${C.line}`, background: `${th.accent}10` }}>Extra working days: <b>{yr.wk}</b></span>
+          <span style={{ marginLeft: "auto", display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <div style={{ display: "inline-flex", border: `1px solid ${C.line}`, borderRadius: 10, overflow: "hidden" }}>{[["upcoming", "Upcoming"], ["year", `Whole year ${ay.label}`]].map(([k, l]) => <button key={k} className="tt-btn" onClick={() => setShow(k)} style={{ border: "none", padding: "6px 11px", fontSize: 12, fontWeight: 700, background: show === k ? C.primary : "#fff", color: show === k ? "#fff" : C.sub }}>{l}</button>)}</div>
+            <button className="tt-btn" onClick={() => setImp(!imp)} style={imp ? ghostBtn : solidBtn}>{imp ? "Close import" : "Import calendar"}</button>
+            <button className="tt-btn" onClick={() => downloadText(`school_calendar_${ay.label}.csv`, calendarCSV(cfg, ay.from, ay.to))} style={ghostBtn}>Download (CSV)</button>
+          </span>
+        </div>
+        {yrEdit && <div style={{ border: `1.5px solid ${th.accent}44`, borderRadius: 14, padding: 12, background: "#fbfdfd" }}><YearRangePicker cfg={cfg} update={update} /></div>}
+        {imp && <CalendarImport cfg={cfg} update={update} onDone={() => setShow("year")} />}
+        {list.length === 0 ? <div style={{ fontSize: 12.5, color: C.sub }}>No holidays or changed days recorded{show === "year" ? ` for ${ay.label}` : ""}.</div> : (
           <div style={{ display: "grid", gap: 6, maxHeight: 300, overflowY: "auto" }} className="tt-scroll">
             {list.map((d) => { const e = cfg.calendar[d], [fg, bg] = tone[e.kind] || tone.follow; return (
               <div key={d} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "7px 10px", borderRadius: 11, border: `1px solid ${d === date ? fg : C.line}`, background: d < today ? "#fafbfc" : bg, opacity: d < today ? 0.75 : 1 }}>
                 <b style={{ minWidth: 112, fontSize: 13 }}>{isoNice(d)}</b>
-                <span style={{ fontSize: 10.5, fontWeight: 800, padding: "2px 8px", borderRadius: 10, background: fg, color: "#fff", textTransform: "uppercase", letterSpacing: 0.4 }}>{e.kind === "holiday" ? "Holiday" : e.kind === "follow" ? `${(DAY_FULL[dayOf(cfg, d)] || "").slice(0, 3)} timetable` : "Special"}</span>
+                <span style={{ fontSize: 10.5, fontWeight: 800, padding: "2px 8px", borderRadius: 10, background: fg, color: "#fff", textTransform: "uppercase", letterSpacing: 0.4 }}>{e.kind === "holiday" ? "Holiday" : e.kind === "follow" ? `${e.tag === "comp" ? "Comp. working · " : e.tag === "special" ? "Special working · " : ""}${(DAY_FULL[dayOf(cfg, d)] || "").slice(0, 3)} timetable` : "Special timetable"}</span>
                 <span style={{ flex: "1 1 160px", fontSize: 12.5, color: C.ink }}>{dayLabel(cfg, d)}</span>
                 <button className="tt-btn" onClick={() => setDate(d)} style={{ ...ghostBtn, padding: "4px 10px", fontSize: 12 }}>Open</button>
                 <button className="tt-btn" onClick={() => ask(`Make ${isoNice(d)} a normal day again?`, () => update((n) => { n.calendar = { ...(n.calendar || {}) }; delete n.calendar[d]; tidySubs(n, d, true); }))} style={{ ...ghostBtn, padding: "4px 10px", fontSize: 12, color: C.clash }}>Remove</button>
@@ -5356,11 +5563,11 @@ function CalendarPanel({ cfg, update, date, setDate, ask, mobile }) {
           </div>
         )}
         <div style={{ border: `1.5px dashed ${C.line}`, borderRadius: 12, padding: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
-          <label style={lab}>Add<select className="tt-sel" value={f.kind} onChange={(e) => setF({ ...f, kind: e.target.value })} style={{ width: 200, height: 34, fontFamily: sans }}><option value="holiday">Holiday(s) — no classes</option><option value="follow">Day following another day</option></select></label>
+          <label style={lab}>Add<select className="tt-sel" value={f.kind} onChange={(e) => setF({ ...f, kind: e.target.value })} style={{ width: 220, height: 34, fontFamily: sans }}><option value="holiday">Holiday(s) — no classes</option><option value="comp">Compensation working day</option><option value="special">Special working day</option></select></label>
           <label style={lab}>{f.kind === "holiday" ? "From" : "Date"}<input type="date" className="tt-in" value={f.from} onChange={(e) => setF({ ...f, from: e.target.value })} style={{ height: 34, fontFamily: sans }} /></label>
           {f.kind === "holiday" && <label style={lab}>To (optional)<input type="date" className="tt-in" value={f.to} onChange={(e) => setF({ ...f, to: e.target.value })} style={{ height: 34, fontFamily: sans }} /></label>}
-          {f.kind === "follow" && <label style={lab}>Follows<select className="tt-sel" value={f.day} onChange={(e) => setF({ ...f, day: e.target.value })} style={{ width: 130, height: 34, fontFamily: sans }}>{cfg.days.map((d) => <option key={d} value={d}>{DAY_FULL[d] || d}</option>)}</select></label>}
-          <label style={{ ...lab, flex: "1 1 150px" }}>Note<input className="tt-in" value={f.label} onChange={(e) => setF({ ...f, label: e.target.value })} placeholder={f.kind === "holiday" ? "e.g. Christmas vacation" : "e.g. working Friday"} style={{ height: 34, fontFamily: sans }} /></label>
+          {f.kind !== "holiday" && <label style={lab}>Follows<select className="tt-sel" value={f.day} onChange={(e) => setF({ ...f, day: e.target.value })} style={{ width: 130, height: 34, fontFamily: sans }}>{cfg.days.map((d) => <option key={d} value={d}>{DAY_FULL[d] || d}</option>)}</select></label>}
+          <label style={{ ...lab, flex: "1 1 150px" }}>Note<input className="tt-in" value={f.label} onChange={(e) => setF({ ...f, label: e.target.value })} placeholder={f.kind === "holiday" ? "e.g. Christmas vacation" : f.kind === "comp" ? "e.g. for the rain holiday on 20 July" : "e.g. Kerala Piravi programme"} style={{ height: 34, fontFamily: sans }} /></label>
           <button className="tt-btn" onClick={add} disabled={!f.from} style={{ ...solidBtn, opacity: f.from ? 1 : 0.5 }}>Add</button>
         </div>
       </div>
@@ -5571,11 +5778,45 @@ function exportSubMonthPDF(cfg, month) {
     pdfFooter(esc(cfg.school || ""), ["Headmaster"], cfg, "class"));
 }
 /* ---------------- Monthly substitution & absence report ---------------- */
-function acadYear(date) { const [y, m] = date.split("-").map(Number); const s = m >= 6 ? y : y - 1; return { from: `${s}-06-01`, to: `${s + 1}-05-31`, label: `${s}–${String(s + 1).slice(2)}` }; }
+// academic year dates are set by the school (e.g. 1 June – 31 March, or 1 August – 30 June)
+function yearRange(cfg) { const ok = (v, d) => (/^\d{2}-\d{2}$/.test(v || "") ? v : d); return { start: ok(cfg && cfg.yearStart, "06-01"), end: ok(cfg && cfg.yearEnd, "03-31") }; }
+function acadYear(date, cfg) {
+  const { start, end } = yearRange(cfg), y = +date.slice(0, 4), md = date.slice(5, 10);
+  const s = md >= start ? y : y - 1, e = end >= start ? s : s + 1;
+  const clampD = (yy, mmdd) => { const [m, d] = mmdd.split("-").map(Number); return `${yy}-${String(m).padStart(2, "0")}-${String(Math.min(d, new Date(yy, m, 0).getDate())).padStart(2, "0")}`; };
+  return { from: clampD(s, start), to: clampD(e, end), label: e === s ? `${s}` : `${s}–${String(e).slice(2)}` };
+}
+var MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+function mdText(md) { const [m, d] = md.split("-").map(Number); return `${d} ${MONTH_NAMES[m - 1]}`; }
+function yearRangeText(cfg) { const r = yearRange(cfg); return `${mdText(r.start)} – ${mdText(r.end)}`; }
+function YearRangePicker({ cfg, update }) {
+  const th = CUR_TH || THEMES.teal;
+  const r = yearRange(cfg);
+  const set = (key, m, d) => update((n) => { n[key] = `${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`; });
+  const pick = (key, md) => { const [m, d] = md.split("-").map(Number), dim = new Date(2025, m, 0).getDate(); return (
+    <span style={{ display: "inline-flex", gap: 4 }}>
+      <select className="tt-sel" value={Math.min(d, dim)} onChange={(e) => set(key, m, +e.target.value)} style={{ width: 62, height: 32, fontFamily: sans, fontSize: 13 }}>{Array.from({ length: dim }, (_, i) => <option key={i} value={i + 1}>{i + 1}</option>)}</select>
+      <select className="tt-sel" value={m} onChange={(e) => { const nm = +e.target.value; set(key, nm, Math.min(d, new Date(2025, nm, 0).getDate())); }} style={{ width: 118, height: 32, fontFamily: sans, fontSize: 13 }}>{MONTH_NAMES.map((x, i) => <option key={i} value={i + 1}>{x}</option>)}</select>
+    </span>); };
+  const presets = [["06-01", "03-31", "June – March"], ["06-01", "04-30", "June – April"], ["08-01", "06-30", "August – June"], ["04-01", "03-31", "April – March"]];
+  const ay = acadYear(isoToday(), cfg);
+  return (
+    <div style={{ display: "grid", gap: 8 }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", fontSize: 13, fontWeight: 700, color: C.sub }}>
+        <span>Academic year runs from</span>{pick("yearStart", r.start)}<span>to</span>{pick("yearEnd", r.end)}
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+        <span style={{ fontSize: 12, color: C.sub }}>Quick choice:</span>
+        {presets.map(([a, b, l]) => { const on = r.start === a && r.end === b; return <button key={l} className="tt-btn" onClick={() => update((n) => { n.yearStart = a; n.yearEnd = b; })} style={{ border: `1px solid ${on ? th.accent : C.line}`, background: on ? `${th.accent}14` : "#fff", color: on ? th.g2 : C.sub, borderRadius: 20, padding: "4px 11px", fontSize: 12, fontWeight: 700 }}>{l}</button>; })}
+      </div>
+      <div style={{ fontSize: 12, color: C.sub }}>This year: <b style={{ color: C.ink }}>{isoNice(ay.from)} {ay.from.slice(0, 4)} – {isoNice(ay.to)} {ay.to.slice(0, 4)}</b>. Used for the school-day count, the calendar's "whole year" list and the yearly totals in the substitution report.</div>
+    </div>
+  );
+}
 function monthName(month) { const [y, m] = month.split("-").map(Number); return new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" }); }
 function schoolDaysIn(cfg, month) { const [y, m] = month.split("-").map(Number), last = new Date(y, m, 0).getDate(); let n = 0; for (let i = 1; i <= last; i++) if (dayOf(cfg, `${month}-${String(i).padStart(2, "0")}`)) n++; return n; }
 function subsReport(cfg, month) {
-  const ay = acadYear(month + "-01");
+  const ay = acadYear(month + "-01", cfg);
   const L = rotationRank({ ...cfg, subsExempt: {} }).leisure;
   const blank = () => ({ full: 0, fn: 0, an: 0, per: 0 });
   const R = {}; cfg.singles.forEach((t) => (R[t] = { t, free: L[t] || 0, dm: 0, dy: 0, am: blank(), ay: blank(), why: {} }));
@@ -5650,7 +5891,7 @@ function SubsReportPanel({ cfg, date, mobile }) {
               </tr>); })}</tbody>
           </table>
         </div>
-        <div style={{ fontSize: 11.5, color: C.sub }}>Days = whole days + ½ for each forenoon (FN) or afternoon (AN) absence. The year runs June–May. Holidays in the school calendar are not counted. Tap a column title to sort.</div>
+        <div style={{ fontSize: 11.5, color: C.sub }}>Days = whole days + ½ for each forenoon (FN) or afternoon (AN) absence. The year runs {yearRangeText(cfg)} (set in the School calendar). Holidays in the school calendar are not counted. Tap a column title to sort.</div>
       </div>
     </div>
   );
