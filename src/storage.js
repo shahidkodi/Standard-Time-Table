@@ -8,6 +8,8 @@ const HEAVY = ["logo", "logoIcon", "hmSign", "seal", "versions", "snapshots"];
 let lastStamp = null;      // updated_at of the "main" row we last loaded or saved (for the two-editors check)
 let lastExtraJSON = null;  // what is in the "main-extra" row now, so it is only re-sent when it changed
 let cacheMain = null, cacheExtra = null;
+let loadSource = "server";
+export function getLoadSource() { return loadSource; }
 let extraOff = false;       // if the extra row can't be written (database rules), everything is kept in one row as before
 const own = new Set();      // our own saves, so their live "echo" is not treated as someone else's change
 const ms = (t) => (t ? Date.parse(t) : NaN);
@@ -38,7 +40,7 @@ export async function loadConfig() {
       }
     } catch {}
   }
-  try { const cached = localStorage.getItem(LS_KEY); return cached ? JSON.parse(cached) : null; } catch { return null; }
+  try { const cached = localStorage.getItem(LS_KEY); if (cached) { loadSource = "cache"; return JSON.parse(cached); } return null; } catch { return null; }
 }
 
 // Save. The big parts go to their own row and are only sent when they changed.

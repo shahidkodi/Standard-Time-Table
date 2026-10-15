@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import { SEED } from "./seed";
-import { loadConfig, saveConfig, subscribeConfig, acceptRemote, publishTeacherPages } from "./storage";
+import { loadConfig, saveConfig, subscribeConfig, acceptRemote, publishTeacherPages, getLoadSource } from "./storage";
 import { supabase } from "./supabaseClient";
 
 /* ============================================================
@@ -12,7 +12,7 @@ import { supabase } from "./supabaseClient";
    ============================================================ */
 
 const STORE_KEY = "tt_cfg_v2";
-const APP_VERSION = "2026-10-15 f";
+const APP_VERSION = "2026-10-15 g";
 
 const WEEK_ORDER = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const DAY_FULL = { MON: "Monday", TUE: "Tuesday", WED: "Wednesday", THU: "Thursday", FRI: "Friday", SAT: "Saturday", SUN: "Sunday" };
@@ -764,8 +764,18 @@ export default function App() {
     return out;
   }, [occupancy, cfg]);
   const [showClashes, setShowClashes] = useState(false);
-  const [me, setMe] = useState(null);
-  useEffect(() => { try { if (typeof supabase !== "undefined" && supabase && supabase.auth) supabase.auth.getSession().then(({ data }) => { const em = data && data.session && data.session.user && data.session.user.email; if (em) setMe(String(em).split("@")[0].toLowerCase()); }).catch(() => {}); } catch (e) { /* preview */ } }, []);
+  const AUTH_ON = typeof supabase !== "undefined" && !!supabase && !!supabase.auth;
+  const [me, setMe] = useState(AUTH_ON ? undefined : null);   // undefined = still checking who is signed in
+  useEffect(() => {
+    if (!AUTH_ON) return;
+    const pick = (sess) => { const em = sess && sess.user && sess.user.email; setMe(em ? String(em).split("@")[0].toLowerCase() : ""); };
+    let sub = null;
+    try {
+      supabase.auth.getSession().then(({ data }) => pick(data && data.session)).catch(() => setMe(""));
+      const r = supabase.auth.onAuthStateChange((_e, sess) => pick(sess)); sub = r && r.data && r.data.subscription;
+    } catch (e) { setMe(""); }
+    return () => { try { sub && sub.unsubscribe(); } catch (e) { /* ignore */ } };
+  }, []);
   const [unlocked, setUnlocked] = useState(false);
   const acc = unlocked ? { ...ACCESS_PRESETS.full, preset: "full", who: me, listed: true } : accessFor(cfg, me);
   const limited = !!acc.tabs;
@@ -842,6 +852,7 @@ export default function App() {
     };
   }, [cfg, teacherLoad, totalClashes]);
   if (!cfg) return <div style={{ padding: 40, fontFamily: sans, color: C.sub }}>Loading timetable…</div>;
+  if (me === undefined) return <div style={{ padding: 40, fontFamily: sans, color: C.sub }}>Checking your access…</div>;
   // guard: selected items may have been removed
   const safeCls = cfg.classes.includes(cls) ? cls : cfg.classes[0];
   const safeTch = cfg.singles.includes(tch) ? tch : cfg.singles[0];
@@ -889,7 +900,7 @@ export default function App() {
           <div style={{ fontSize: 16.5, fontWeight: 800, letterSpacing: -0.3 }}>TIME TABLE</div>
           {!mobile && <div style={{ fontSize: 12, color: "rgba(255,255,255,.8)", marginTop: 1, fontWeight: 500 }}>{cfg.school} · {cfg.classes.length} classes · {cfg.singles.length} teachers · {cfg.days.length} days</div>}
         </div>
-        {me && acc.preset !== "full" && <span title={`Signed in as ${me}`} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 700, padding: "4px 10px", borderRadius: 20, background: "rgba(255,255,255,.16)", border: "1px solid rgba(255,255,255,.3)", whiteSpace: "nowrap" }}>👤 {me}{!mobile && ` · ${acc.label}`}</span>}
+        {me && <span title={`Signed in as ${me} — ${acc.label}`} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 700, padding: "4px 10px", borderRadius: 20, background: "rgba(255,255,255,.16)", border: "1px solid rgba(255,255,255,.3)", whiteSpace: "nowrap" }}>👤 {me}{!mobile && ` · ${acc.label}`}</span>}
         {me && !unlocked && acc.preset !== "full" && cfg.adminPw && <button className="tt-btn" title="Full access for this session with the admin password" onClick={() => askPw("Unlock full access on this device until you sign out?", () => setUnlocked(true))} style={{ ...headerBtn, padding: "5px 9px" }}>🔓</button>}
         <span style={{ display: "inline-flex", gap: 4 }}>
           <button className="tt-btn" onClick={undo} disabled={!histN[0]} title="Undo (Ctrl+Z)" aria-label="Undo" style={{ ...headerBtn, padding: "6px 10px", fontSize: 15, opacity: histN[0] ? 1 : 0.45 }}>↶</button>
@@ -933,6 +944,7 @@ export default function App() {
           {view === "__none" && <EmptyState title="No sections yet" msg={`Your login (${me || ""}) has not been given any part of the app yet. Ask the administrator to set your access in Classes & setup → Staff access.`} />}
         </section>
       </main>
+      {getLoadSource() === "cache" && <div className="tt-noprint" style={{ background: C.warnSoft, color: "#7a5310", padding: "8px 16px", fontSize: 12.5, fontWeight: 600, borderBottom: `1px solid ${C.warn}44` }}>⚠ Couldn't reach the server — you are seeing the copy saved on this device{me ? "" : ""}. Access settings and changes made by others may be out of date. Check the internet connection and reload.</div>}
       {conflict && (
         <div className="tt-noprint" style={{ position: "fixed", left: 12, right: 12, bottom: 12, zIndex: 95, maxWidth: 720, margin: "0 auto", background: "#fff", border: `2px solid ${C.warn}`, borderRadius: 14, boxShadow: "0 12px 34px rgba(0,0,0,.25)", padding: 14, display: "grid", gap: 10 }}>
           <div style={{ fontSize: 14, fontWeight: 800, color: "#7a5310" }}>⚠ Someone else changed the timetable at the same time</div>
@@ -4756,7 +4768,8 @@ function accessEntry(cfg, k) {
   return null;
 }
 function accessFor(cfg, me) {
-  if (!me || !cfg) return { ...ACCESS_PRESETS.full, preset: "full", who: null, listed: false };
+  if (me === null || me === undefined || !cfg) return { ...ACCESS_PRESETS.full, preset: "full", who: null, listed: false };
+  if (me === "") { const d = cfg.accessDefault || "full"; return { ...(ACCESS_PRESETS[d] || ACCESS_PRESETS.full), preset: d, who: "", listed: false }; }
   const k = normUser(me); let e = accessEntry(cfg, k); const listed = !!e;
   if (!e) e = { preset: cfg.accessDefault || "full" };
   const p = e.preset === "custom" ? { label: "Custom access", tabs: (e.tabs || []).filter((t) => TABS.some((x) => x[0] === t)), reset: !!e.reset, manage: !!e.manage } : (ACCESS_PRESETS[e.preset] || ACCESS_PRESETS.full);
