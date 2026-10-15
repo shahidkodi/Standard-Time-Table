@@ -12,7 +12,7 @@ import { supabase } from "./supabaseClient";
    ============================================================ */
 
 const STORE_KEY = "tt_cfg_v2";
-const APP_VERSION = "2026-10-16 c";
+const APP_VERSION = "2026-10-16 d";
 
 const WEEK_ORDER = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const DAY_FULL = { MON: "Monday", TUE: "Tuesday", WED: "Wednesday", THU: "Thursday", FRI: "Friday", SAT: "Saturday", SUN: "Sunday" };
@@ -2413,6 +2413,135 @@ function VersionsPanel({ cfg, update, ask, opts }) {
   );
 }
 
+/* ---------------- Interchange two teachers' timetables ---------------- */
+function swapTok(code, A, B) { return String(code).split(" ").map((t) => (t === A ? B : t === B ? A : t)).join(" "); }
+function ctRuleCounts(cfg, c) {
+  const out = {}, rules = (cfg.classRules || {})[c] || {}, ct = (cfg.classTeacher || {})[c];
+  for (const [pk, r] of Object.entries(rules)) {
+    if (!r || (r.kind !== "ct" && r.kind !== "pair")) continue; const p = +pk - 1; let n = 0;
+    for (const d of (r.days && r.days.length ? r.days : cfg.days)) { const sl = (((cfg.grid[c] || {})[d]) || [])[p]; const code = sl && sl[0]; if (!code) continue; const toks = String(code).split(" "); if (r.kind === "ct" ? ct && toks.includes(ct) : sl[1] === r.sub && toks.includes(r.teacher)) n++; }
+    out[pk] = { n, need: +r.count || (r.days && r.days.length) || cfg.days.length, kind: r.kind };
+  }
+  return out;
+}
+function teacherSwapPlan(cfg, A, B, o) {
+  const days = o.days && o.days.length ? o.days : cfg.days, allDays = days.length === cfg.days.length;
+  const cls = o.classes && o.classes.length ? new Set(o.classes) : null, whole = allDays && !cls;
+  const cm = {}; (cfg.combined || []).forEach((s) => (cm[s.name] = s));
+  const grid = clone(cfg.grid), changes = [], frozen = [], combSkipped = new Set();
+  for (const c of cfg.classes) {
+    if (cls && !cls.has(c)) continue;
+    for (const d of days) (grid[c] && grid[c][d] || []).forEach((sl, p) => {
+      const code = sl && sl[0]; if (!code) return;
+      const s = cm[code] || cm[baseName(code)];
+      if (s) { if (!whole && (s.teachers.includes(A) || s.teachers.includes(B))) combSkipped.add(s.name); return; }
+      const toks = String(code).split(" "); if (!toks.includes(A) && !toks.includes(B)) return;
+      if ((cfg.locked || {})[`${c}|${d}|${p}`] && !o.locked) { frozen.push({ c, d, p, sub: sl[1], code }); return; }
+      const nc = swapTok(code, A, B); if (nc === code) return;
+      grid[c][d][p] = [nc, sl[1]]; changes.push({ c, d, p, sub: sl[1], from: code, to: nc });
+    });
+  }
+  let combined = cfg.combined || [], combChanged = [];
+  if (whole) combined = combined.map((s) => { if (!(s.teachers.includes(A) ^ s.teachers.includes(B))) return s; combChanged.push(s.name); return { ...s, teachers: s.teachers.map((t) => (t === A ? B : t === B ? A : t)) }; });
+  const mapOK = allDays && o.mapping !== false;
+  let bkey = cfg.bkey, classRules = cfg.classRules, mapRows = 0;
+  if (mapOK) {
+    bkey = { ...cfg.bkey }; classRules = { ...(cfg.classRules || {}) };
+    for (const c of cfg.classes) {
+      if (cls && !cls.has(c)) continue;
+      const rows = cfg.bkey[c] || []; if (rows.some((r) => r.teacher && String(r.teacher).split(" ").some((t) => t === A || t === B) && !cm[r.teacher])) { bkey[c] = rows.map((r) => (r.teacher && !cm[r.teacher] && swapTok(r.teacher, A, B) !== r.teacher ? (mapRows++, { ...r, teacher: swapTok(r.teacher, A, B) }) : r)); }
+      const cr = classRules[c]; if (cr && Object.values(cr).some((r) => r && r.kind === "pair" && (r.teacher === A || r.teacher === B))) { classRules[c] = Object.fromEntries(Object.entries(cr).map(([k, r]) => [k, r && r.kind === "pair" && (r.teacher === A || r.teacher === B) ? { ...r, teacher: r.teacher === A ? B : A } : r])); }
+    }
+  }
+  const next = { ...cfg, grid, combined, bkey, classRules };
+  // checks
+  const errors = [], warns = [];
+  const key = (x) => `${x.t}|${x.day}|${x.p}`, before = new Set(computeClashList(cfg).map(key));
+  for (const x of computeClashList(next)) if ((x.t === A || x.t === B) && !before.has(key(x))) errors.push(`${x.t} would be in two places on ${(DAY_FULL[x.day] || x.day).slice(0, 3)} P${x.p + 1}: ${x.where.join(" + ")}`);
+  for (const t of [A, B]) for (const d of cfg.days) for (let p = 0; p < cfg.periods.length; p++) {
+    const now = teacherAt(next, t, d, p); if (!now || now.extra) continue; const was = teacherAt(cfg, t, d, p); if (was && !was.extra) continue;
+    if (isOffDay(cfg, t, d)) errors.push(`${t} does not work on ${DAY_FULL[d] || d} (teacher availability) but would teach ${now.c} P${p + 1}`);
+    else if (extraAt(cfg, t, d, p)) errors.push(`${t} has an extra duty on ${(DAY_FULL[d] || d).slice(0, 3)} P${p + 1} (${extraAt(cfg, t, d, p).label}) but would teach ${now.c}`);
+  }
+  for (const c of cfg.classes) { const b0 = ctRuleCounts(cfg, c), b1 = ctRuleCounts(next, c); for (const pk of Object.keys(b1)) { const x = b0[pk], y = b1[pk]; if (x && y.n < x.n && y.n < y.need) warns.push(`${c}: the ${y.kind === "ct" ? "class-teacher" : "fixed teacher"} rule for P${pk} would be met on ${y.n} day${y.n === 1 ? "" : "s"} (needs ${y.need})`); } }
+  if (frozen.length) warns.push(`${frozen.length} frozen period${frozen.length === 1 ? " is" : "s are"} left as ${frozen.length === 1 ? "it is" : "they are"} (${frozen.slice(0, 4).map((x) => `${x.c} ${(DAY_FULL[x.d] || x.d).slice(0, 3)} P${x.p + 1}`).join(", ")}${frozen.length > 4 ? " …" : ""}) — tick "Include frozen periods" to change them too`);
+  if (combSkipped.size) warns.push(`Combined lessons (${[...combSkipped].slice(0, 4).join(", ")}) change only when the whole timetable is interchanged — they stay as they are`);
+  const load = (cg, t) => { let n = 0; for (const d of cg.days) for (let p = 0; p < cg.periods.length; p++) { const r = teacherAt(cg, t, d, p); if (r && !r.extra) n++; } return n; };
+  return { next, changes, frozen, combChanged, mapRows, errors: [...new Set(errors)], warns, whole, allDays, load: { A: [load(cfg, A), load(next, A)], B: [load(cfg, B), load(next, B)] } };
+}
+function TeacherInterchange({ cfg, update, ask, mobile }) {
+  const th = CUR_TH || THEMES.teal;
+  const [A, setA] = useState(cfg.singles[0] || ""), [B, setB] = useState(cfg.singles[1] || "");
+  const [days, setDays] = useState([]), [cls, setCls] = useState([]);
+  const [o, setO] = useState({ mapping: true, locked: false });
+  const [plan, setPlan] = useState(null), [msg, setMsg] = useState("");
+  const theirClasses = useMemo(() => { const s = new Set(); for (const c of cfg.classes) for (const d of cfg.days) for (const sl of (cfg.grid[c] && cfg.grid[c][d]) || []) if (sl && sl[0] && String(sl[0]).split(" ").some((t) => t === A || t === B)) s.add(c); return [...s].sort(cmpClass); }, [cfg, A, B]);
+  useEffect(() => { setPlan(null); }, [A, B, days.join(), cls.join(), o.mapping, o.locked, cfg.grid, cfg.combined, cfg.bkey, cfg.locked, cfg.teacherDays, cfg.extraDuties]);
+  useEffect(() => { setMsg((m) => (m.startsWith("Done") ? m : "")); }, [A, B, days.join(), cls.join()]);
+  const check = () => { if (!A || !B || A === B) { setMsg("Choose two different teachers."); return; } setPlan(teacherSwapPlan(cfg, A, B, { days, classes: cls, mapping: o.mapping, locked: o.locked })); };
+  const apply = () => { const p = plan; if (!p || p.errors.length || !p.changes.length && !p.combChanged.length) return;
+    ask(`Interchange ${A} and ${B}${p.whole ? "" : " for the chosen days / classes"}? ${p.changes.length} period${p.changes.length === 1 ? "" : "s"} change${p.mapRows ? ` and the Mapping is updated (${p.mapRows} row${p.mapRows === 1 ? "" : "s"})` : ""}. You can undo it with ↶.`, () => {
+      update((n) => { n.grid = p.next.grid; n.combined = p.next.combined; n.bkey = p.next.bkey; if (p.next.classRules) n.classRules = p.next.classRules; });
+      setMsg(`Done — ${A} and ${B} interchanged. Their timetables, the class timetables${p.mapRows ? ", the Mapping" : ""} and the teacher links are updated.`); setPlan(null); }); };
+  const chip = (on) => ({ border: `1.5px solid ${on ? th.accent : C.line}`, background: on ? `${th.accent}14` : "#fff", color: on ? th.g2 : C.sub, borderRadius: 9, padding: "4px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" });
+  const tog = (L, set, v) => set(L.includes(v) ? L.filter((x) => x !== v) : [...L, v]);
+  const lab = { display: "grid", gap: 4, fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.3 };
+  const allDays = !days.length || days.length === cfg.days.length;
+  const mini = (t) => { const p = plan; const ch = new Set(p.changes.filter((x) => String(x.to).split(" ").includes(t)).map((x) => `${x.d}|${x.p}`)); return (
+    <div style={{ minWidth: 0 }}>
+      <div style={{ fontSize: 12.5, fontWeight: 800, marginBottom: 4 }}><span style={{ fontFamily: mono }}>{t}</span> after the change · {p.load[t === A ? "A" : "B"][1]} periods (was {p.load[t === A ? "A" : "B"][0]})</div>
+      <div className="tt-scroll" style={{ overflowX: "auto" }}><table style={{ borderCollapse: "separate", borderSpacing: 2 }}><tbody>{cfg.days.map((d) => (
+        <tr key={d}><td style={{ fontSize: 10.5, fontWeight: 800, color: C.sub, paddingRight: 4 }}>{(DAY_FULL[d] || d).slice(0, 3)}</td>
+          {cfg.periods.map((_, pi) => { const r = teacherAt(p.next, t, d, pi), hot = ch.has(`${d}|${pi}`); return <td key={pi} title={r ? `${r.c} · ${r.sub}` : "free"} style={{ minWidth: 46, height: 26, fontSize: 10, fontWeight: 700, textAlign: "center", borderRadius: 6, padding: "0 3px", whiteSpace: "nowrap", background: isOffDay(cfg, t, d) ? "#eef0f3" : !r ? C.freeSoft : hot ? "#fff3d6" : "#f4f6f9", border: hot ? `1.5px solid ${C.warn}` : `1px solid ${C.line}`, color: r ? C.ink : C.free }}>{r ? String(r.c).split(", ")[0] + (String(r.c).includes(", ") ? "+" : "") : "·"}</td>; })}
+        </tr>))}</tbody></table></div>
+    </div>); };
+  return (
+    <div style={{ ...card, marginTop: 16 }}>
+      <Panelhead text="Interchange two teachers" count={plan ? (plan.errors.length ? `${plan.errors.length} problem${plan.errors.length === 1 ? "" : "s"}` : `${plan.changes.length} periods`) : "after generating"} />
+      <div style={{ padding: 12, display: "grid", gap: 12 }}>
+        <div className="tt-callout">Give teacher A's lessons to teacher B and B's lessons to A — for the whole week, or only on some days or in some classes. The app checks first that nobody ends up in two places, that both teachers work on those days and have no extra duty then, and that class rules still hold. Classes keep their lessons at the same times.</div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <label style={lab}>Teacher A<select className="tt-sel" value={A} onChange={(e) => setA(e.target.value)} style={{ width: 120, height: 34 }}>{cfg.singles.map((t) => <option key={t}>{t}</option>)}</select></label>
+          <span style={{ fontSize: 18, color: th.accent, paddingBottom: 6 }}>⇄</span>
+          <label style={lab}>Teacher B<select className="tt-sel" value={B} onChange={(e) => setB(e.target.value)} style={{ width: 120, height: 34 }}>{cfg.singles.map((t) => <option key={t}>{t}</option>)}</select></label>
+        </div>
+        <div style={{ display: "grid", gap: 6 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.sub }}>Days <span style={{ fontWeight: 500 }}>(none ticked = the whole week)</span></div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{cfg.days.map((d) => <button key={d} className="tt-btn" onClick={() => tog(days, setDays, d)} style={chip(days.includes(d))}>{DAY_FULL[d] || d}</button>)}</div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.sub, marginTop: 4 }}>Classes <span style={{ fontWeight: 500 }}>(none ticked = all their classes)</span></div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{theirClasses.length ? theirClasses.map((c) => <button key={c} className="tt-btn" onClick={() => tog(cls, setCls, c)} style={{ ...chip(cls.includes(c)), fontFamily: mono }}>{c}</button>) : <span style={{ fontSize: 12, color: C.sub }}>Neither teacher has lessons yet.</span>}</div>
+        </div>
+        <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+          <label style={{ display: "inline-flex", gap: 6, alignItems: "center", fontSize: 12.5, fontWeight: 700, cursor: allDays ? "pointer" : "default", opacity: allDays ? 1 : 0.5 }} title={allDays ? "" : "The Mapping can only change when all days are interchanged"}><input type="checkbox" disabled={!allDays} checked={allDays && o.mapping} onChange={(e) => setO({ ...o, mapping: e.target.checked })} /> Also change the Mapping (so regenerating keeps it)</label>
+          <label style={{ display: "inline-flex", gap: 6, alignItems: "center", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}><input type="checkbox" checked={o.locked} onChange={(e) => setO({ ...o, locked: e.target.checked })} /> Include frozen periods</label>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button className="tt-btn" onClick={check} style={solidBtn}>Check the interchange</button>
+          {plan && <button className="tt-btn" disabled={!!plan.errors.length || !(plan.changes.length || plan.combChanged.length)} onClick={apply} style={{ ...solidBtn, background: plan.errors.length ? "#b4bccb" : `linear-gradient(135deg, ${C.free}, #157a43)`, opacity: plan.errors.length || !(plan.changes.length || plan.combChanged.length) ? 0.6 : 1 }}>Apply the interchange</button>}
+        </div>
+        {msg && <div style={{ fontSize: 12.5, fontWeight: 600, color: msg.startsWith("Done") ? C.free : C.clash }}>{msg}</div>}
+        {plan && (
+          <div style={{ display: "grid", gap: 10 }}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", fontSize: 12.5 }}>
+              <span style={{ padding: "3px 10px", borderRadius: 20, background: `${th.accent}14`, color: th.g2, fontWeight: 700 }}>{plan.changes.length} period{plan.changes.length === 1 ? "" : "s"} change</span>
+              {plan.combChanged.length > 0 && <span style={{ padding: "3px 10px", borderRadius: 20, background: "#f4effb", color: "#6d28d9", fontWeight: 700 }}>{plan.combChanged.length} combined lesson{plan.combChanged.length === 1 ? "" : "s"}</span>}
+              {plan.mapRows > 0 && <span style={{ padding: "3px 10px", borderRadius: 20, background: "#eef4ff", color: "#2b5fa8", fontWeight: 700 }}>Mapping: {plan.mapRows} row{plan.mapRows === 1 ? "" : "s"}</span>}
+              <span style={{ padding: "3px 10px", borderRadius: 20, background: plan.errors.length ? C.clashSoft : C.freeSoft, color: plan.errors.length ? C.clash : C.free, fontWeight: 800 }}>{plan.errors.length ? "✕ Not possible as it is" : "✓ No clashes"}</span>
+            </div>
+            {plan.errors.length > 0 && <div style={{ display: "grid", gap: 4, padding: "8px 12px", borderRadius: 10, background: C.clashSoft, border: `1px solid ${C.clash}33` }}>{plan.errors.slice(0, 12).map((x, i) => <div key={i} style={{ fontSize: 12.5, color: "#8a1f17" }}>✕ {x}</div>)}{plan.errors.length > 12 && <div style={{ fontSize: 12, color: "#8a1f17" }}>… and {plan.errors.length - 12} more</div>}<div style={{ fontSize: 12, color: C.sub, marginTop: 4 }}>Choose fewer days or classes, or free those periods first.</div></div>}
+            {plan.warns.length > 0 && <div style={{ display: "grid", gap: 4, padding: "8px 12px", borderRadius: 10, background: C.warnSoft, border: `1px solid ${C.warn}33` }}>{plan.warns.map((x, i) => <div key={i} style={{ fontSize: 12.5, color: "#7a5310" }}>⚠ {x}</div>)}</div>}
+            {(plan.changes.length > 0 || plan.combChanged.length > 0) && <div style={{ display: "grid", gridTemplateColumns: mobile ? "minmax(0,1fr)" : "repeat(2, minmax(0,1fr))", gap: 12 }}>{mini(A)}{mini(B)}</div>}
+            {plan.changes.length > 0 && <details><summary style={{ cursor: "pointer", fontSize: 12.5, fontWeight: 700, color: th.g2 }}>Every period that changes ({plan.changes.length})</summary>
+              <div className="tt-scroll" style={{ maxHeight: 260, overflowY: "auto", marginTop: 6 }}><table style={{ ...tbl, tableLayout: "auto" }}><thead><tr><th style={th0}>Day</th><th style={th0}>Period</th><th style={th0}>Class</th><th style={th0}>Subject</th><th style={th0}>Now</th><th style={th0}>After</th></tr></thead>
+                <tbody>{plan.changes.map((x, i) => <tr key={i}><td style={{ ...cellTd, height: 28 }}>{(DAY_FULL[x.d] || x.d).slice(0, 3)}</td><td style={{ ...cellTd, height: 28 }}>P{x.p + 1}</td><td style={{ ...cellTd, height: 28, fontFamily: mono, fontWeight: 700 }}>{x.c}</td><td style={{ ...cellTd, height: 28 }}>{x.sub}</td><td style={{ ...cellTd, height: 28, fontFamily: mono }}>{x.from}</td><td style={{ ...cellTd, height: 28, fontFamily: mono, fontWeight: 800, color: th.g2 }}>{x.to}</td></tr>)}</tbody></table></div>
+            </details>}
+            {!plan.changes.length && !plan.combChanged.length && <div style={{ fontSize: 12.5, color: C.sub }}>Nothing to change for these choices.</div>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 function EditView({ cfg, cls, update, expand, clashTokens, occupancy, ask, askPw, mobile }) {
   const keys = cfg.bkey[cls] || [];
   const [report, setReport] = useState("");
@@ -2539,6 +2668,7 @@ function EditView({ cfg, cls, update, expand, clashTokens, occupancy, ask, askPw
       {report && <Banner tone="primary">{report}</Banner>}
       <QualityPanel cfg={cfg} update={update} ask={ask} compact />
       <SwapBoard cfg={cfg} update={update} cls={cls} mobile={mobile} />
+      <TeacherInterchange cfg={cfg} update={update} ask={ask} mobile={mobile} />
       <VersionsPanel cfg={cfg} update={update} ask={ask} opts={genOpts} />
       <div style={{ ...card, marginBottom: 14, padding: 12, display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
         <span style={{ fontSize: 12.5, fontWeight: 700, color: C.sub }}>Change a teacher after assigning:</span>
@@ -4805,7 +4935,7 @@ var ACCESS_PRESETS = {
   subs: { label: "Daily substitution only", tabs: ["subs"], reset: false, manage: false },
   none: { label: "No access", tabs: [], reset: false, manage: false },
 };
-var SETUP_PARTS = [["school", "School name, logo, signature & seal"], ["year", "New academic year"], ["days", "Working days & periods"], ["classes", "Classes, subjects & teacher lists"], ["ctimport", "Class teachers (import)"], ["availability", "Teacher availability"], ["duties", "Extra duties"], ["password", "Admin password"]];
+var SETUP_PARTS = [["school", "School name, logo, signature & seal"], ["year", "New academic year"], ["calendar", "School calendar"], ["days", "Working days & periods"], ["classes", "Classes, subjects & teacher lists"], ["ctimport", "Class teachers (import)"], ["availability", "Teacher availability"], ["duties", "Extra duties"], ["password", "Admin password"]];
 function normUser(u) { return String(u || "").trim().toLowerCase().replace(/@.*$/, ""); }
 function accessEntry(cfg, k) {
   const a = (cfg.access || {})[k]; if (a) return a;
@@ -5463,7 +5593,7 @@ function CalendarImport({ cfg, update, onDone }) {
       c.calendar = { ...(c.calendar || {}) };
       for (const x of items) {
         const cur = c.calendar[x.date]; if (cur && !replace) continue;
-        c.calendar[x.date] = x.kind === "holiday" ? { kind: "holiday", label: x.label } : { kind: "follow", day: x.day, label: x.label, ...(x.tag ? { tag: x.tag } : {}) };
+        c.calendar[x.date] = x.kind === "holiday" ? { kind: "holiday", label: x.label, src: "cal" } : { kind: "follow", day: x.day, label: x.label, ...(x.tag ? { tag: x.tag } : {}), src: "cal" };
         n++; if (c.subs && c.subs[x.date]) tidySubs(c, x.date, true);
       }
     });
@@ -5512,10 +5642,11 @@ function CalendarImport({ cfg, update, onDone }) {
     </div>
   );
 }
-function CalendarPanel({ cfg, update, date, setDate, ask, mobile }) {
+function CalendarPanel({ cfg, update, date, setDate, ask, mobile, mode }) {
   const th = CUR_TH || THEMES.teal;
+  const setup = mode === "setup";
   const [f, setF] = useState({ kind: "holiday", from: "", to: "", day: cfg.days[0], label: "" });
-  const [show, setShow] = useState("upcoming");
+  const [show, setShow] = useState(setup ? "year" : "upcoming");
   const [imp, setImp] = useState(false);
   const [yrEdit, setYrEdit] = useState(false);
   const today = isoToday(), ay = acadYear(date, cfg), from = show === "year" ? ay.from : isoShift(today, -45), upto = show === "year" ? ay.to : "9999-12-31";
@@ -5527,37 +5658,40 @@ function CalendarPanel({ cfg, update, date, setDate, ask, mobile }) {
   }, [cfg.calendar, cfg.days, ay.from, ay.to, today]);
   const add = () => {
     if (!f.from) return; const to = f.kind === "holiday" && f.to && f.to >= f.from ? f.to : f.from;
-    update((n) => { n.calendar = { ...(n.calendar || {}) }; for (let d = f.from, i = 0; d <= to && i < 200; d = isoShift(d, 1), i++) { n.calendar[d] = f.kind === "holiday" ? { kind: "holiday", label: f.label.trim() } : { kind: "follow", day: f.day, label: f.label.trim(), ...(f.kind === "comp" || f.kind === "special" ? { tag: f.kind } : {}) }; tidySubs(n, d, true); } });
+    update((n) => { n.calendar = { ...(n.calendar || {}) }; for (let d = f.from, i = 0; d <= to && i < 200; d = isoShift(d, 1), i++) { n.calendar[d] = f.kind === "holiday" ? { kind: "holiday", label: f.label.trim(), ...(setup ? { src: "cal" } : {}) } : { kind: "follow", day: f.day, label: f.label.trim(), ...(f.kind === "comp" || f.kind === "special" ? { tag: f.kind } : {}), ...(setup ? { src: "cal" } : {}) }; tidySubs(n, d, true); } });
     setF({ ...f, from: "", to: "", label: "" });
   };
   const lab = { display: "grid", gap: 4, fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.3 };
   const tone = { holiday: [C.accent, "#fdf6ec"], follow: [th.accent, `${th.accent}0d`], special: ["#7c3aed", "#f4effb"] };
   return (
     <div style={card}>
-      <Panelhead text="School calendar — holidays & changed days" count={list.length ? `${list.length} day${list.length === 1 ? "" : "s"}` : "none"} />
+      <Panelhead text={setup ? "School calendar — the academic year" : "Unexpected holidays & working days"} count={list.length ? `${list.length} day${list.length === 1 ? "" : "s"}` : "none"} />
       <div style={{ padding: 12, display: "grid", gap: 10 }}>
-        <div className="tt-callout"><b>Import the year's calendar</b> once (holidays, compensation and special working days), then add sudden changes — a <b>rain holiday</b>, a <b>tour</b>, a hartal — from the day bar above on the day itself. On a working day that follows another day's timetable, substitution, free periods and teacher links use that day's timetable. A <b>special timetable</b> for one day (half day, sports day) is also set from the day bar.</div>
+        {setup ? <div className="tt-callout">Upload the <b>school calendar</b> for the year — holidays, compensation working days and special working days. It is the <b>default for every date</b>: Daily substitution, free periods and the teacher links follow it. Sudden changes (a rain holiday, a tour, an extra working day) are made in <b>Daily substitution</b> on the day.</div>
+        : <div className="tt-callout">For <b>sudden changes</b> — a <b>rain holiday</b>, a <b>tour</b>, a hartal, or a <b>working day</b> that is not in the school calendar (or when the calendar is not ready yet when school reopens). Pick the date at the top and use the <b>This day</b> bar, or add the days here. The full-year calendar is uploaded in <b>Classes & setup → School calendar</b>.</div>}
+        
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <button className="tt-btn" onClick={() => setYrEdit(!yrEdit)} title="Change the academic year dates" style={{ fontSize: 12, padding: "4px 11px", borderRadius: 20, border: `1px solid ${yrEdit ? th.accent : C.line}`, background: "#fff", color: C.ink, fontWeight: 600 }}>📅 Year {ay.label}: {isoNice(ay.from)} – {isoNice(ay.to)} ✎</button>
+          {setup && <button className="tt-btn" onClick={() => setYrEdit(!yrEdit)} title="Change the academic year dates" style={{ fontSize: 12, padding: "4px 11px", borderRadius: 20, border: `1px solid ${yrEdit ? th.accent : C.line}`, background: "#fff", color: C.ink, fontWeight: 600 }}>📅 Year {ay.label}: {isoNice(ay.from)} – {isoNice(ay.to)} ✎</button>}
           <span style={{ fontSize: 12, padding: "4px 11px", borderRadius: 20, border: `1px solid ${C.line}`, background: C.freeSoft }}>School days: <b>{yr.done}</b> so far · <b>{yr.left}</b> more</span>
           <span style={{ fontSize: 12, padding: "4px 11px", borderRadius: 20, border: `1px solid ${C.line}`, background: "#fdf2e3" }}>Holidays: <b>{yr.hol}</b></span>
           <span style={{ fontSize: 12, padding: "4px 11px", borderRadius: 20, border: `1px solid ${C.line}`, background: `${th.accent}10` }}>Extra working days: <b>{yr.wk}</b></span>
           <span style={{ marginLeft: "auto", display: "flex", gap: 6, flexWrap: "wrap" }}>
             <div style={{ display: "inline-flex", border: `1px solid ${C.line}`, borderRadius: 10, overflow: "hidden" }}>{[["upcoming", "Upcoming"], ["year", `Whole year ${ay.label}`]].map(([k, l]) => <button key={k} className="tt-btn" onClick={() => setShow(k)} style={{ border: "none", padding: "6px 11px", fontSize: 12, fontWeight: 700, background: show === k ? C.primary : "#fff", color: show === k ? "#fff" : C.sub }}>{l}</button>)}</div>
-            <button className="tt-btn" onClick={() => setImp(!imp)} style={imp ? ghostBtn : solidBtn}>{imp ? "Close import" : "Import calendar"}</button>
-            <button className="tt-btn" onClick={() => downloadText(`school_calendar_${ay.label}.csv`, calendarCSV(cfg, ay.from, ay.to))} style={ghostBtn}>Download (CSV)</button>
+            {setup && <button className="tt-btn" onClick={() => setImp(!imp)} style={imp ? ghostBtn : solidBtn}>{imp ? "Close upload" : "Upload school calendar"}</button>}
+            {setup && <button className="tt-btn" onClick={() => downloadText(`school_calendar_${ay.label}.csv`, calendarCSV(cfg, ay.from, ay.to))} style={ghostBtn}>Download (CSV)</button>}
           </span>
         </div>
-        {yrEdit && <div style={{ border: `1.5px solid ${th.accent}44`, borderRadius: 14, padding: 12, background: "#fbfdfd" }}><YearRangePicker cfg={cfg} update={update} /></div>}
-        {imp && <CalendarImport cfg={cfg} update={update} onDone={() => setShow("year")} />}
+        {setup && yrEdit && <div style={{ border: `1.5px solid ${th.accent}44`, borderRadius: 14, padding: 12, background: "#fbfdfd" }}><YearRangePicker cfg={cfg} update={update} /></div>}
+        {setup && imp && <CalendarImport cfg={cfg} update={update} onDone={() => setShow("year")} />}
         {list.length === 0 ? <div style={{ fontSize: 12.5, color: C.sub }}>No holidays or changed days recorded{show === "year" ? ` for ${ay.label}` : ""}.</div> : (
           <div style={{ display: "grid", gap: 6, maxHeight: 300, overflowY: "auto" }} className="tt-scroll">
             {list.map((d) => { const e = cfg.calendar[d], [fg, bg] = tone[e.kind] || tone.follow; return (
-              <div key={d} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "7px 10px", borderRadius: 11, border: `1px solid ${d === date ? fg : C.line}`, background: d < today ? "#fafbfc" : bg, opacity: d < today ? 0.75 : 1 }}>
+              <div key={d} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "7px 10px", borderRadius: 11, border: `1px solid ${!setup && d === date ? fg : C.line}`, background: d < today ? "#fafbfc" : bg, opacity: d < today ? 0.75 : 1 }}>
                 <b style={{ minWidth: 112, fontSize: 13 }}>{isoNice(d)}</b>
                 <span style={{ fontSize: 10.5, fontWeight: 800, padding: "2px 8px", borderRadius: 10, background: fg, color: "#fff", textTransform: "uppercase", letterSpacing: 0.4 }}>{e.kind === "holiday" ? "Holiday" : e.kind === "follow" ? `${e.tag === "comp" ? "Comp. working · " : e.tag === "special" ? "Special working · " : ""}${(DAY_FULL[dayOf(cfg, d)] || "").slice(0, 3)} timetable` : "Special timetable"}</span>
                 <span style={{ flex: "1 1 160px", fontSize: 12.5, color: C.ink }}>{dayLabel(cfg, d)}</span>
-                <button className="tt-btn" onClick={() => setDate(d)} style={{ ...ghostBtn, padding: "4px 10px", fontSize: 12 }}>Open</button>
+                <span style={{ fontSize: 10.5, fontWeight: 700, color: C.sub, padding: "1px 7px", borderRadius: 9, border: `1px solid ${C.line}` }}>{e.src === "cal" ? "school calendar" : "changed on the day"}</span>
+                {setDate && <button className="tt-btn" onClick={() => setDate(d)} style={{ ...ghostBtn, padding: "4px 10px", fontSize: 12 }}>Open</button>}
                 <button className="tt-btn" onClick={() => ask(`Make ${isoNice(d)} a normal day again?`, () => update((n) => { n.calendar = { ...(n.calendar || {}) }; delete n.calendar[d]; tidySubs(n, d, true); }))} style={{ ...ghostBtn, padding: "4px 10px", fontSize: 12, color: C.clash }}>Remove</button>
               </div>); })}
           </div>
@@ -5891,7 +6025,7 @@ function SubsReportPanel({ cfg, date, mobile }) {
               </tr>); })}</tbody>
           </table>
         </div>
-        <div style={{ fontSize: 11.5, color: C.sub }}>Days = whole days + ½ for each forenoon (FN) or afternoon (AN) absence. The year runs {yearRangeText(cfg)} (set in the School calendar). Holidays in the school calendar are not counted. Tap a column title to sort.</div>
+        <div style={{ fontSize: 11.5, color: C.sub }}>Days = whole days + ½ for each forenoon (FN) or afternoon (AN) absence. The year runs {yearRangeText(cfg)} (set in Classes & setup). Holidays in the school calendar are not counted. Tap a column title to sort.</div>
       </div>
     </div>
   );
@@ -6558,6 +6692,7 @@ function SetupView({ cfg, update, ask, askPw, mobile, teacherLoad, me, acc }) {
         </div>
       </div>}
       {can("year") && <YearCard cfg={cfg} update={update} askPw={askPw} />}
+      {can("calendar") && <div style={{ marginBottom: 16 }}><CalendarPanel cfg={cfg} update={update} date={isoToday()} ask={ask} mobile={mobile} mode="setup" /></div>}
       {(!acc || acc.manage) && <StaffAccessCard cfg={cfg} update={update} me={me} />}
       {can("school") && <LogoCard cfg={cfg} update={update} />}
       {can("school") && <StampCard cfg={cfg} update={update} mobile={mobile} />}
