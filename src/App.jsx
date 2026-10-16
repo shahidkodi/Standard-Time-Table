@@ -12,7 +12,7 @@ import { supabase } from "./supabaseClient";
    ============================================================ */
 
 const STORE_KEY = "tt_cfg_v2";
-const APP_VERSION = "2026-10-16 d";
+const APP_VERSION = "2026-10-16 f";
 
 const WEEK_ORDER = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const DAY_FULL = { MON: "Monday", TUE: "Tuesday", WED: "Wednesday", THU: "Thursday", FRI: "Friday", SAT: "Saturday", SUN: "Sunday" };
@@ -47,10 +47,21 @@ const THEMES = {
 var CUR_TH = null, CUR_VIEW = "classes", SCHOOL_NAME = "";
 
 const TABS = [
-  ["classes", "Class timetables"], ["teachers", "Teacher timetables"], ["free", "Free & substitution"], ["subs", "Daily substitution"],
-  ["bkey", "Mapping"], ["edit", "Assign timetable"], ["rules", "Scheduling rules"],
-  ["combined", "Combined subjects"], ["analysis", "Analysis & checks"], ["export", "Import / Export"], ["assistant", "AI assistant"], ["setup", "Classes & setup"],
+  ["home", "Dashboard"], ["setup", "Classes & setup"],
+  ["classes", "Class timetables"], ["teachers", "Teacher timetables"], ["free", "Free periods"], ["edit", "Assign & generate"], ["bkey", "Mapping"], ["combined", "Combined subjects"], ["rules", "Scheduling rules"], ["analysis", "Analysis & checks"], ["assistant", "AI assistant"],
+  ["subs", "Daily substitution"], ["leave", "Teacher leave"], ["reports", "Reports & PDF"], ["settings", "Settings"], ["export", "Data & backup"],
 ];
+const SECTIONS = [
+  ["home", "Dashboard", ["home"]],
+  ["setup", "Classes & setup", ["setup"]],
+  ["tt", "Timetable", ["classes", "teachers", "free", "edit", "bkey", "combined", "rules", "analysis", "assistant"]],
+  ["subs", "Daily substitution", ["subs"]],
+  ["leave", "Teacher leave", ["leave"]],
+  ["reports", "Reports & PDF", ["reports"]],
+  ["settings", "Settings", ["settings", "export"]],
+];
+function sectionOf(v) { const s = SECTIONS.find((x) => x[2].includes(v)); return s ? s[0] : "home"; }
+const TAB_LABEL = Object.fromEntries(TABS);
 
 function useIsMobile(q = "(max-width: 760px)") {
   const get = () => (typeof window !== "undefined" && window.matchMedia ? window.matchMedia(q).matches : false);
@@ -587,7 +598,7 @@ function SaveReport({ r, onClose }) {
 
 export default function App() {
   const [cfg, setCfg] = useState(null);
-  const [view0, setView] = useState(() => lsGet("tt_view", "classes"));
+  const [view0, setView] = useState(() => { const v = lsGet("tt_view", "home"); return TABS.some((x) => x[0] === v) ? v : "home"; });
   const [cls, setCls] = useState(() => lsGet("tt_cls", SEED.classes[0]));
   const [tch, setTch] = useState(() => lsGet("tt_tch", SEED.singles[0]));
   useEffect(() => { lsSet("tt_view", view0); }, [view0]);
@@ -859,9 +870,14 @@ export default function App() {
       rules: { text: nRules ? pl(nRules, "rule") + " set" : "no rules", tone: "info" },
       combined: { text: pl((cfg.combined || []).length, "session"), tone: "info" },
       analysis: { text: totalClashes ? pl(totalClashes, "clash").replace("clashs", "clashes") : "no clashes", tone: totalClashes ? "bad" : "ok" },
-      export: { text: "PDF · CSV · backup", tone: "info" },
-      subs: (() => { const t = isoToday(), nd = subsNeeds(cfg, t), a = ((cfg.subs || {})[t] || {}).assign || {}, ab = Object.keys(((cfg.subs || {})[t] || {}).absent || {}).length, cv = nd.filter((x) => a[x.key]).length; return ab ? { text: `${ab} absent · ${cv}/${nd.length} covered`, tone: cv === nd.length ? "ok" : "warn" } : { text: "no absence today", tone: "info" }; })(),
+      export: { text: "import · backup", tone: "info" },
+      subs: (() => { const t = isoToday(); if (!dayOf(cfg, t)) return { text: "no school today", tone: "info" }; const nd = subsNeeds(cfg, t), a = ((cfg.subs || {})[t] || {}).assign || {}, ab = Object.keys(absentMap(cfg, t)).length, cv = nd.filter((x) => a[x.key]).length; return ab ? { text: `${ab} absent · ${cv}/${nd.length} covered`, tone: cv === nd.length ? "ok" : "warn" } : { text: "no absence today", tone: "info" }; })(),
       assistant: { text: "ask for help", tone: "info" },
+      home: (() => { const t = isoToday(), dd = dayOf(cfg, t); return { text: dd ? dayLabel(cfg, t).replace(" timetable", "") : "no school today", tone: "info" }; })(),
+      tt: { text: totalClashes ? `${totalClashes} clash${totalClashes === 1 ? "" : "es"}` : tot ? `${pct}% filled` : "empty", tone: totalClashes ? "bad" : tot && f === tot ? "ok" : "warn" },
+      leave: (() => { const n = leavesOn(cfg, isoToday()).length; return { text: n ? `${n} on leave` : "nobody on leave", tone: n ? "warn" : "info" }; })(),
+      reports: { text: "PDF · Excel", tone: "info" },
+      settings: { text: "access · password", tone: "info" },
       setup: { text: `${cfg.days.length} days · ${cfg.periods.length} periods`, tone: "info" },
     };
   }, [cfg, teacherLoad, totalClashes]);
@@ -874,7 +890,7 @@ export default function App() {
 
   SCHOOL_LOGO = cfg.logo || ""; SCHOOL_WM = cfg.wmPdf !== false; SCHOOL_NAME = cfg.school || ""; CUR_TH = TH; CUR_VIEW = view;
   const publishNow = (rows) => { if (rows) publishRows(rows); else if (cfg.teacherLinks && cfg.teacherLinks.on) publishRows(buildTeacherPages(cfg)); };
-  const ctx = { me, acc, limited, pubState, publishNow, cfg, update, expand, occupancy, clashTokens, teacherLoad, ask, askPw, isCombined, combinedByBase, mobile };
+  const ctx = { setView, me, acc, limited, pubState, publishNow, cfg, update, expand, occupancy, clashTokens, teacherLoad, ask, askPw, isCombined, combinedByBase, mobile };
 
   return (
     <div style={{ fontFamily: sans, color: C.ink, background: TH.bg, minHeight: "100vh" }}>
@@ -929,18 +945,10 @@ export default function App() {
       </header>
 
       <NavTabs view={view} setView={setView} status={tabStatus} TH={TH} mobile={mobile} only={acc.tabs} />
-      {isAdmin && Date.now() - (cfg.lastBackupDl || 0) > 7 * 864e5 && Date.now() > bkSnooze && (
-        <div className="tt-noprint" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", margin: mobile ? "10px 12px 0" : "14px 22px 0", padding: "9px 14px", borderRadius: 12, background: "#eef4ff", border: "1px solid #2b5fa833", color: "#1d3f73", fontSize: 13 }}>
-          <span style={{ fontSize: 17 }}>📦</span>
-          <span style={{ flex: "1 1 220px" }}><b>Weekly backup</b> — {cfg.lastBackupDl ? `last downloaded ${Math.floor((Date.now() - cfg.lastBackupDl) / 864e5)} days ago` : "no backup downloaded yet"}. Keep a copy of everything on this device, in case of any accident.</span>
-          <button className="tt-btn" onClick={() => { downloadBackup(cfg); update((n) => { n.lastBackupDl = Date.now(); }); }} style={{ ...solidBtn, padding: "6px 12px", fontSize: 12.5 }}>Download backup</button>
-          <button className="tt-btn" onClick={() => { const t = Date.now() + 3 * 864e5; setBkSnooze(t); lsSet("tt_bk_snooze", String(t)); }} style={{ ...ghostBtn, padding: "6px 12px", fontSize: 12.5 }}>Later</button>
-        </div>
-      )}
       <NavDrawer open={menuOpen} onClose={() => setMenuOpen(false)} view={view} setView={setView} TH={TH} school={cfg.school} logo={cfg.logo} status={tabStatus} only={acc.tabs} me={me} theme={theme} setTheme={persistTheme} onSignOut={handleSignOut} />
       <div className="tt-printhead" style={{ display: "none", alignItems: "center", gap: 12, borderBottom: `3px solid ${TH.g1}`, padding: "0 0 8px", margin: "0 0 10px" }}>
         {cfg.logo && <img src={cfg.logo} alt="" style={{ height: 52, width: 52, objectFit: "contain" }} />}
-        <div><div style={{ fontSize: 19, fontWeight: 800, color: TH.g2, textTransform: "uppercase", letterSpacing: 0.6 }}>{cfg.school}</div><div style={{ fontSize: 11, fontWeight: 800, color: C.accent, letterSpacing: 2.2, textTransform: "uppercase" }}>{(TABS.find((t) => t[0] === view) || ["", ""])[1]}</div></div>
+        <div><div style={{ fontSize: 19, fontWeight: 800, color: TH.g2, textTransform: "uppercase", letterSpacing: 0.6 }}>{cfg.school}</div><div style={{ fontSize: 11, fontWeight: 800, color: C.accent, letterSpacing: 2.2, textTransform: "uppercase" }}>{TAB_LABEL[view] || ""}</div></div>
         <div style={{ marginLeft: "auto", fontSize: 11, color: C.sub }}>Printed {new Date().toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" })}</div>
       </div>
       <main style={{ display: "flex", alignItems: "flex-start", flexDirection: mobile ? "column" : "row" }}>
@@ -961,6 +969,10 @@ export default function App() {
           {view === "combined" && <CombinedView {...ctx} />}
           {view === "analysis" && <AnalysisView {...ctx} />}
           {view === "export" && <ExportView {...ctx} />}
+          {view === "reports" && <ReportsView {...ctx} />}
+          {view === "settings" && <SettingsView {...ctx} theme={theme} setTheme={persistTheme} />}
+          {view === "leave" && <LeaveView {...ctx} />}
+          {view === "home" && <DashboardView {...ctx} />}
           {view === "assistant" && <AssistantView {...ctx} />}
           {view === "setup" && <SetupView {...ctx} />}
           {view === "__none" && <EmptyState title="No sections yet" msg={`Your login (${me || ""}) has not been given any part of the app yet. Ask the administrator to set your access in Classes & setup → Staff access.`} />}
@@ -1120,6 +1132,10 @@ function Icon({ name, size = 16 }) {
     analysis: "M4 20V10M10 20V4M16 20v-8M20 20H3",
     assistant: "M21 14a2 2 0 01-2 2H9l-5 4V6a2 2 0 012-2h12a2 2 0 012 2z",
     export: "M12 3v12M8 11l4 4 4-4M5 21h14",
+    home: "M3 11l9-8 9 8M5 9.5V21h5v-6h4v6h5V9.5",
+    leave: "M4 5h16v15H4zM4 10h16M9 3v4M15 3v4M9 14l6 4M15 14l-6 4",
+    reports: "M7 3h7l5 5v13H7zM14 3v5h5M10 13h6M10 17h6",
+    settings: "M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0M14 4v4M8 10v4M16 16v4",
     setup: "M12 15a3 3 0 100-6 3 3 0 000 6zM19.4 13a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-2.9 1.2V21a2 2 0 11-4 0v-.2A1.7 1.7 0 006 19.5l-.1.1a2 2 0 11-2.8-2.8l.1-.1A1.7 1.7 0 003 13H2.8a2 2 0 110-4H3a1.7 1.7 0 001.5-2.9l-.1-.1a2 2 0 112.8-2.8l.1.1A1.7 1.7 0 0010 3.4V3a2 2 0 114 0v.2a1.7 1.7 0 002.9 1.1l.1-.1a2 2 0 112.8 2.8l-.1.1A1.7 1.7 0 0021 10.6h.2a2 2 0 110 4H21z",
   }[name];
   if (!P) return null;
@@ -1269,29 +1285,45 @@ function tabTone(tone, TH) {
 }
 function NavTabs({ view, setView, status, TH, mobile, only }) {
   const ref = useRef(null);
+  const sec = sectionOf(view);
+  const vis = (v) => !only || only.includes(v);
+  const secs = SECTIONS.map(([k, l, vs]) => [k, l, vs.filter(vis)]).filter((x) => x[2].length);
+  const [last, setLast] = useState(() => { try { return JSON.parse(lsGet("tt_lastsub", "{}")) || {}; } catch (e) { return {}; } });
+  useEffect(() => { const n = { ...last, [sec]: view }; setLast(n); lsSet("tt_lastsub", JSON.stringify(n)); }, [view]);
   useEffect(() => {
     if (!mobile || !ref.current) return;
     try { const el = ref.current.querySelector("[aria-selected='true']"); if (el) ref.current.scrollTo({ left: Math.max(0, el.offsetLeft - 14), behavior: "smooth" }); } catch (e) { /* ignore */ }
   }, [view, mobile]);
+  const cur = secs.find((x) => x[0] === sec);
   return (
-    <nav ref={ref} role="tablist" className="tt-noprint tt-scroll" style={mobile
+    <div className="tt-noprint">
+    <nav ref={ref} role="tablist" className="tt-scroll" style={mobile
       ? { display: "flex", gap: 8, padding: "10px 12px", background: C.surface, borderBottom: `1px solid ${C.line}`, overflowX: "auto", WebkitOverflowScrolling: "touch" }
-      : { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(176px, 1fr))", gap: 10, padding: "14px 18px", background: C.surface, borderBottom: `1px solid ${C.line}` }}>
-      {TABS.filter(([k]) => !only || only.includes(k)).map(([k, label]) => {
-        const on = view === k, st = status[k] || {}, tn = tabTone(st.tone, TH);
+      : { display: "grid", gridTemplateColumns: `repeat(${secs.length}, minmax(0, 1fr))`, gap: 10, padding: "12px 18px", background: C.surface, borderBottom: `1px solid ${C.line}` }}>
+      {secs.map(([k, label, vs]) => {
+        const on = sec === k, st = status[k] || {}, tn = tabTone(st.tone, TH), go = last[k] && vs.includes(last[k]) ? last[k] : vs[0];
         return (
-          <button key={k} role="tab" aria-selected={on} className="tt-btn tt-navcard" onClick={() => setView(k)} title={label}
-            style={{ textAlign: "left", display: "flex", alignItems: "center", gap: 10, padding: mobile ? "7px 10px" : "9px 11px", borderRadius: 13, cursor: "pointer", minWidth: mobile ? 158 : 0, flexShrink: 0,
+          <button key={k} role="tab" aria-selected={on} className="tt-btn tt-navcard" onClick={() => setView(go)} title={label}
+            style={{ textAlign: "left", display: "flex", alignItems: "center", gap: 9, padding: mobile ? "7px 10px" : "8px 10px", borderRadius: 13, cursor: "pointer", minWidth: mobile ? 150 : 0, flexShrink: 0,
               border: `2px solid ${on ? TH.accent : C.line}`, background: on ? `${TH.accent}10` : "#fff", boxShadow: on ? `0 6px 16px ${TH.accent}2e` : "0 1px 2px rgba(22,33,58,.05)" }}>
-            <span style={{ flexShrink: 0, width: mobile ? 32 : 38, height: mobile ? 32 : 38, borderRadius: 11, display: "grid", placeItems: "center", background: on ? `linear-gradient(135deg, ${TH.g1}, ${TH.g2})` : "#f1f4f7", color: on ? "#fff" : TH.accent, boxShadow: on ? `0 3px 8px ${TH.accent}44` : "none" }}><Icon name={k} size={mobile ? 16 : 18} /></span>
+            <span style={{ flexShrink: 0, width: mobile ? 32 : 36, height: mobile ? 32 : 36, borderRadius: 11, display: "grid", placeItems: "center", background: on ? `linear-gradient(135deg, ${TH.g1}, ${TH.g2})` : "#f1f4f7", color: on ? "#fff" : TH.accent }}><Icon name={k === "tt" ? "edit" : k} size={mobile ? 16 : 18} /></span>
             <span style={{ minWidth: 0, display: "block" }}>
-              <span style={{ display: "block", fontSize: mobile ? 12.5 : 13.2, fontWeight: 800, color: on ? TH.g2 : C.ink, lineHeight: 1.2, whiteSpace: mobile ? "nowrap" : "normal" }}>{label}</span>
-              {st.text && <span style={{ display: "inline-block", marginTop: 4, fontSize: 10.5, fontWeight: 700, padding: "1px 8px", borderRadius: 20, background: tn.bg, color: tn.fg, whiteSpace: "nowrap", maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis" }}>{st.text}</span>}
+              <span style={{ display: "block", fontSize: mobile ? 12.5 : 13, fontWeight: 800, color: on ? TH.g2 : C.ink, lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{label}</span>
+              {st.text && <span style={{ display: "inline-block", marginTop: 3, fontSize: 10.5, fontWeight: 700, padding: "1px 8px", borderRadius: 20, background: tn.bg, color: tn.fg, whiteSpace: "nowrap", maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis" }}>{st.text}</span>}
             </span>
           </button>
         );
       })}
     </nav>
+    {cur && cur[2].length > 1 && (
+      <div className="tt-scroll" style={{ display: "flex", gap: 6, padding: mobile ? "8px 12px" : "8px 18px", background: "#fff", borderBottom: `1px solid ${C.line}`, overflowX: "auto" }}>
+        {cur[2].map((v) => { const on = v === view, st = status[v] || {}; return (
+          <button key={v} className="tt-btn" onClick={() => setView(v)} title={TAB_LABEL[v]} aria-current={on ? "page" : undefined} style={{ display: "inline-flex", alignItems: "center", gap: 6, flexShrink: 0, padding: "6px 12px", borderRadius: 20, fontSize: 12.5, fontWeight: 700, cursor: "pointer", border: `1.5px solid ${on ? TH.accent : C.line}`, background: on ? TH.accent : "#fff", color: on ? "#fff" : C.ink }}>
+            <Icon name={v} size={14} />{TAB_LABEL[v]}{st.text && !mobile && <span style={{ fontSize: 10.5, fontWeight: 700, opacity: on ? 0.85 : 0.6 }}>· {st.text}</span>}
+          </button>); })}
+      </div>
+    )}
+    </div>
   );
 }
 
@@ -1404,15 +1436,15 @@ function StampCard({ cfg, update, mobile }) {
           <span style={{ width: 32, height: 32, borderRadius: 10, display: "grid", placeItems: "center", flexShrink: 0, background: has ? `linear-gradient(135deg, ${th.g1}, ${th.g2})` : "#eef1f5", color: has ? "#fff" : th.accent, fontSize: 16 }}>{icon}</span>
           <div style={{ minWidth: 0, flex: 1 }}>
             <div style={{ fontSize: 13.5, fontWeight: 800, color: C.ink }}>{label}</div>
-            <div style={{ fontSize: 11.5, color: C.sub }}>{hint}</div>
+            {!mobile && <div style={{ fontSize: 11.5, color: C.sub }}>{hint}</div>}
           </div>
           <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 9px", borderRadius: 20, whiteSpace: "nowrap", background: has ? C.freeSoft : "#f1f3f6", color: has ? C.free : C.sub }}>{has ? "✓ Added" : "Not added"}</span>
         </div>
         <label onDragOver={(e) => { e.preventDefault(); setDrag(field); }} onDragLeave={() => setDrag("")} onDrop={(e) => { e.preventDefault(); setDrag(""); handle(field, label, maxW, e.dataTransfer.files && e.dataTransfer.files[0]); }}
-          style={{ display: "grid", placeItems: "center", height: mobile ? 130 : 140, margin: 10, borderRadius: 12, cursor: "pointer", border: `2px dashed ${drag === field ? th.accent : has ? "transparent" : "#c9d1dc"}`, background: has ? checker : drag === field ? `${th.accent}10` : "#f8fafc", padding: 10, overflow: "hidden" }}>
+          style={{ display: "grid", placeItems: "center", height: 92, margin: 8, borderRadius: 12, cursor: "pointer", border: `2px dashed ${drag === field ? th.accent : has ? "transparent" : "#c9d1dc"}`, background: has ? checker : drag === field ? `${th.accent}10` : "#f8fafc", padding: 10, overflow: "hidden" }}>
           <input type="file" accept="image/*" onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; handle(field, label, maxW, f); }} style={{ display: "none" }} />
           {working ? <span style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12.5, color: th.accent, fontWeight: 700 }}><span className="tt-spin" />Cleaning the image…</span>
-            : has ? <img src={cfg[field]} alt={label} style={{ display: "block", maxWidth: "100%", maxHeight: (mobile ? 130 : 140) - 24, width: "auto", height: "auto", objectFit: "contain" }} />
+            : has ? <img src={cfg[field]} alt={label} style={{ display: "block", maxWidth: "100%", maxHeight: 76, width: "auto", height: "auto", objectFit: "contain" }} />
             : <span style={{ textAlign: "center", color: C.sub, fontSize: 12.5, lineHeight: 1.5 }}>
                 <span style={{ display: "grid", placeItems: "center", width: 40, height: 40, margin: "0 auto 6px", borderRadius: 12, background: `${th.accent}14`, color: th.accent }}>
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 16V4M7 9l5-5 5 5M5 20h14" /></svg>
@@ -1431,73 +1463,114 @@ function StampCard({ cfg, update, mobile }) {
       </div>
     );
   };
-  const seg = (val, opts, set) => (
-    <div style={{ display: "inline-flex", flexWrap: "wrap", border: `1px solid ${C.line}`, borderRadius: 10, overflow: "hidden", background: "#fff" }}>
-      {opts.map(([k, l]) => <button key={k} className="tt-btn" onClick={() => set(k)} style={{ border: "none", padding: "6px 12px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", background: val === k ? th.accent : "transparent", color: val === k ? "#fff" : C.sub }}>{l}</button>)}
-    </div>
-  );
   const lab = { display: "grid", gap: 5, fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4, minWidth: 0 };
   const chk = { display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 600, color: C.ink, cursor: "pointer" };
-  const g = stampGeom(cfg), px = mobile ? 3.3 : 3.6;
+  const g = stampGeom(cfg);
+  const [drag2, setDrag2] = useState(null);
+  const [lock, setLock] = useState(true);   // keep the shape when width or height changes   // live position while dragging on the preview
+  const sheetRef = useRef(null);
+  const set = (o) => update((n) => { for (const k of Object.keys(o)) { if (o[k] === undefined) delete n[k]; else n[k] = o[k]; } });
+  const W = 277, H = 190;   // printable area of an A4 landscape sheet, mm
+  const sizeRow = (which) => { const isS = which === "sign", key = isS ? "signSize" : "sealSize", cur = cfg[key] || "M", w = isS ? g.sw : g.ew, h = isS ? g.sh : g.eh, wk = isS ? "signW" : "sealW", hk = isS ? "signH" : "sealH";
+    return (
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+        <label style={lab}>Size<select className="tt-sel" value={cur} onChange={(e) => { const v = e.target.value; set(v === "C" ? { [key]: "C", [wk]: +w.toFixed(1), [hk]: +h.toFixed(1) } : { [key]: v }); }} style={{ width: 120, height: 34, fontFamily: sans, fontSize: 13 }}><option value="S">Small</option><option value="M">Medium</option><option value="L">Large</option><option value="C">Custom</option></select></label>
+        <label style={lab}>Width (mm)<input type="number" min={8} max={150} step={0.5} className="tt-in" value={+w.toFixed(1)} disabled={cur !== "C"} onChange={(e) => { const v = +e.target.value; set({ [key]: "C", [wk]: v, [hk]: lock && w ? +((v * h) / w).toFixed(1) : +h.toFixed(1) }); }} style={{ width: 82, height: 34, textAlign: "center", opacity: cur === "C" ? 1 : 0.55 }} /></label>
+        <label style={lab}>Height (mm)<input type="number" min={4} max={100} step={0.5} className="tt-in" value={+h.toFixed(1)} disabled={cur !== "C"} onChange={(e) => { const v = +e.target.value; set({ [key]: "C", [hk]: v, [wk]: lock && h ? +((v * w) / h).toFixed(1) : +w.toFixed(1) }); }} style={{ width: 82, height: 34, textAlign: "center", opacity: cur === "C" ? 1 : 0.55 }} /></label>
+        {cur === "C" && <label style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, fontWeight: 700, color: C.sub, cursor: "pointer", paddingBottom: 8 }}><input type="checkbox" checked={lock} onChange={(e) => setLock(e.target.checked)} /> Keep shape</label>}
+        {!isS && cur === "C" && <button className="tt-btn" onClick={() => set({ sealH: +w.toFixed(1) })} title="Make it round" style={{ ...ghostBtn, padding: "6px 10px", fontSize: 12 }}>◯ round</button>}
+      </div>); };
+  const posRow = (which) => { const isS = which === "sign", key = isS ? "signPos" : "sealPos", cur = isS ? g.spos : g.pos, xk = isS ? "signX" : "sealX", yk = isS ? "signY" : "sealY", xy = isS ? g.sxy : g.xy;
+    const near = isS ? [["footer", "Above the Headmaster line (normal)"]] : [["left", "Beside the signature (left)"], ["over", "On the signature"], ["right", "Right of the signature"]];
+    return (
+      <div style={{ display: "grid", gap: 8 }}>
+        <label style={lab}>Position on the sheet<select className="tt-sel" value={cur} onChange={(e) => { const v = e.target.value; set(v === "custom" ? { [key]: "custom", [xk]: xy ? xy[0] : isS ? 100 : 0, [yk]: xy ? xy[1] : 100 } : { [key]: v }); }} style={{ height: 34, fontFamily: sans, fontSize: 13, maxWidth: 300 }}>
+          <optgroup label="With the signature block">{near.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</optgroup>
+          <optgroup label="Fixed place on the sheet">{Object.entries(POS_PRESETS).map(([k, v]) => <option key={k} value={k}>{v[2]}</option>)}</optgroup>
+          <option value="custom">Custom — choose X and Y</option>
+        </select></label>
+        {cur === "custom" && [["Across (X)", xk, 0, "left", "right"], ["Down (Y)", yk, 1, "top", "bottom"]].map(([l, k, i, a, b]) => (
+          <div key={k} style={{ display: "grid", gridTemplateColumns: "84px minmax(0,1fr) 70px", gap: 8, alignItems: "center" }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: C.sub }}>{l}</span>
+            <input type="range" min={0} max={100} step={0.5} value={xy[i]} onChange={(e) => set({ [k]: +e.target.value })} aria-label={l} title={`0 = ${a} edge · 100 = ${b} edge`} style={{ width: "100%", accentColor: th.accent }} />
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }}><input type="number" min={0} max={100} step={0.5} className="tt-in" value={xy[i]} onChange={(e) => set({ [k]: Math.max(0, Math.min(100, +e.target.value || 0)) })} style={{ width: 54, height: 30, textAlign: "center" }} /><span style={{ fontSize: 11, color: C.sub }}>%</span></span>
+          </div>))}
+      </div>); };
+  // preview: A4 landscape sheet; drag the seal or signature to place it
+  const pct = (mm, of) => `${(mm / of) * 100}%`;
+  const live = (which) => (drag2 && drag2.which === which ? drag2.xy : which === "seal" ? g.xy : g.sxy);
+  const onDown = (which) => (e) => { e.preventDefault(); const el = sheetRef.current; if (!el) return; try { e.currentTarget.setPointerCapture(e.pointerId); } catch (er) { /* ignore */ }
+    const r = el.getBoundingClientRect(); const at = (ev) => [Math.round(Math.max(0, Math.min(100, ((ev.clientX - r.left) / r.width) * 100)) * 2) / 2, Math.round(Math.max(0, Math.min(100, ((ev.clientY - r.top) / r.height) * 100)) * 2) / 2];
+    setDrag2({ which, xy: at(e) });
+    const mv = (ev) => setDrag2({ which, xy: at(ev) });
+    const up = (ev) => { window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up); const p = at(ev); setDrag2(null); set(which === "seal" ? { sealPos: "custom", sealX: p[0], sealY: p[1] } : { signPos: "custom", signX: p[0], signY: p[1] }); };
+    window.addEventListener("pointermove", mv); window.addEventListener("pointerup", up); };
+  const stampImg = (which, src, w, h, xy) => <img src={src} alt="" draggable={false} onPointerDown={onDown(which)} title="Drag to move" style={{ position: "absolute", left: `${xy[0]}%`, top: `${xy[1]}%`, transform: `translate(-${xy[0]}%, -${xy[1]}%)`, width: pct(w, W), height: pct(h, H), objectFit: "contain", opacity: 0.92, mixBlendMode: "multiply", cursor: "grab", touchAction: "none", outline: drag2 && drag2.which === which ? `2px dashed ${th.accent}` : "none", zIndex: 4 }} />;
+  const sealXY = live("seal"), signXY = live("sign");
+  const box = (txt) => <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", fontSize: 11, color: "#b4bccb" }}>{txt}</div>;
   return (
     <div style={{ ...card, marginBottom: 16 }}>
       {crop && <CropModal src={crop.src} title={crop.label} square={crop.field === "seal"} onDone={afterCrop} onCancel={() => setCrop(null)} />}
       <Panelhead text="Headmaster signature & school seal" count={cfg.hmSign || cfg.seal ? [cfg.hmSign && "signature", cfg.seal && "seal"].filter(Boolean).join(" + ") : "not set"} tone={cfg.hmSign || cfg.seal ? "free" : undefined} />
-      <div style={{ padding: mobile ? 12 : 14, display: "grid", gap: 14 }}>
-        <div className="tt-callout">Sign or stamp on plain white paper and take a photo from straight above in good light. The paper is removed and the edges trimmed automatically, so only the ink prints on the class and teacher timetables.</div>
-        <div style={{ display: "grid", gridTemplateColumns: mobile ? "minmax(0, 1fr)" : "repeat(2, minmax(0, 1fr))", gap: 12 }}>
-          <Drop field="hmSign" label="HM signature" hint="Signed on white paper" maxW={700} icon="✍" />
-          <Drop field="seal" label="School seal" hint="Stamped on white paper" maxW={520} icon="◉" />
-        </div>
-        <label style={{ ...chk, fontSize: 12.5, color: C.sub }}><input type="checkbox" checked={clean} onChange={(e) => setClean(e.target.checked)} /> Remove the white paper background when uploading (untick for a ready-made transparent PNG)</label>
-        {msg && <div style={{ fontSize: 12.5, fontWeight: 600, color: msg.ok ? C.free : C.clash }}>{msg.text}</div>}
-
-        <div style={{ display: "grid", gridTemplateColumns: mobile ? "minmax(0, 1fr)" : "repeat(2, minmax(0, 1fr))", gap: 14, padding: 12, borderRadius: 14, background: "#f8fafc", border: `1px solid ${C.line}` }}>
-          <label style={lab}>Title under the signature
-            <select className="tt-sel" style={{ fontFamily: sans, fontSize: 13, height: 36 }} value={customT ? "__custom" : hmTitle} onChange={(e) => { if (e.target.value === "__custom") setCustomT(true); else { setCustomT(false); update((n) => { n.hmTitle = e.target.value; }); } }}>
-              {HM_TITLES.map((x) => <option key={x}>{x}</option>)}
-              <option value="__custom">Custom title…</option>
-            </select>
-          </label>
-          {customT ? (
-            <label style={lab}>Your title
-              <input className="tt-in" autoFocus value={cfg.hmTitle && !HM_TITLES.includes(cfg.hmTitle) ? cfg.hmTitle : ""} onChange={(e) => update((n) => { if (e.target.value.trim()) n.hmTitle = e.target.value; else delete n.hmTitle; })} style={{ fontFamily: sans, fontSize: 13, height: 36 }} />
+      <div style={{ padding: mobile ? 12 : 14, display: "grid", gridTemplateColumns: mobile ? "minmax(0,1fr)" : "minmax(0, 0.9fr) minmax(0, 1.1fr)", gap: 16, alignItems: "start" }}>
+        <div style={{ display: "grid", gap: 12, minWidth: 0 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
+            <Drop field="hmSign" label="Signature" hint="On white paper" maxW={700} icon="✍" />
+            <Drop field="seal" label="Seal" hint="On white paper" maxW={520} icon="◉" />
+          </div>
+          <label style={{ ...chk, fontSize: 12, color: C.sub }}><input type="checkbox" checked={clean} onChange={(e) => setClean(e.target.checked)} /> Remove the white paper when uploading</label>
+          {msg && <div style={{ fontSize: 12.5, fontWeight: 600, color: msg.ok ? C.free : C.clash }}>{msg.text}</div>}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
+            <label style={lab}>Title under the signature
+              <select className="tt-sel" style={{ fontFamily: sans, fontSize: 13, height: 34 }} value={customT ? "__custom" : hmTitle} onChange={(e) => { if (e.target.value === "__custom") setCustomT(true); else { setCustomT(false); update((n) => { n.hmTitle = e.target.value; }); } }}>
+                {HM_TITLES.map((x) => <option key={x}>{x}</option>)}
+                <option value="__custom">Custom title…</option>
+              </select>
             </label>
-          ) : (
-            <label style={lab}>Name (optional)
-              <input className="tt-in" value={cfg.hmName || ""} style={{ fontFamily: sans, fontSize: 13, height: 36 }} onChange={(e) => update((n) => { if (e.target.value) n.hmName = e.target.value; else delete n.hmName; })} />
-            </label>
-          )}
-          {customT && (
-            <label style={lab}>Name (optional)
-              <input className="tt-in" value={cfg.hmName || ""} style={{ fontFamily: sans, fontSize: 13, height: 36 }} onChange={(e) => update((n) => { if (e.target.value) n.hmName = e.target.value; else delete n.hmName; })} />
-            </label>
-          )}
-          <div style={lab}>Signature size {seg(cfg.signSize || "M", [["S", "Small"], ["M", "Medium"], ["L", "Large"]], (v) => update((n) => { n.signSize = v; }))}</div>
-          <div style={lab}>Seal size {seg(cfg.sealSize || "M", [["S", "Small"], ["M", "Medium"], ["L", "Large"]], (v) => update((n) => { n.sealSize = v; }))}</div>
-          <div style={lab}>Seal position {seg(cfg.sealPos || "corner", [["corner", "Bottom left of page"], ["left", "Beside sign"], ["over", "On the sign"], ["right", "Right"]], (v) => update((n) => { n.sealPos = v; }))}</div>
-          <div style={{ display: "grid", gap: 8, alignContent: "start" }}>
-            <label style={chk}><input type="checkbox" checked={cfg.signOnClass !== false} onChange={(e) => update((n) => { n.signOnClass = e.target.checked; })} /> Print on class timetables</label>
-            <label style={chk}><input type="checkbox" checked={cfg.signOnTeacher !== false} onChange={(e) => update((n) => { n.signOnTeacher = e.target.checked; })} /> Print on teacher timetables</label>
+            <label style={lab}>Name (optional)<input className="tt-in" value={cfg.hmName || ""} style={{ fontFamily: sans, fontSize: 13, height: 34 }} onChange={(e) => update((n) => { if (e.target.value) n.hmName = e.target.value; else delete n.hmName; })} /></label>
+            {customT && <label style={{ ...lab, gridColumn: "1 / -1" }}>Your title<input className="tt-in" autoFocus value={cfg.hmTitle && !HM_TITLES.includes(cfg.hmTitle) ? cfg.hmTitle : ""} onChange={(e) => update((n) => { if (e.target.value.trim()) n.hmTitle = e.target.value; else delete n.hmTitle; })} style={{ fontFamily: sans, fontSize: 13, height: 34 }} /></label>}
+          </div>
+          <details open style={{ border: `1px solid ${C.line}`, borderRadius: 12, padding: "8px 12px", background: "#fafbfc" }}>
+            <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 800, color: th.g2 }}>✍ Signature — size & position</summary>
+            <div style={{ display: "grid", gap: 10, marginTop: 10 }}>{sizeRow("sign")}{posRow("sign")}</div>
+          </details>
+          <details open style={{ border: `1px solid ${C.line}`, borderRadius: 12, padding: "8px 12px", background: "#fafbfc" }}>
+            <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 800, color: th.g2 }}>◉ Seal — size & position</summary>
+            <div style={{ display: "grid", gap: 10, marginTop: 10 }}>{sizeRow("seal")}{posRow("seal")}</div>
+          </details>
+          <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+            <label style={chk}><input type="checkbox" checked={cfg.signOnClass !== false} onChange={(e) => update((n) => { n.signOnClass = e.target.checked; })} /> On class timetables</label>
+            <label style={chk}><input type="checkbox" checked={cfg.signOnTeacher !== false} onChange={(e) => update((n) => { n.signOnTeacher = e.target.checked; })} /> On teacher timetables</label>
           </div>
         </div>
-
-        <div>
-          <div style={{ fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 6 }}>Preview — bottom of a printed timetable (actual proportions)</div>
-          <div style={{ display: "flex", alignItems: "flex-end", justifyContent: mobile && g.pos === "corner" && cfg.seal ? "space-between" : "flex-end", gap: mobile ? 0 : 40, padding: mobile ? "18px 14px 12px" : "18px 26px 14px", border: `1px solid ${C.line}`, borderRadius: 12, background: "#fff", overflow: "hidden", boxShadow: "inset 0 -3px 0 #0e6b7322" }}>
-            {g.pos === "corner" && cfg.seal && <img src={cfg.seal} alt="" style={{ width: g.sd * px * (mobile ? 0.8 : 1), height: g.sd * px * (mobile ? 0.8 : 1), objectFit: "contain", opacity: 0.92, mixBlendMode: "multiply", flexShrink: 0, marginRight: mobile ? 10 : 0 }} />}
-            {!mobile && <div style={{ marginRight: "auto", fontSize: 11, color: C.sub, lineHeight: 1.5 }}>{cfg.school} · Class 5 A<br />Generated today</div>}
-            {!mobile && <div style={{ width: 52 * px, textAlign: "center", flexShrink: 0 }}><div style={{ height: g.boxH * px }} /><div style={{ borderTop: `1.5px solid ${C.ink}`, paddingTop: 3, fontSize: 12, fontWeight: 700 }}>Class Teacher</div></div>}
-            <div style={{ width: 52 * px, maxWidth: "100%", textAlign: "center", flexShrink: mobile ? 1 : 0, margin: mobile && g.pos !== "corner" ? "0 auto" : 0 }}>
-              <div style={{ height: g.boxH * px, position: "relative", display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
-                {cfg.seal && g.pos !== "corner" && <img src={cfg.seal} alt="" style={{ position: "absolute", width: g.sd * px, height: g.sd * px, objectFit: "contain", opacity: 0.9, mixBlendMode: "multiply",
-                  ...(g.pos === "over" ? { left: "50%", marginLeft: (-g.sd / 2) * px, bottom: -g.sd * 0.04 * px } : g.pos === "right" ? { right: -6 * px, bottom: -g.sd * 0.2 * px } : { left: mobile ? -8 * px : -15 * px, bottom: -g.sd * 0.2 * px }) }} />}
-                {cfg.hmSign ? <img src={cfg.hmSign} alt="" style={{ position: "relative", maxHeight: g.sh * px, maxWidth: 50 * px, objectFit: "contain", mixBlendMode: "multiply" }} />
-                  : !cfg.seal && <span style={{ fontSize: 11.5, color: C.sub, alignSelf: "center" }}>Upload a signature or seal to see it here</span>}
+        <div style={{ minWidth: 0, position: mobile ? "static" : "sticky", top: 90 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 6 }}>Preview — one A4 sheet (landscape) · drag the seal or signature to move it</div>
+          <div style={{ padding: 8, borderRadius: 12, background: "#e9edf2" }}>
+            <div ref={sheetRef} style={{ position: "relative", width: "100%", aspectRatio: `${W} / ${H}`, background: "#fff", boxShadow: "0 2px 10px rgba(0,0,0,.15)", overflow: "hidden", userSelect: "none" }}>
+              <div style={{ position: "absolute", left: 0, right: 0, top: 0, height: "11%", borderBottom: `2px solid ${th.g1}`, display: "flex", alignItems: "center", gap: "2%", padding: "0 2%" }}>
+                {cfg.logo && <img src={cfg.logo} alt="" style={{ height: "80%", objectFit: "contain" }} />}
+                <div style={{ fontSize: "clamp(7px, 1.6vw, 13px)", fontWeight: 800, color: th.g2, textTransform: "uppercase" }}>{cfg.school || "School"} <span style={{ color: C.accent, fontSize: "0.75em", letterSpacing: 1 }}>· Class 5 A</span></div>
               </div>
-              <div style={{ borderTop: `1.5px solid ${C.ink}`, paddingTop: 3, fontSize: 12, fontWeight: 700, position: "relative" }}>{hmTitle}{cfg.hmName && <div style={{ fontSize: 11, fontWeight: 600, color: C.sub }}>{cfg.hmName}</div>}</div>
+              <div style={{ position: "absolute", left: 0, right: 0, top: "14%", height: "58%", display: "grid", gridTemplateColumns: "1.3fr repeat(7, 1fr)", gridAutoRows: "1fr", gap: 1, background: "#cfdede", border: `1px solid ${th.g1}` }}>
+                {Array.from({ length: 48 }, (_, i) => <div key={i} style={{ background: i < 8 ? th.g1 : i % 8 === 0 ? "#e1f0f0" : "#fff" }} />)}
+              </div>
+              <div style={{ position: "absolute", left: "1%", bottom: "2%", fontSize: "clamp(5px, 0.9vw, 9px)", color: C.sub, lineHeight: 1.3 }}>{cfg.school}<br />Generated today</div>
+              <div style={{ position: "absolute", right: `${(8 + g.boxW + 16) / W * 100}%`, bottom: "2%", width: pct(52, W), textAlign: "center" }}><div style={{ height: pct(g.boxH, H) }} /><div style={{ borderTop: "1px solid #16213a", fontSize: "clamp(5px, 0.9vw, 9px)", fontWeight: 700, paddingTop: 1 }}>Class Teacher</div></div>
+              <div style={{ position: "absolute", right: 0, bottom: "2%", width: pct(g.boxW, W), textAlign: "center" }}>
+                <div style={{ position: "relative", height: 0, paddingBottom: `${(g.boxH / g.boxW) * 100}%` }}>
+                  <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
+                    {cfg.seal && !g.xy && <img src={cfg.seal} alt="" style={{ position: "absolute", width: `${(g.ew / g.boxW) * 100}%`, height: `${(g.eh / g.boxH) * 100}%`, objectFit: "contain", opacity: 0.9, mixBlendMode: "multiply", ...(g.pos === "over" ? { left: "50%", transform: "translateX(-50%)", bottom: 0 } : g.pos === "right" ? { right: `${(-6 / g.boxW) * 100}%`, bottom: `${(-g.eh * 0.2 / g.boxH) * 100}%` } : { left: `${(-15 / g.boxW) * 100}%`, bottom: `${(-g.eh * 0.2 / g.boxH) * 100}%` }) }} />}
+                    {cfg.hmSign && !g.sxy && <img src={cfg.hmSign} alt="" style={{ position: "relative", maxWidth: `${(g.sw / g.boxW) * 100}%`, maxHeight: "100%", objectFit: "contain", mixBlendMode: "multiply" }} />}
+                  </div>
+                </div>
+                <div style={{ borderTop: "1px solid #16213a", fontSize: "clamp(5px, 0.9vw, 9px)", fontWeight: 700, paddingTop: 1 }}>{hmTitle}</div>
+              </div>
+              {cfg.seal && sealXY && stampImg("seal", cfg.seal, g.ew, g.eh, sealXY)}
+              {cfg.hmSign && signXY && stampImg("sign", cfg.hmSign, g.sw, g.sh, signXY)}
+              {!cfg.seal && !cfg.hmSign && box("Upload a signature or seal to see it here")}
             </div>
           </div>
+          <div style={{ fontSize: 11.5, color: C.sub, marginTop: 6 }}>Signature {g.sw.toFixed(1)} × {g.sh.toFixed(1)} mm · Seal {g.ew.toFixed(1)} × {g.eh.toFixed(1)} mm{g.xy ? ` · seal at ${g.xy[0]}% across, ${g.xy[1]}% down` : ""}{g.sxy ? ` · signature at ${g.sxy[0]}% across, ${g.sxy[1]}% down` : ""}. A seal or signature placed on the sheet prints in the same place on every page.</div>
         </div>
       </div>
     </div>
@@ -1580,7 +1653,9 @@ function NavDrawer({ open, onClose, view, setView, TH, school, logo, status = {}
           <button className="tt-btn" onClick={onClose} aria-label="Close" style={{ border: "none", background: "transparent", color: "#fff", fontSize: 24, cursor: "pointer", lineHeight: 1 }}>×</button>
         </div>
         <div style={{ overflowY: "auto", padding: "8px 0", flex: 1 }}>
-          {TABS.filter(([k]) => !only || only.includes(k)).map(([k, label]) => {
+          {SECTIONS.flatMap(([sk, sl, vs]) => { const v2 = vs.filter((k) => !only || only.includes(k)); if (!v2.length) return []; return [vs.length > 1 ? <div key={"h" + sk} style={{ margin: "10px 20px 2px", fontSize: 10.5, fontWeight: 800, color: C.sub, textTransform: "uppercase", letterSpacing: 0.6 }}>{sl}</div> : null, ...v2.map((k) => [k, TAB_LABEL[k]])]; }).map((it) => {
+            if (!Array.isArray(it)) return it;
+            const [k, label] = it;
             const on = view === k, st = status[k] || {}, tn = tabTone(st.tone, TH);
             return (
               <div key={k} onClick={() => { setView(k); onClose(); }} style={{ margin: "3px 10px", padding: "8px 10px", borderRadius: 12, display: "flex", alignItems: "center", gap: 11, cursor: "pointer", border: `2px solid ${on ? TH.accent : "transparent"}`, background: on ? `${TH.accent}10` : "transparent" }}>
@@ -3941,7 +4016,124 @@ function ExportView({ cfg, update, ask, pubState, publishNow, mobile }) {
   );
   return (
     <div>
-      <ViewHeader title="Import / Export" note="Import a timetable from another source and check it for clashes, or save timetables and reports as PDF (pick a paper size, default A4)." right={
+      <ViewHeader title="Data & backup" note="Import a timetable or a backup, download a backup, teacher links, safety copies and the history of every change." />
+      <div style={{ display: "grid", gap: 16 }}>
+        <ImportPanel cfg={cfg} update={update} ask={ask} />
+        <Card icon="setup" title="Data backup" desc={`Download everything — classes, teachers, mapping, rules, timetable, substitution record, calendar and settings — as one file. Keep it on your phone or computer as a backup. ${cfg.lastBackupDl ? `Last downloaded ${new Date(cfg.lastBackupDl).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}.` : "Not downloaded yet."}`}
+          actions={<PrintBtn onClick={() => { downloadBackup(cfg); update((n) => { n.lastBackupDl = Date.now(); }); }} icon="download" light label={<>Download data backup (.json)</>} />} />
+        <TeacherLinksPanel cfg={cfg} update={update} ask={ask} pubState={pubState} publishNow={publishNow} mobile={mobile} />
+        <ExcelCard cfg={cfg} />
+        <SafetyPanel cfg={cfg} update={update} ask={ask} />
+        <ChangeLogPanel cfg={cfg} />
+      </div>
+    </div>
+  );
+}
+/* ---------------- Dashboard ---------------- */
+function DashboardView({ cfg, update, setView, acc, mobile }) {
+  const th = CUR_TH || THEMES.teal;
+  const today = isoToday(), d = dayOf(cfg, today), g = cfgOn(cfg, today), cal = calEntry(cfg, today);
+  const can = (v) => !acc || !acc.tabs || acc.tabs.includes(v);
+  const needs = useMemo(() => subsNeeds(cfg, today), [cfg, today]);
+  const rec = (cfg.subs || {})[today] || {}, assign = rec.assign || {}, abs = absentMap(cfg, today);
+  const covered = needs.filter((n) => assign[n.key]).length;
+  const onLeave = leavesOn(cfg, today);
+  const clashes = useMemo(() => computeClashList(cfg).length, [cfg.grid, cfg.combined, cfg.classes, cfg.days]);
+  let f = 0, tot = 0; for (const c of cfg.classes) { const lim = classPeriods(cfg, c); for (const dd of cfg.days) for (let p = 0; p < lim; p++) { tot++; if (cfg.grid?.[c]?.[dd]?.[p]?.[0]) f++; } }
+  const filled = tot ? Math.floor((f * 100) / tot) : 0;
+  const cm = {}; (cfg.combined || []).forEach((x) => (cm[x.name] = x));
+  const needBy = {}; needs.forEach((n) => (needBy[n.key] = n));
+  const soon = [];
+  for (let i = 1; i <= 7; i++) { const dt = isoShift(today, i), e = calEntry(cfg, dt); if (e) soon.push([dt, dayLabel(cfg, dt), e.kind === "holiday"]); }
+  const lvSoon = (cfg.leaves || []).filter((l) => (l.from > today && l.from <= isoShift(today, 7)) || (l.to && l.to >= today && l.to <= isoShift(today, 3)));
+  const alerts = [];
+  if (d && needs.length > covered) alerts.push(["bad", `${needs.length - covered} period${needs.length - covered === 1 ? "" : "s"} today still need a substitute`, "subs", "Open Daily substitution"]);
+  if (clashes) alerts.push(["bad", `${clashes} timetable clash${clashes === 1 ? "" : "es"} — a teacher is in two places`, "analysis", "See the clashes"]);
+  if (tot && filled < 100) alerts.push(["warn", `The timetable is ${filled}% filled`, "edit", "Assign & generate"]);
+  if (Date.now() - (cfg.lastBackupDl || 0) > 7 * 864e5 && (!acc || acc.preset === "full" || acc.manage)) alerts.push(["warn", (cfg.lastBackupDl ? `Weekly backup — last downloaded ${Math.floor((Date.now() - cfg.lastBackupDl) / 864e5)} days ago` : "Weekly backup — no backup downloaded yet") + ". Keep a copy on this device.", "__backup", "Download backup"]);
+  for (const l of lvSoon) alerts.push(["info", l.from > today ? `${l.t} goes on leave from ${isoNice(l.from)}${l.reason ? ` (${l.reason})` : ""}` : `${l.t} is back after ${isoNice(l.to)}`, "leave", "Teacher leave"]);
+  for (const [dt, txt, hol] of soon) alerts.push([hol ? "info" : "info", `${isoNice(dt)}: ${txt}`, "subs", "Daily substitution"]);
+  const tone = { bad: [C.clash, C.clashSoft, "!"], warn: [C.warn, C.warnSoft, "!"], info: [th.accent, `${th.accent}10`, "i"] };
+  const Tile = ({ label, value, sub, tn, onClick }) => (
+    <button className="tt-btn" onClick={onClick} disabled={!onClick} style={{ textAlign: "left", border: `1px solid ${C.line}`, borderRadius: 14, padding: "12px 14px", background: "#fff", cursor: onClick ? "pointer" : "default", boxShadow: "0 1px 2px rgba(22,33,58,.05)", minWidth: 0 }}>
+      <div style={{ fontSize: 11, fontWeight: 800, color: C.sub, textTransform: "uppercase", letterSpacing: 0.5 }}>{label}</div>
+      <div style={{ fontSize: 26, fontWeight: 800, color: tn || C.ink, lineHeight: 1.15, margin: "4px 0 2px" }}>{value}</div>
+      <div style={{ fontSize: 12, color: C.sub }}>{sub}</div>
+    </button>
+  );
+  const absList = Object.keys(abs).filter((t) => cfg.singles.includes(t));
+  const cell = (c, p) => {
+    const sl = ((g.grid[c] || {})[d] || [])[p]; const code = sl && sl[0]; if (!code) return <span style={{ color: "#c3cad6" }}>·</span>;
+    const s = cm[code] || cm[baseName(code)], ts = s ? s.teachers : String(code).split(" ");
+    const away = ts.filter((t) => needBy[`${t}|${p}`]);
+    return (
+      <div style={{ lineHeight: 1.25 }}>
+        <div style={{ fontWeight: 800, color: SUBJECT_BAR[sl[1]] || C.ink, fontSize: 11.5 }}>{sl[1]}</div>
+        {away.length ? away.map((t) => { const u = assign[`${t}|${p}`]; return <div key={t} style={{ fontFamily: mono, fontSize: 10.5, fontWeight: 800, color: u ? "#94620b" : C.clash }}>{u ? `${u} ↺` : `${t} ✕`}</div>; })
+          : <div style={{ fontFamily: mono, fontSize: 10.5, color: C.sub, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 96 }}>{s ? s.name : code}</div>}
+      </div>);
+  };
+  return (
+    <div>
+      <ViewHeader title="Dashboard" icon="home" note={`${isoNice(today, true)} · ${d ? dayLabel(cfg, today) : cal ? dayLabel(cfg, today) : "No school today"}`} right={<span style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        {can("subs") && <PrintBtn onClick={() => setView("subs")} icon="print" label="Mark absences" sub="Daily substitution" />}
+        {can("subs") && d && needs.length > 0 && <PrintBtn light onClick={() => exportSubSlipPDF(cfg, today)} icon="pdf" label="Today's slip" sub="A4 · with signature" />}
+      </span>} />
+      <div style={{ display: "grid", gridTemplateColumns: mobile ? "repeat(2, minmax(0,1fr))" : "repeat(5, minmax(0,1fr))", gap: 10, marginBottom: 16 }}>
+        <Tile label="Absent today" value={absList.length} sub={absList.length ? absList.slice(0, 5).join(", ") + (absList.length > 5 ? " …" : "") : "everyone is in"} tn={absList.length ? C.warn : C.free} onClick={can("subs") ? () => setView("subs") : null} />
+        <Tile label="Substitutions" value={d ? `${covered}/${needs.length}` : "—"} sub={!d ? "no school today" : needs.length ? (covered === needs.length ? "all covered" : `${needs.length - covered} not covered`) : "nothing to cover"} tn={d && needs.length > covered ? C.clash : C.free} onClick={can("subs") ? () => setView("subs") : null} />
+        <Tile label="On leave" value={onLeave.length} sub={onLeave.length ? onLeave.map((l) => l.t).slice(0, 5).join(", ") : "nobody"} tn={onLeave.length ? C.accent : C.ink} onClick={can("leave") ? () => setView("leave") : null} />
+        <Tile label="Clashes" value={clashes} sub={clashes ? "need fixing" : "timetable is clean"} tn={clashes ? C.clash : C.free} onClick={can("analysis") ? () => setView("analysis") : null} />
+        <Tile label="Timetable" value={`${filled}%`} sub={`${cfg.classes.length} classes · ${cfg.singles.length} teachers`} tn={filled === 100 ? C.free : C.warn} onClick={can("classes") ? () => setView("classes") : null} />
+      </div>
+      <div style={{ ...card, marginBottom: 16 }}>
+        <Panelhead text="Important today" count={alerts.length ? `${alerts.length}` : "all good"} tone={alerts.length ? undefined : "free"} />
+        <div style={{ padding: 12, display: "grid", gap: 8 }}>
+          {alerts.length === 0 ? <div style={{ fontSize: 13, color: C.free, fontWeight: 600 }}>✓ Nothing needs attention.</div> : alerts.map(([k, txt, v, btn], i) => { const [fg, bg, ic] = tone[k]; return (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "8px 12px", borderRadius: 11, background: bg, border: `1px solid ${fg}33` }}>
+              <span style={{ width: 22, height: 22, borderRadius: 22, display: "grid", placeItems: "center", background: fg, color: "#fff", fontWeight: 800, fontSize: 12, flexShrink: 0 }}>{ic}</span>
+              <span style={{ flex: "1 1 220px", fontSize: 13, fontWeight: 600, color: C.ink }}>{txt}</span>
+              {v === "__backup" ? <button className="tt-btn" onClick={() => { downloadBackup(cfg); update((n) => { n.lastBackupDl = Date.now(); }); }} style={{ ...solidBtn, padding: "5px 12px", fontSize: 12 }}>⬇ {btn}</button> : can(v) && <button className="tt-btn" onClick={() => setView(v)} style={{ ...ghostBtn, padding: "4px 11px", fontSize: 12 }}>{btn} →</button>}
+            </div>); })}
+        </div>
+      </div>
+      <div style={card}>
+        <Panelhead text={d ? `Today's timetable — ${dayLabel(cfg, today)}` : "Today's timetable"} count={d ? (needs.length ? "↺ substitute · ✕ not covered" : `${g.periods.length} periods`) : "no school"} />
+        {!d ? <div style={{ padding: 18, fontSize: 13.5, color: C.sub, textAlign: "center" }}>{cal ? `🌿 ${dayLabel(cfg, today)} — no classes today.` : "🌿 No classes today."}</div> : (
+          <div className="tt-scroll" style={{ overflow: "auto", maxHeight: mobile ? 460 : 560 }}>
+            <table style={{ borderCollapse: "separate", borderSpacing: 0, width: "100%", minWidth: 120 + g.periods.length * 92 }}>
+              <thead><tr><th style={{ ...th0, position: "sticky", top: 0, left: 0, zIndex: 3, textAlign: "left", width: 64 }}>Class</th>{g.periods.map((pn, p) => <th key={p} style={{ ...th0, position: "sticky", top: 0, zIndex: 2 }}>P{pn}{p === fnCount(cfg) - 1 ? <span style={{ color: C.accent }}> |</span> : null}</th>)}</tr></thead>
+              <tbody>{cfg.classes.map((c) => (
+                <tr key={c}>
+                  <td style={{ position: "sticky", left: 0, background: "#fff", zIndex: 1, fontFamily: mono, fontWeight: 800, fontSize: 12.5, padding: "5px 8px", borderBottom: `1px solid ${C.line}` }}>{c}{cfg.classTeacher[c] ? <div style={{ fontSize: 9.5, color: C.sub, fontWeight: 600 }}>CT {cfg.classTeacher[c]}</div> : null}</td>
+                  {g.periods.map((_, p) => { const sl = ((g.grid[c] || {})[d] || [])[p]; const ts = sl && sl[0] ? (cm[sl[0]] || cm[baseName(sl[0])] ? (cm[sl[0]] || cm[baseName(sl[0])]).teachers : String(sl[0]).split(" ")) : []; const miss = ts.some((t) => needBy[`${t}|${p}`] && !assign[`${t}|${p}`]), sub = ts.some((t) => needBy[`${t}|${p}`] && assign[`${t}|${p}`]); return (
+                    <td key={p} style={{ padding: "4px 6px", borderBottom: `1px solid ${C.line}`, borderLeft: `1px solid ${C.line}`, background: miss ? C.clashSoft : sub ? "#fff6dc" : "#fff", verticalAlign: "top" }}>{cell(c, p)}</td>); })}
+                </tr>))}</tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+function ReportsView({ cfg, update, ask, mobile }) {
+  const [paper, setPaper] = useState("A4");
+  const [ov, setOv] = useState({ paper: "A3", orient: "landscape", cper: 40, tper: 24 });
+  const th = CUR_TH || THEMES.teal;
+  const Card = ({ title, desc, actions, icon }) => (
+    <div style={{ ...card, padding: 18, position: "relative" }}>
+      <span aria-hidden="true" style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 4, background: `linear-gradient(180deg, ${th.g1}, ${th.g2})` }} />
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
+        <span style={{ width: 40, height: 40, borderRadius: 12, display: "grid", placeItems: "center", background: `${th.accent}14`, color: th.accent, flexShrink: 0 }}><Icon name={icon || "export"} size={19} /></span>
+        <div style={{ fontSize: 15.5, fontWeight: 800, color: C.ink }}>{title}</div>
+      </div>
+      <div style={{ fontSize: 12.5, color: C.sub, marginBottom: 14, lineHeight: 1.6 }}>{desc}</div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>{actions}</div>
+    </div>
+  );
+  return (
+    <div>
+      <ViewHeader title="Reports & PDF" note="Print or save class and teacher timetables, leisure-period charts, substitution reports and the Excel file. Pick the paper size here (default A4)." right={
         <label style={{ fontSize: 12.5, color: C.sub, display: "inline-flex", alignItems: "center", gap: 6 }}>Paper
           <select className="tt-sel" style={{ width: 110 }} value={paper} onChange={(e) => setPaper(e.target.value)}>
             <option>A4</option><option>A3</option><option>Letter</option><option>Legal</option>
@@ -3949,7 +4141,6 @@ function ExportView({ cfg, update, ask, pubState, publishNow, mobile }) {
         </label>
       } />
       <div style={{ display: "grid", gap: 16 }}>
-        <ImportPanel cfg={cfg} update={update} ask={ask} />
         <Card icon="classes" title="Class timetables" desc="One page per class (landscape) - periods across the top, weekdays down the side, subject + teacher in each cell."
           actions={<PrintBtn onClick={() => exportClassesPDF(cfg, paper)} icon="pdf" label={<>Export all class timetables ({paper})</>} />} />
         <Card icon="teachers" title="Teacher timetables" desc="One page per teacher (landscape) - the class and subject they take each period."
@@ -3969,15 +4160,54 @@ function ExportView({ cfg, update, ask, pubState, publishNow, mobile }) {
               <PrintBtn onClick={() => exportTeachersOverviewPDF(cfg, { per: +ov.tper || 24, paper: ov.paper, orient: ov.orient })} icon="pdf" label={<>All teachers ({ov.paper}, {ov.tper}/sheet)</>} />
             </div>
           </div>} />
-        <Card icon="setup" title="Data backup" desc={`Download everything — classes, teachers, mapping, rules, timetable, substitution record, calendar and settings — as one file. Keep it on your phone or computer as a backup. ${cfg.lastBackupDl ? `Last downloaded ${new Date(cfg.lastBackupDl).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}.` : "Not downloaded yet."}`}
-          actions={<PrintBtn onClick={() => { downloadBackup(cfg); update((n) => { n.lastBackupDl = Date.now(); }); }} icon="download" light label={<>Download data backup (.json)</>} />} />
-        <TeacherLinksPanel cfg={cfg} update={update} ask={ask} pubState={pubState} publishNow={publishNow} mobile={mobile} />
-        <ExcelCard cfg={cfg} />
-        <SafetyPanel cfg={cfg} update={update} ask={ask} />
-        <ChangeLogPanel cfg={cfg} />
         <Card icon="free" title="Leisure / free periods" desc="Four ways to print who is free. The substitution chart is the quickest to use on a notice board: find the day and period, and every free teacher is listed in that box."
           actions={<LeisureExport cfg={cfg} paper={paper} />} />
+        <ExcelCard cfg={cfg} />
+        <SubsReportPanel cfg={cfg} date={isoToday()} mobile={mobile} />
+        {(cfg.extraDuties || []).length > 0 && <Card icon="teachers" title="Extra duties" desc="Every teacher's periods outside this timetable — lower-section classes, LSS / USS coaching and non-teaching duties — with the periods they still have free." actions={<PrintBtn onClick={() => exportExtraDutiesPDF(cfg)} icon="pdf" label="Extra-duty report" sub="A4 · every teacher" />} />}
       </div>
+    </div>
+  );
+}
+function SettingsView({ cfg, update, ask, askPw, me, acc, mobile, theme, setTheme }) {
+  const th = CUR_TH || THEMES.teal;
+  const [pwCur, setPwCur] = useState(""); const [pwNew, setPwNew] = useState(""); const [pwNew2, setPwNew2] = useState(""); const [pwMsg, setPwMsg] = useState(null);
+  const changePw = async (remove) => {
+    setPwMsg(null);
+    if (cfg.adminPw) { const h = await hashPw(pwCur); if (h !== cfg.adminPw) { setPwMsg({ ok: false, text: "The current password is wrong." }); return; } }
+    if (remove) { update((n) => { delete n.adminPw; }); setPwCur(""); setPwMsg({ ok: true, text: "Password removed. Reset and Clear all no longer ask for it — they will ask you to set one." }); return; }
+    if (pwNew.length < 4) { setPwMsg({ ok: false, text: "Use at least 4 characters." }); return; }
+    if (pwNew !== pwNew2) { setPwMsg({ ok: false, text: "The two new passwords don't match." }); return; }
+    const h = await hashPw(pwNew); update((n) => { n.adminPw = h; });
+    setPwCur(""); setPwNew(""); setPwNew2(""); setPwMsg({ ok: true, text: "Password saved." });
+  };
+  const can = (k) => !acc || !acc.setup || acc.setup.includes(k);
+  return (
+    <div>
+      <ViewHeader title="Settings" note="Who can see what, the admin password, the look of the app and the academic year. Backups, imports and teacher links are under Data & backup." />
+      <div style={{ ...card, marginBottom: 16 }}>
+        <Panelhead text="Look of the app" count={`version ${APP_VERSION}`} />
+        <div style={{ padding: 14, display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: C.sub }}>Colour theme</span>
+          {Object.entries(THEMES).map(([key, t]) => <button key={key} className="tt-btn" onClick={() => setTheme(key)} title={t.name} style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "5px 11px 5px 6px", borderRadius: 20, border: `2px solid ${theme === key ? t.accent : C.line}`, background: theme === key ? `${t.accent}12` : "#fff", fontSize: 12.5, fontWeight: 700, color: C.ink }}><span style={{ width: 20, height: 20, borderRadius: 20, background: `linear-gradient(135deg, ${t.g1}, ${t.g2})` }} />{t.name}</button>)}
+        </div>
+      </div>
+      {can("year") && <YearCard cfg={cfg} update={update} askPw={askPw} />}
+      {(!acc || acc.manage) && <StaffAccessCard cfg={cfg} update={update} me={me} />}
+      {can("password") && <div style={{ ...card, marginBottom: 16 }}>
+        <Panelhead text="Admin password" count={cfg.adminPw ? "set" : "not set"} tone={cfg.adminPw ? "free" : undefined} />
+        <div style={{ padding: 14, display: "grid", gap: 10 }}>
+          <div style={{ fontSize: 12.5, color: C.sub, lineHeight: 1.6 }}>Needed for <b>Reset</b>, <b>Master reset</b>, <b>Clear all</b> (Assign timetable) and <b>Clear all mapping</b>. Everyone who signs in uses the same password.</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            {cfg.adminPw && <input className="tt-in" type="password" placeholder="Current password" value={pwCur} onChange={(e) => setPwCur(e.target.value)} style={{ width: 170 }} />}
+            <input className="tt-in" type="password" placeholder="New password" value={pwNew} onChange={(e) => setPwNew(e.target.value)} style={{ width: 170 }} />
+            <input className="tt-in" type="password" placeholder="Repeat new password" value={pwNew2} onChange={(e) => setPwNew2(e.target.value)} style={{ width: 170 }} />
+            <button className="tt-btn" onClick={() => changePw(false)} style={solidBtn}>{cfg.adminPw ? "Change password" : "Set password"}</button>
+            {cfg.adminPw && <button className="tt-btn" onClick={() => changePw(true)} style={{ ...ghostBtn, color: C.clash }}>Remove password</button>}
+          </div>
+          {pwMsg && <div style={{ fontSize: 12.5, color: pwMsg.ok ? C.free : C.clash, fontWeight: 600 }}>{pwMsg.text}</div>}
+        </div>
+      </div>}
     </div>
   );
 }
@@ -4593,9 +4823,9 @@ function buildTeacherPages(cfg) {
   const by = {};
   const ent = (t, dt) => ((by[t] || (by[t] = {}))[dt] || (by[t][dt] = { cover: [], coveredBy: [] }));
   for (const dt of dates) {
-    const rec = (cfg.subs || {})[dt]; if (!rec) continue;
+    const rec = (cfg.subs || {})[dt] || {}, am = absentMap(cfg, dt); if (!Object.keys(am).length && !rec.assign) continue;
     const a = rec.assign || {};
-    for (const t of Object.keys(rec.absent || {})) ent(t, dt).absent = rec.absent[t];
+    for (const t of Object.keys(am)) ent(t, dt).absent = am[t];
     for (const n of subsNeeds(cfg, dt)) { const u = a[n.key], w = n.work ? { w: n.work } : {}; ent(n.t, dt).coveredBy.push({ p: n.p, cls: n.cls, sub: n.sub, by: u || null, ...w }); if (u) ent(u, dt).cover.push({ p: n.p, cls: n.cls, sub: n.sub, for: n.t, ...w }); }
   }
   const rows = [{ token: "_school", data: { school: cfg.school || "", year: cfg.year || "", logo: cfg.logoIcon || cfg.logo || "", days: cfg.days, periods: cfg.periods, dayNames: Object.fromEntries(cfg.days.map((d) => [d, DAY_FULL[d] || d])), fn: fnCount(cfg) } }];
@@ -4930,8 +5160,8 @@ var ABS_REASONS = ["Leave", "On duty", "Training", "Exam duty", "Other"];
 /* ---------------- Staff access (per login) ---------------- */
 var ACCESS_PRESETS = {
   full: { label: "Full access", tabs: null, reset: true, manage: true },
-  editor: { label: "Timetable editor", tabs: ["classes", "teachers", "free", "subs", "bkey", "edit", "rules", "combined", "analysis", "export", "assistant"], reset: false, manage: false },
-  view: { label: "View & print only", tabs: ["classes", "teachers", "free", "analysis"], reset: false, manage: false },
+  editor: { label: "Timetable editor", tabs: ["home", "classes", "teachers", "free", "subs", "bkey", "edit", "rules", "combined", "analysis", "reports", "export", "assistant"], reset: false, manage: false },
+  view: { label: "View & print only", tabs: ["home", "classes", "teachers", "free", "analysis", "reports"], reset: false, manage: false },
   subs: { label: "Daily substitution only", tabs: ["subs"], reset: false, manage: false },
   none: { label: "No access", tabs: [], reset: false, manage: false },
 };
@@ -4947,7 +5177,8 @@ function accessFor(cfg, me) {
   if (me === "") { const d = cfg.accessDefault || "full"; return { ...(ACCESS_PRESETS[d] || ACCESS_PRESETS.full), preset: d, who: "", listed: false }; }
   const k = normUser(me); let e = accessEntry(cfg, k); const listed = !!e;
   if (!e) e = { preset: cfg.accessDefault || "full" };
-  const p = e.preset === "custom" ? { label: "Custom access", tabs: (e.tabs || []).filter((t) => TABS.some((x) => x[0] === t)), reset: !!e.reset, manage: !!e.manage, setup: Array.isArray(e.setup) ? e.setup.filter((k) => SETUP_PARTS.some((x) => x[0] === k)) : null } : (ACCESS_PRESETS[e.preset] || ACCESS_PRESETS.full);
+  const tabsV2 = (e.tabs || []).concat(e.v2 ? [] : [(e.tabs || []).length > 1 ? "home" : null, (e.tabs || []).includes("export") ? "reports" : null, (e.tabs || []).includes("setup") ? "settings" : null, (e.tabs || []).includes("subs") && (e.tabs || []).includes("setup") ? "leave" : null]).filter(Boolean);
+  const p = e.preset === "custom" ? { label: "Custom access", tabs: [...new Set(tabsV2)].filter((t) => TABS.some((x) => x[0] === t)), reset: !!e.reset, manage: !!e.manage, setup: Array.isArray(e.setup) ? e.setup.filter((k) => SETUP_PARTS.some((x) => x[0] === k)) : null } : (ACCESS_PRESETS[e.preset] || ACCESS_PRESETS.full);
   return { ...p, preset: e.preset, who: k, listed };
 }
 function StaffAccessCard({ cfg, update, me }) {
@@ -4989,7 +5220,7 @@ function StaffAccessCard({ cfg, update, me }) {
               {!isMe && e.preset === "custom" && (
                 <div style={{ display: "grid", gap: 8 }}>
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    {TABS.map(([k, l]) => { const on = (e.tabs || []).includes(k); return <span key={k} role="checkbox" aria-checked={on} onClick={() => setUser(u, { ...e, tabs: on ? (e.tabs || []).filter((x) => x !== k) : [...(e.tabs || []), k] })} style={chk(on)}><Icon name={k} size={14} />{l}</span>; })}
+                    {TABS.map(([k, l]) => { const on = (a.tabs || []).includes(k); return <span key={k} role="checkbox" aria-checked={on} onClick={() => setUser(u, { ...e, v2: true, tabs: on ? (a.tabs || []).filter((x) => x !== k) : [...(a.tabs || []), k] })} style={chk(on)}><Icon name={k} size={14} />{l}</span>; })}
                   </div>
                   {(e.tabs || []).includes("setup") && (() => { const parts = Array.isArray(e.setup) ? e.setup : SETUP_PARTS.map((x) => x[0]); return (
                     <div style={{ display: "grid", gap: 6, padding: "8px 10px", borderRadius: 10, background: "#f8fafc", border: `1px dashed ${C.line}` }}>
@@ -5018,6 +5249,7 @@ function StaffAccessCard({ cfg, update, me }) {
 /* ---------------- Substitution exemptions ---------------- */
 // cfg.subsExempt[t] = { mode: "always" | "dates" | "reduce", from, to, count, maxWeek, note }
 function exemptInfo(cfg, t, date) {
+  const lv = leaveOf(cfg, date, t); if (lv && lv.exempt !== false) return { off: true, text: `${lv.absent !== false ? "on leave" : "exempt"}${lv.to ? " until " + isoNice(lv.to) : ""}` };
   const x = (cfg.subsExempt || {})[t]; if (!x) return null;
   if (x.mode === "always") return { off: true, text: "exempt" + (x.note ? ` — ${x.note}` : "") };
   if (x.mode === "dates") { const on = (!x.from || date >= x.from) && (!x.to || date <= x.to); return on ? { off: true, text: `exempt until ${x.to ? isoNice(x.to) : "further notice"}` + (x.note ? ` — ${x.note}` : "") } : null; }
@@ -5331,6 +5563,86 @@ function isoShift(iso, n) { const [y, m, d] = iso.split("-").map(Number); const 
 function isoDay(iso) { const [y, m, d] = iso.split("-").map(Number); return WD[new Date(y, m - 1, d).getDay()]; }
 function isoNice(iso, long) { const [y, m, d] = iso.split("-").map(Number); return new Date(y, m - 1, d).toLocaleDateString(undefined, long ? { weekday: "long", day: "numeric", month: "long", year: "numeric" } : { weekday: "short", day: "numeric", month: "short" }); }
 function partPeriods(cfg, part) { if (typeof part === "string" && part.startsWith("p:")) return part.slice(2).split(",").filter((x) => x !== "").map(Number).filter((x) => x >= 0 && x < cfg.periods.length); const h = fnCount(cfg._base || cfg); return cfg.periods.map((_, i) => i).filter((i) => part === "am" ? i < h : part === "pm" ? i >= h : true); }
+/* ---------------- Teacher leave (a week, months…) ---------------- */
+// cfg.leaves = [{ id, t, from, to, reason, absent (their classes need cover), exempt (no substitution duties) }]
+var LEAVE_REASONS = ["Medical leave", "Maternity leave", "Long leave", "Training", "On duty / deputation", "Other"];
+function leavesOn(cfg, date) { return (cfg.leaves || []).filter((l) => l && l.t && (!l.from || date >= l.from) && (!l.to || date <= l.to)); }
+function leaveOf(cfg, date, t) { return leavesOn(cfg, date).find((l) => l.t === t) || null; }
+// who is away on a date: marked absent that day, or on leave
+function absentMap(cfg, date) { const rec = ((cfg.subs || {})[date]) || {}, out = { ...(rec.absent || {}) }; for (const l of leavesOn(cfg, date)) if (l.absent !== false && !out[l.t]) out[l.t] = "full"; return out; }
+function reasonOf(cfg, date, t) { const r = ((((cfg.subs || {})[date]) || {}).reason || {})[t]; if (r) return r; const l = leaveOf(cfg, date, t); return l ? l.reason || "Leave" : "Leave"; }
+function LeaveView({ cfg, update, ask, mobile, limited }) {
+  const th = CUR_TH || THEMES.teal;
+  const today = isoToday();
+  const blank = () => ({ t: cfg.singles[0] || "", from: today, to: "", reason: LEAVE_REASONS[0], other: "", absent: true, exempt: true });
+  const [form, setForm] = useState(null);
+  const [past, setPast] = useState(false);
+  const [msg, setMsg] = useState("");
+  const L = (cfg.leaves || []).slice().sort((a, b) => (a.from || "") < (b.from || "") ? -1 : 1);
+  const cur = L.filter((l) => !l.to || l.to >= today), old = L.filter((l) => l.to && l.to < today);
+  const nDays = (l) => { if (!l.to) return null; let n = 0; for (let d = l.from || today, i = 0; d <= l.to && i < 400; d = isoShift(d, 1), i++) if (dayOf(cfg, d) && !isOffDay(cfg, l.t, dayOf(cfg, d))) n++; return n; };
+  const save = () => {
+    if (!form.t || !form.from) { setMsg("Choose the teacher and the first day of leave."); return; }
+    if (form.to && form.to < form.from) { setMsg("The last day is before the first day."); return; }
+    const reason = form.reason === "Other" ? (form.other.trim() || "Leave") : form.reason;
+    const clash = (cfg.leaves || []).find((l) => l.id !== form.id && l.t === form.t && (!l.to || l.to >= form.from) && (!form.to || form.to >= l.from));
+    if (clash) { setMsg(`${form.t} already has leave from ${isoNice(clash.from)}${clash.to ? " to " + isoNice(clash.to) : ""}. Edit that one instead.`); return; }
+    update((n) => { const x = { id: form.id || "lv" + Date.now(), t: form.t, from: form.from, ...(form.to ? { to: form.to } : {}), reason, absent: !!form.absent, exempt: form.absent ? true : !!form.exempt };
+      n.leaves = [...(n.leaves || []).filter((l) => l.id !== x.id), x];
+      for (const d of Object.keys(n.subs || {})) if (d >= x.from && (!x.to || d <= x.to)) tidySubs(n, d, d >= isoToday()); });
+    setMsg(`Saved — ${form.t} is ${form.absent ? "on leave" : "exempt from substitution"} ${form.to ? `from ${isoNice(form.from)} to ${isoNice(form.to)}` : `from ${isoNice(form.from)} until further notice`}. The timetable is not changed.`); setForm(null);
+  };
+  const remove = (l) => ask(`Cancel the leave of ${l.t} (${isoNice(l.from)}${l.to ? " – " + isoNice(l.to) : " onwards"})? ${l.t} will be in the normal substitution share again.`, () => update((n) => { n.leaves = (n.leaves || []).filter((x) => x.id !== l.id); for (const d of Object.keys(n.subs || {})) if (d >= l.from && (!l.to || d <= l.to)) tidySubs(n, d, false); }));
+  const endToday = (l) => update((n) => { n.leaves = (n.leaves || []).map((x) => (x.id === l.id ? { ...x, to: isoShift(today, -1) < x.from ? x.from : isoShift(today, -1) } : x)); });
+  const status = (l) => l.from > today ? [`starts ${isoNice(l.from)}`, "#2b5fa8", "#eef4ff"] : !l.to || l.to >= today ? ["on leave now", "#8a1f17", C.clashSoft] : ["ended", C.sub, "#f1f3f6"];
+  const lab = { display: "grid", gap: 4, fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.3 };
+  const row = (l) => { const [st, fg, bg] = status(l), n = nDays(l); return (
+    <div key={l.id} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "9px 12px", borderRadius: 12, border: `1px solid ${C.line}`, background: "#fff" }}>
+      <span style={{ width: 38, height: 38, borderRadius: 11, display: "grid", placeItems: "center", background: `linear-gradient(135deg, ${th.g1}, ${th.g2})`, color: "#fff", fontFamily: mono, fontWeight: 800, fontSize: 11 }}>{l.t.slice(0, 4)}</span>
+      <div style={{ minWidth: 0, flex: "1 1 220px" }}>
+        <div style={{ fontSize: 14, fontWeight: 800 }}>{l.t} <span style={{ fontWeight: 600, color: C.sub, fontSize: 12.5 }}>· {l.reason || "Leave"}</span></div>
+        <div style={{ fontSize: 12.5, color: C.sub }}>{isoNice(l.from)} {l.to ? `– ${isoNice(l.to)}` : "onwards — until further notice"}{n !== null ? ` · ${n} school day${n === 1 ? "" : "s"}` : ""} · {l.absent !== false ? "classes get substitutes, no duties" : "no substitution duties (still teaching)"}</div>
+      </div>
+      <span style={{ fontSize: 10.5, fontWeight: 800, padding: "2px 9px", borderRadius: 10, background: bg, color: fg, textTransform: "uppercase", letterSpacing: 0.3 }}>{st}</span>
+      {!limited && <span style={{ display: "flex", gap: 6 }}>
+        {(!l.to || l.to >= today) && l.from <= today && <button className="tt-btn" onClick={() => endToday(l)} title="Back from today" style={{ ...ghostBtn, padding: "4px 10px", fontSize: 12 }}>Back today</button>}
+        <button className="tt-btn" onClick={() => { setForm({ ...blank(), ...l, to: l.to || "", reason: LEAVE_REASONS.includes(l.reason) ? l.reason : "Other", other: LEAVE_REASONS.includes(l.reason) ? "" : l.reason || "", absent: l.absent !== false, exempt: l.exempt !== false }); setMsg(""); }} style={{ ...ghostBtn, padding: "4px 10px", fontSize: 12 }}>Edit</button>
+        <button className="tt-btn" onClick={() => remove(l)} style={{ ...ghostBtn, padding: "4px 10px", fontSize: 12, color: C.clash }}>Cancel leave</button>
+      </span>}
+    </div>); };
+  const onNow = leavesOn(cfg, today);
+  return (
+    <div>
+      <ViewHeader title="Teacher leave & exemptions" note="Long leave — a week or several months. The teacher is kept out of substitution duties for those dates and their classes get substitutes. Their timetable is never changed."
+        meta={[["On leave today", onNow.length, onNow.length ? "warn" : undefined], ["Upcoming", cur.filter((l) => l.from > today).length], ["Exemptions", Object.keys(cfg.subsExempt || {}).length]]} />
+      <div style={{ ...card, marginBottom: 16 }}>
+        <Panelhead text="Teacher leave" count={cur.length ? `${cur.length} current / upcoming` : "none"} />
+        <div style={{ padding: 12, display: "grid", gap: 10 }}>
+          {!form && !limited && <div><button className="tt-btn" onClick={() => { setForm(blank()); setMsg(""); }} style={solidBtn}>+ Add leave</button></div>}
+          {form && (
+            <div style={{ border: `1.5px solid ${th.accent}55`, borderRadius: 14, padding: 12, display: "grid", gap: 10, background: "#fbfdfd" }}>
+              <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "140px 160px 160px minmax(0,1fr)", gap: 10 }}>
+                <label style={lab}>Teacher<select className="tt-sel" value={form.t} onChange={(e) => setForm({ ...form, t: e.target.value })} style={{ height: 36 }}>{cfg.singles.map((t) => <option key={t}>{t}</option>)}</select></label>
+                <label style={lab}>Reason<select className="tt-sel" value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} style={{ height: 36, fontFamily: sans, fontSize: 13 }}>{LEAVE_REASONS.map((r) => <option key={r}>{r}</option>)}</select></label>
+                <label style={lab}>First day<input type="date" className="tt-in" value={form.from} onChange={(e) => setForm({ ...form, from: e.target.value })} style={{ height: 36, fontFamily: sans }} /></label>
+                <label style={lab}>Last day (blank = until further notice)<input type="date" className="tt-in" value={form.to} onChange={(e) => setForm({ ...form, to: e.target.value })} style={{ height: 36, fontFamily: sans }} /></label>
+              </div>
+              {form.reason === "Other" && <input className="tt-in" value={form.other} onChange={(e) => setForm({ ...form, other: e.target.value })} placeholder="Reason" style={{ maxWidth: 320, height: 34, fontFamily: sans, fontSize: 13 }} />}
+              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, fontWeight: 700, cursor: "pointer" }}><input type="checkbox" checked={form.absent} onChange={(e) => setForm({ ...form, absent: e.target.checked })} /> Away from school — their classes get substitutes every day</label>
+              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, fontWeight: 700, cursor: form.absent ? "default" : "pointer", opacity: form.absent ? 0.6 : 1 }}><input type="checkbox" disabled={form.absent} checked={form.absent || form.exempt} onChange={(e) => setForm({ ...form, exempt: e.target.checked })} /> Exempt from substitution duties for the whole period{form.absent ? " (always, while away)" : ""}</label>
+              <div style={{ display: "flex", gap: 8 }}><button className="tt-btn" onClick={save} style={solidBtn}>Save leave</button><button className="tt-btn" onClick={() => setForm(null)} style={ghostBtn}>Close</button></div>
+            </div>
+          )}
+          {msg && <div style={{ fontSize: 12.5, fontWeight: 600, color: msg.startsWith("Saved") ? C.free : C.clash }}>{msg}</div>}
+          {cur.length === 0 ? <div style={{ fontSize: 12.5, color: C.sub }}>No teacher is on leave now or later.</div> : <div style={{ display: "grid", gap: 8 }}>{cur.map(row)}</div>}
+          {old.length > 0 && <div><button className="tt-btn" onClick={() => setPast(!past)} style={{ ...ghostBtn, fontSize: 12 }}>{past ? "Hide" : "Show"} past leave ({old.length})</button></div>}
+          {past && <div style={{ display: "grid", gap: 8, opacity: 0.85 }}>{old.slice().reverse().map(row)}</div>}
+        </div>
+      </div>
+      <SubsExemptPanel cfg={cfg} update={update} ask={ask} date={today} limited={limited} />
+    </div>
+  );
+}
 /* ---------------- School calendar: holidays, days that follow another day's timetable, one-day special timetables ---------------- */
 // cfg.calendar[date] = { kind: "holiday" | "follow" | "special", label, day, n, grid: { [class]: [[code, sub], …] } }
 var CAL_KINDS = { holiday: "Holiday / no classes", follow: "Follows another day's timetable", special: "Special timetable (this day only)" };
@@ -5371,7 +5683,7 @@ function tidySubs(n, date, auto) {
   if (r) {
     r.assign = r.assign || {}; r.absent = r.absent || {};
     const keys = new Set(subsNeeds(n, date).map((x) => x.key)); for (const k of Object.keys(r.assign)) if (!keys.has(k) || !r.assign[k]) delete r.assign[k];
-    if (r.work) { for (const t of Object.keys(r.work)) if (!r.absent[t] || !r.work[t]) delete r.work[t]; if (!Object.keys(r.work).length) delete r.work; }
+    if (r.work) { const am = absentMap(n, date); for (const t of Object.keys(r.work)) if (!am[t] || !r.work[t]) delete r.work[t]; if (!Object.keys(r.work).length) delete r.work; }
     if (!Object.keys(r.absent).length && !Object.keys(r.assign).length && !r.note) delete n.subs[date];
   }
   const cut = isoShift(isoToday(), -400);
@@ -5387,24 +5699,26 @@ function classWeekCovers(cfg, date) {
 function DayStatus({ cfg, date, setCal, mobile }) {
   const th = CUR_TH || THEMES.teal;
   const e = calEntry(cfg, date), own = isoDay(date), ownWorks = cfg.days.includes(own);
-  const kind = e ? e.kind : "normal";
+  const val = !e ? "normal" : e.kind === "follow" ? "f:" + (e.day || "") : e.kind;
   const base = ownWorks ? own : cfg.days[0];
-  const choose = (k) => setCal(() => k === "normal" ? null : k === "holiday" ? { kind: "holiday", label: (e && e.label) || "" } : k === "follow" ? { kind: "follow", day: (e && e.day) || (ownWorks ? own : cfg.days[0]), label: (e && e.label) || "" } : makeSpecial(cfg, (e && e.day) || base, (e && e.label) || ""));
-  const segs = [["normal", ownWorks ? "Normal day" : "No school (off day)"], ["holiday", "Holiday / no classes"], ["follow", "Follows another day"], ["special", "Special timetable"]];
+  const choose = (v) => setCal(() => v === "normal" ? null : v === "holiday" ? { kind: "holiday", label: (e && e.kind === "holiday" && e.label) || "" } : v === "special" ? makeSpecial(cfg, (e && e.day) || base, (e && e.label) || "") : { kind: "follow", day: v.slice(2), label: (e && e.kind === "follow" && e.label) || "", ...(e && e.tag ? { tag: e.tag } : ownWorks ? {} : { tag: "special" }) });
   const lab = { display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 700, color: C.sub };
+  const kind = e ? e.kind : "normal";
   return (
     <div style={{ display: "grid", gap: 8, padding: "10px 14px 12px", borderTop: `1px solid ${C.line}`, background: e ? `${th.accent}08` : "transparent" }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <span style={{ fontSize: 12, fontWeight: 800, color: C.sub, textTransform: "uppercase", letterSpacing: 0.4 }}>This day</span>
-        <div style={{ display: "inline-flex", flexWrap: "wrap", border: `1px solid ${C.line}`, borderRadius: 10, overflow: "hidden", background: "#fff" }}>
-          {segs.map(([k, l]) => <button key={k} className="tt-btn" onClick={() => kind !== k && choose(k)} style={{ border: "none", padding: mobile ? "6px 9px" : "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", background: kind === k ? (k === "holiday" ? C.accent : C.primary) : "#fff", color: kind === k ? "#fff" : C.sub }}>{l}</button>)}
-        </div>
+        <select className="tt-sel" aria-label="This day" value={val} onChange={(ev) => choose(ev.target.value)} style={{ width: mobile ? "100%" : 330, height: 36, fontFamily: sans, fontSize: 13.5, fontWeight: 700, borderColor: kind === "holiday" ? C.accent : e ? th.accent : undefined, background: kind === "holiday" ? "#fdf2e3" : e ? `${th.accent}0d` : "#fff" }}>
+          <option value="normal">{ownWorks ? `Normal day — ${DAY_FULL[own] || own}'s timetable` : `No school (${DAY_FULL[own] || own})`}</option>
+          <option value="holiday">Holiday — no classes</option>
+          <optgroup label={ownWorks ? "Working day — use the timetable of" : "Working day (extra / compensation) — use the timetable of"}>
+            {cfg.days.map((d) => <option key={d} value={"f:" + d}>{`Working day — ${DAY_FULL[d] || d}'s timetable`}</option>)}
+          </optgroup>
+          <option value="special">Special timetable (this day only)</option>
+        </select>
+        {kind === "follow" && <select className="tt-sel" value={e.tag || ""} onChange={(ev) => setCal((x) => { const y = { ...x }; if (ev.target.value) y.tag = ev.target.value; else delete y.tag; return y; })} style={{ width: 210, fontFamily: sans, fontSize: 13, height: 36 }}><option value="">Working day</option><option value="comp">Compensation working day</option><option value="special">Special working day</option></select>}
       </div>
-      {kind === "follow" && <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-        <select className="tt-sel" value={e.tag || ""} onChange={(ev) => setCal((x) => { const y = { ...x }; if (ev.target.value) y.tag = ev.target.value; else delete y.tag; return y; })} style={{ width: 210, fontFamily: sans, fontSize: 13, height: 34 }}><option value="">Working day</option><option value="comp">Compensation working day</option><option value="special">Special working day</option></select>
-        <label style={lab}>Use the timetable of<select className="tt-sel" value={e.day || ""} onChange={(ev) => setCal((x) => ({ ...x, day: ev.target.value }))} style={{ width: 140, fontFamily: sans, fontSize: 13, height: 34 }}>{cfg.days.map((d) => <option key={d} value={d}>{DAY_FULL[d] || d}</option>)}</select></label>
-        <input className="tt-in" value={e.label || ""} onChange={(ev) => setCal((x) => ({ ...x, label: ev.target.value }))} placeholder="Note (optional), e.g. working Friday" style={{ flex: "1 1 180px", maxWidth: 300, fontFamily: sans, fontSize: 13, height: 34 }} />
-      </div>}
+      {kind === "follow" && <input className="tt-in" value={e.label || ""} onChange={(ev) => setCal((x) => ({ ...x, label: ev.target.value }))} placeholder="Note (optional), e.g. for the rain holiday on 20 July" style={{ maxWidth: 420, fontFamily: sans, fontSize: 13, height: 34 }} />}
       {kind === "holiday" && <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
         <input className="tt-in" value={e.label || ""} onChange={(ev) => setCal((x) => ({ ...x, label: ev.target.value }))} placeholder="Reason, e.g. Onam, strike, exam day" style={{ flex: "1 1 200px", maxWidth: 300, fontFamily: sans, fontSize: 13, height: 34 }} />
         {["Rain holiday", "Tour", "Hartal / strike", "Election", "Exam", "Local holiday"].map((r) => <button key={r} className="tt-btn" onClick={() => setCal((x) => ({ ...x, label: r }))} style={{ border: `1px solid ${e.label === r ? C.accent : C.line}`, background: e.label === r ? "#fdf2e3" : "#fff", color: e.label === r ? "#94620b" : C.sub, borderRadius: 20, padding: "4px 10px", fontSize: 12, fontWeight: 700 }}>{r}</button>)}
@@ -5413,9 +5727,8 @@ function DayStatus({ cfg, date, setCal, mobile }) {
         <input className="tt-in" value={e.label || ""} onChange={(ev) => setCal((x) => ({ ...x, label: ev.target.value }))} placeholder="Name, e.g. Half day, Sports day" style={{ flex: "1 1 160px", maxWidth: 240, fontFamily: sans, fontSize: 13, height: 34 }} />
         <label style={lab}>Periods<select className="tt-sel" value={specialN(cfg, e)} onChange={(ev) => setCal((x) => ({ ...x, n: +ev.target.value }))} style={{ width: 70, height: 34, textAlign: "center" }}>{cfg.periods.map((p, i) => <option key={i} value={i + 1}>{i + 1}</option>)}</select></label>
         <label style={lab}>Copied from<select className="tt-sel" value={e.day || base} onChange={(ev) => { const v = ev.target.value; setCal((x) => makeSpecial(cfg, v, x.label, x.n)); }} style={{ width: 130, fontFamily: sans, fontSize: 13, height: 34 }}>{cfg.days.map((d) => <option key={d} value={d}>{DAY_FULL[d] || d}</option>)}</select></label>
-        <span style={{ fontSize: 11.5, color: C.sub }}>Changing "copied from" starts again from that day.</span>
       </div>}
-      <div style={{ fontSize: 12, color: C.sub }}>{kind === "normal" ? (ownWorks ? `Classes follow the ${DAY_FULL[own] || own} timetable.` : `${DAY_FULL[own] || own} is not in the timetable. If school works today, choose "Follows another day" and pick the day whose timetable is followed.`) : kind === "holiday" ? "No classes — nothing to cover, and teacher links show a holiday." : kind === "follow" ? `Substitution, free periods and teacher links use ${DAY_FULL[dayOf(cfg, date)] || ""}'s timetable on this date — including which teachers work that day and their extra duties.` : "A one-day timetable for this date only — edit it below. The main timetable is not changed."}</div>
+      <div style={{ fontSize: 12, color: C.sub }}>{kind === "normal" ? (ownWorks ? `Classes follow the ${DAY_FULL[own] || own} timetable${e === null && calEntry(cfg, date) ? "" : ""}.` : `${DAY_FULL[own] || own} is not in the timetable. If school works today, choose the day whose timetable is followed.`) : kind === "holiday" ? "No classes — nothing to cover, and teacher links show a holiday." : kind === "follow" ? `Substitution, free periods and teacher links use ${DAY_FULL[dayOf(cfg, date)] || ""}'s timetable on this date — including which teachers work that day and their extra duties.` : "A one-day timetable for this date only — edit it below. The main timetable is not changed."}{e && e.src === "cal" ? " (From the school calendar.)" : ""}</div>
     </div>
   );
 }
@@ -5651,6 +5964,9 @@ function CalendarPanel({ cfg, update, date, setDate, ask, mobile, mode }) {
   const [yrEdit, setYrEdit] = useState(false);
   const today = isoToday(), ay = acadYear(date, cfg), from = show === "year" ? ay.from : isoShift(today, -45), upto = show === "year" ? ay.to : "9999-12-31";
   const list = Object.keys(cfg.calendar || {}).filter((d) => d >= from && d <= upto && calEntry(cfg, d)).sort();
+  const mine = Object.keys(cfg.calendar || {}).filter((d) => calEntry(cfg, d) && cfg.calendar[d].src !== "cal" && d >= ay.from).sort();
+  const [pickD, setPickD] = useState("");
+  const selD = mine.includes(pickD) ? pickD : (mine.find((d) => d >= today) || mine[mine.length - 1] || "");
   const yr = useMemo(() => {
     const endM = ay.to; let done = 0, left = 0, hol = 0, wk = 0;
     for (let d = ay.from; d <= endM; d = isoShift(d, 1)) { const e = calEntry(cfg, d), on = !!dayOf(cfg, d); if (on) { if (d <= today) done++; else left++; } if (e && e.kind === "holiday" && cfg.days.includes(isoDay(d))) hol++; if (e && e.kind !== "holiday" && !cfg.days.includes(isoDay(d))) wk++; }
@@ -5665,12 +5981,12 @@ function CalendarPanel({ cfg, update, date, setDate, ask, mobile, mode }) {
   const tone = { holiday: [C.accent, "#fdf6ec"], follow: [th.accent, `${th.accent}0d`], special: ["#7c3aed", "#f4effb"] };
   return (
     <div style={card}>
-      <Panelhead text={setup ? "School calendar — the academic year" : "Unexpected holidays & working days"} count={list.length ? `${list.length} day${list.length === 1 ? "" : "s"}` : "none"} />
+      <Panelhead text={setup ? "School calendar — the academic year" : "Unexpected holidays & working days"} count={setup ? (list.length ? `${list.length} day${list.length === 1 ? "" : "s"}` : "none") : mine.length ? `${mine.length} added` : "none"} />
       <div style={{ padding: 12, display: "grid", gap: 10 }}>
         {setup ? <div className="tt-callout">Upload the <b>school calendar</b> for the year — holidays, compensation working days and special working days. It is the <b>default for every date</b>: Daily substitution, free periods and the teacher links follow it. Sudden changes (a rain holiday, a tour, an extra working day) are made in <b>Daily substitution</b> on the day.</div>
-        : <div className="tt-callout">For <b>sudden changes</b> — a <b>rain holiday</b>, a <b>tour</b>, a hartal, or a <b>working day</b> that is not in the school calendar (or when the calendar is not ready yet when school reopens). Pick the date at the top and use the <b>This day</b> bar, or add the days here. The full-year calendar is uploaded in <b>Classes & setup → School calendar</b>.</div>}
+        : <div className="tt-callout">For <b>sudden changes</b> — a <b>rain holiday</b>, a <b>tour</b>, a hartal, or a <b>working day</b> that is not in the school calendar (or when the calendar is not ready yet when school reopens). Pick the date at the top and choose in the <b>This day</b> list, or add the days below. Only the days you add here are listed. The full-year calendar is uploaded in <b>Classes & setup → School calendar</b>.</div>}
         
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        {setup && <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
           {setup && <button className="tt-btn" onClick={() => setYrEdit(!yrEdit)} title="Change the academic year dates" style={{ fontSize: 12, padding: "4px 11px", borderRadius: 20, border: `1px solid ${yrEdit ? th.accent : C.line}`, background: "#fff", color: C.ink, fontWeight: 600 }}>📅 Year {ay.label}: {isoNice(ay.from)} – {isoNice(ay.to)} ✎</button>}
           <span style={{ fontSize: 12, padding: "4px 11px", borderRadius: 20, border: `1px solid ${C.line}`, background: C.freeSoft }}>School days: <b>{yr.done}</b> so far · <b>{yr.left}</b> more</span>
           <span style={{ fontSize: 12, padding: "4px 11px", borderRadius: 20, border: `1px solid ${C.line}`, background: "#fdf2e3" }}>Holidays: <b>{yr.hol}</b></span>
@@ -5680,10 +5996,19 @@ function CalendarPanel({ cfg, update, date, setDate, ask, mobile, mode }) {
             {setup && <button className="tt-btn" onClick={() => setImp(!imp)} style={imp ? ghostBtn : solidBtn}>{imp ? "Close upload" : "Upload school calendar"}</button>}
             {setup && <button className="tt-btn" onClick={() => downloadText(`school_calendar_${ay.label}.csv`, calendarCSV(cfg, ay.from, ay.to))} style={ghostBtn}>Download (CSV)</button>}
           </span>
-        </div>
+        </div>}
+        {!setup && (mine.length === 0 ? <div style={{ padding: "10px 12px", borderRadius: 10, background: "#f8fafc", border: `1px dashed ${C.line}`, fontSize: 13, color: C.sub }}>No special days added.</div> : (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <span style={{ fontSize: 12.5, fontWeight: 700, color: C.sub }}>Special days added ({mine.length})</span>
+            <select className="tt-sel" aria-label="Special days added" value={selD} onChange={(ev) => setPickD(ev.target.value)} style={{ flex: "1 1 260px", maxWidth: 460, height: 36, fontFamily: sans, fontSize: 13 }}>
+              {mine.map((d) => <option key={d} value={d}>{isoNice(d)}{d < today ? " (past)" : ""} — {dayLabel(cfg, d)}</option>)}
+            </select>
+            {selD && setDate && <button className="tt-btn" onClick={() => setDate(selD)} style={{ ...ghostBtn, padding: "6px 12px", fontSize: 12.5 }}>Edit</button>}
+            {selD && <button className="tt-btn" onClick={() => ask(`Remove ${isoNice(selD)} (${dayLabel(cfg, selD)})? It becomes a normal day again.`, () => update((n) => { n.calendar = { ...(n.calendar || {}) }; delete n.calendar[selD]; tidySubs(n, selD, true); }))} style={{ ...ghostBtn, padding: "6px 12px", fontSize: 12.5, color: C.clash }}>Remove</button>}
+          </div>))}
         {setup && yrEdit && <div style={{ border: `1.5px solid ${th.accent}44`, borderRadius: 14, padding: 12, background: "#fbfdfd" }}><YearRangePicker cfg={cfg} update={update} /></div>}
         {setup && imp && <CalendarImport cfg={cfg} update={update} onDone={() => setShow("year")} />}
-        {list.length === 0 ? <div style={{ fontSize: 12.5, color: C.sub }}>No holidays or changed days recorded{show === "year" ? ` for ${ay.label}` : ""}.</div> : (
+        {!setup ? null : list.length === 0 ? <div style={{ fontSize: 12.5, color: C.sub }}>No holidays or changed days recorded{show === "year" ? ` for ${ay.label}` : ""}.</div> : (
           <div style={{ display: "grid", gap: 6, maxHeight: 300, overflowY: "auto" }} className="tt-scroll">
             {list.map((d) => { const e = cfg.calendar[d], [fg, bg] = tone[e.kind] || tone.follow; return (
               <div key={d} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "7px 10px", borderRadius: 11, border: `1px solid ${!setup && d === date ? fg : C.line}`, background: d < today ? "#fafbfc" : bg, opacity: d < today ? 0.75 : 1 }}>
@@ -5709,7 +6034,7 @@ function CalendarPanel({ cfg, update, date, setDate, ask, mobile, mode }) {
   );
 }
 function subsNeeds(cfg, date) {
-  const rec = (cfg.subs || {})[date] || {}, abs = rec.absent || {}, d = dayOf(cfg, date), out = [];
+  const rec = (cfg.subs || {})[date] || {}, abs = absentMap(cfg, date), d = dayOf(cfg, date), out = [];
   if (!d) return out;
   const g = cfgOn(cfg, date), work = rec.work || {};
   for (const t of Object.keys(abs)) {
@@ -5718,7 +6043,7 @@ function subsNeeds(cfg, date) {
   }
   return out.sort((a, b) => a.p - b.p || cmpClass(a.cls, b.cls));
 }
-function absentAt(cfg, date, u, p) { const a = (((cfg.subs || {})[date] || {}).absent || {})[u]; return !!a && partPeriods(cfg, a).includes(p); }
+function absentAt(cfg, date, u, p) { const a = absentMap(cfg, date)[u]; return !!a && partPeriods(cfg, a).includes(p); }
 function subCounts(cfg, date) {
   const mon = date.slice(0, 7), month = {}, total = {}, last = {}, rot = {};
   const start = cfg.subsRotationStart || "0000-00-00";
@@ -5810,7 +6135,7 @@ function FairPanel({ cfg, update, date, counts, ask, limited }) {
     const L = counts.leisure[u] || 0, done = counts.rot[u] || 0, free = working ? freeOnDay(cfg, date, u) : 0, remain = free - (today[u] || 0);
     const avg = L / Math.max(1, teacherWorkDays(cfg, u).length), owed = ((cfg.subsOwed || {})[u] || 0) > 0;
     const exi = exemptInfo(cfg, u, date);
-    const away = !working || !!((rec.absent || {})[u]) || isOffDay(cfg, u, d) || !!exi || !(counts.leisure[u] > 0);
+    const away = !working || !!absentMap(cfg, date)[u] || isOffDay(cfg, u, d) || !!exi || !(counts.leisure[u] > 0);
     return { exi, u, L, done, pct: Math.round((done / Math.max(1, L)) * 100), free, remain, avg, owed, away, key: away || remain <= 0 ? 1e9 : fairKey(cfg, counts, u, done, remain, owed) };
   }).sort((a, b) => a.key - b.key || b.remain - a.remain || a.u.localeCompare(b.u));
   const next = rows.filter((r) => r.key < 1e9).slice(0, 6).map((r) => r.u);
@@ -5885,12 +6210,12 @@ function subsText(cfg, date) {
   return L.join("\n");
 }
 function exportSubSlipPDF(cfg, date) {
-  const needs = subsNeeds(cfg, date), rec = (cfg.subs || {})[date] || {}, a = rec.assign || {}, abs = rec.absent || {};
+  const needs = subsNeeds(cfg, date), rec = (cfg.subs || {})[date] || {}, a = rec.assign || {}, abs = absentMap(cfg, date);
   const css = "@page{size:A4 portrait;margin:1cm} *{-webkit-print-color-adjust:exact;print-color-adjust:exact;box-sizing:border-box} html,body{margin:0} body{font-family:Arial,Helvetica,sans-serif;color:#16213a}" + lhCss() +
     " table{border-collapse:collapse;width:100%;border:2px solid #0e6b73} th,td{border:1px solid #b9d3d3;padding:7px 8px;font-size:13px;text-align:center} thead th{background:#0e6b73;color:#fff;font-weight:800} td.l{text-align:left} td.p{font-weight:800;font-size:15px;color:#0a4f55;background:#e1f0f0;width:16mm}" +
     " .sub{font-family:'Courier New',monospace;font-weight:800;font-size:15px;color:#0a3d42} .wk{font-size:11px;color:#5a4a12;margin-top:2px;text-align:left} .nc{color:#b3261e;font-weight:800} .ab{margin:6px 0 10px;font-size:12.5px} .ab span{display:inline-block;margin:2px 6px 2px 0;padding:2px 9px;border-radius:12px;background:#fbe0dd;color:#8a1f17;font-weight:700} td.sg{width:34mm} .nt{margin-top:8px;font-size:12px;color:#33415c}";
   const part = (x) => x === "am" ? " (FN)" : x === "pm" ? " (AN)" : String(x).startsWith("p:") ? ` (${partPeriods(cfg, x).map((p) => "P" + cfg.periods[p]).join(", ") || "no periods"})` : "";
-  const why = (t) => ((rec.reason || {})[t] && rec.reason[t] !== "Leave" ? ` — ${rec.reason[t]}` : "");
+  const why = (t) => { const r = reasonOf(cfg, date, t); return r && r !== "Leave" ? ` — ${r}` : ""; };
   const rows = needs.map((n) => `<tr><td class="p">P${cfg.periods[n.p]}</td><td><b>${esc(n.cls)}</b></td><td>${esc(n.sub)}${n.work ? `<div class="wk">Work: ${esc(n.work)}</div>` : ""}</td><td>${esc(n.t)}</td><td>${a[n.key] ? `<span class="sub">${esc(a[n.key])}</span>` : '<span class="nc">not covered</span>'}</td><td class="sg"></td></tr>`).join("");
   const body = pdfLetterhead(cfg, "Substitution", isoNice(date, true) + (calEntry(cfg, date) ? " · " + dayLabel(cfg, date) : ""), `${Object.keys(abs).length} absent · ${needs.length} period${needs.length === 1 ? "" : "s"} to cover`) +
     `<div class="ab"><b>Absent:</b> ${Object.keys(abs).map((t) => `<span>${esc(t)}${part(abs[t])}${esc(why(t))}</span>`).join("") || "none"}</div>` +
@@ -5955,14 +6280,16 @@ function subsReport(cfg, month) {
   const blank = () => ({ full: 0, fn: 0, an: 0, per: 0 });
   const R = {}; cfg.singles.forEach((t) => (R[t] = { t, free: L[t] || 0, dm: 0, dy: 0, am: blank(), ay: blank(), why: {} }));
   const absList = [], subList = []; let need = 0, cov = 0;
-  for (const dt of Object.keys(cfg.subs || {}).sort()) {
+  const dts = new Set(Object.keys(cfg.subs || {}));
+  for (const l of cfg.leaves || []) if (l.absent !== false) for (let d = l.from > ay.from ? l.from : ay.from, i = 0; d <= (l.to && l.to < ay.to ? l.to : ay.to) && i < 400; d = isoShift(d, 1), i++) dts.add(d);
+  for (const dt of [...dts].sort()) {
     if (!dayOf(cfg, dt)) continue;
-    const r = cfg.subs[dt], inM = dt.slice(0, 7) === month, inY = dt >= ay.from && dt <= ay.to;
+    const r = (cfg.subs || {})[dt] || {}, inM = dt.slice(0, 7) === month, inY = dt >= ay.from && dt <= ay.to;
     if (!inM && !inY) continue;
     for (const u of Object.values(r.assign || {})) if (u && R[u]) { if (inM) R[u].dm++; if (inY) R[u].dy++; }
-    for (const [t, part] of Object.entries(r.absent || {})) {
-      if (!R[t]) continue;
-      const k = part === "full" ? "full" : part === "am" ? "fn" : part === "pm" ? "an" : "per", why = (r.reason || {})[t] || "Leave";
+    for (const [t, part] of Object.entries(absentMap(cfg, dt))) {
+      if (!R[t] || isOffDay(cfg, t, dayOf(cfg, dt))) continue;
+      const k = part === "full" ? "full" : part === "am" ? "fn" : part === "pm" ? "an" : "per", why = reasonOf(cfg, dt, t);
       if (inY) R[t].ay[k]++;
       if (inM) { R[t].am[k]++; R[t].why[why] = (R[t].why[why] || 0) + 1; absList.push({ dt, t, part, why }); }
     }
@@ -6025,7 +6352,7 @@ function SubsReportPanel({ cfg, date, mobile }) {
               </tr>); })}</tbody>
           </table>
         </div>
-        <div style={{ fontSize: 11.5, color: C.sub }}>Days = whole days + ½ for each forenoon (FN) or afternoon (AN) absence. The year runs {yearRangeText(cfg)} (set in Classes & setup). Holidays in the school calendar are not counted. Tap a column title to sort.</div>
+        <div style={{ fontSize: 11.5, color: C.sub }}>Days = whole days + ½ for each forenoon (FN) or afternoon (AN) absence. The year runs {yearRangeText(cfg)} (set in Settings → Academic year). Holidays in the school calendar are not counted. Tap a column title to sort.</div>
       </div>
     </div>
   );
@@ -6036,7 +6363,8 @@ function SubsView({ cfg, update, mobile, ask, limited }) {
   const [msg, setMsg] = useState("");
   const th = CUR_TH || THEMES.teal;
   const d = dayOf(cfg, date), working = !!d, g = cfgOn(cfg, date), cal = calEntry(cfg, date);
-  const rec = (cfg.subs || {})[date] || {}, abs = rec.absent || {}, assign = rec.assign || {};
+  const rec = (cfg.subs || {})[date] || {}, abs = absentMap(cfg, date), assign = rec.assign || {};
+  const onLeave = (t) => !(rec.absent || {})[t] && leaveOf(cfg, date, t);
   const classCovers = useMemo(() => classWeekCovers(cfg, date), [cfg, date]);
   const needs = useMemo(() => subsNeeds(cfg, date), [cfg, date]);
   const counts = useMemo(() => subCounts(cfg, date), [cfg, date]);
@@ -6046,9 +6374,17 @@ function SubsView({ cfg, update, mobile, ask, limited }) {
     fn(r, n);
     tidySubs(n, date, auto);
   });
+  const autoDone = useRef({});
+  useEffect(() => {
+    if (cfg.subsAuto === false || date < isoToday() || autoDone.current[date]) return;
+    const lv = leavesOn(cfg, date).filter((l) => l.absent !== false && !(rec.absent || {})[l.t]); if (!lv.length) return;
+    if (!needs.some((n) => !assign[n.key] && lv.some((l) => l.t === n.t))) return;
+    autoDone.current[date] = true;
+    update((n) => { n.subs = n.subs || {}; if (!n.subs[date]) n.subs[date] = { absent: {}, assign: {} }; fillSubs(n, date); if (!Object.keys(n.subs[date].assign || {}).length && !Object.keys(n.subs[date].absent || {}).length) delete n.subs[date]; });
+  }, [date, needs]);
   const setCal = (fn) => update((n) => { n.calendar = { ...(n.calendar || {}) }; const nx = fn(n.calendar[date] ? { ...n.calendar[date] } : null); if (nx) n.calendar[date] = nx; else delete n.calendar[date]; if (!Object.keys(n.calendar).length) delete n.calendar; tidySubs(n, date, true); });
   const setWork = (t, v) => edit((r) => { r.work = { ...(r.work || {}) }; if (v) r.work[t] = v; else delete r.work[t]; });
-  const toggleAbs = (t) => edit((r) => { if (r.absent[t]) { delete r.absent[t]; if (r.reason) delete r.reason[t]; } else r.absent[t] = "full"; }, true);
+  const toggleAbs = (t) => !onLeave(t) && edit((r) => { if (r.absent[t]) { delete r.absent[t]; if (r.reason) delete r.reason[t]; } else r.absent[t] = "full"; }, true);
   const setPart = (t, p) => edit((r) => { r.absent[t] = p === "some" ? "p:" : p; }, true);
   const togglePeriod = (t, p) => edit((r) => { const cur = new Set(partPeriods(cfg, r.absent[t])); if (cur.has(p)) cur.delete(p); else cur.add(p); r.absent[t] = "p:" + [...cur].sort((a, b) => a - b).join(","); }, true);
   const setReason = (t, v) => edit((r) => { r.reason = { ...(r.reason || {}) }; if (v === "Leave") delete r.reason[t]; else r.reason[t] = v; });
@@ -6102,7 +6438,14 @@ function SubsView({ cfg, update, mobile, ask, limited }) {
           <div style={{ padding: 12, display: "grid", gap: 10 }}>
             {absList.length > 0 && (
               <div style={{ display: "grid", gap: 6 }}>
-                {absList.map((t) => { const some = String(abs[t]).startsWith("p:"), sel = some ? new Set(partPeriods(cfg, abs[t])) : null; return (
+                {absList.map((t) => { const some = String(abs[t]).startsWith("p:"), sel = some ? new Set(partPeriods(cfg, abs[t])) : null, lv = onLeave(t); if (lv) return (
+                  <div key={t} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: "7px 9px", borderRadius: 10, background: "#fdf2e3", border: `1px solid ${C.accent}44` }}>
+                    <b style={{ fontFamily: mono, color: "#8a4b0f", minWidth: 50 }}>{t}</b>
+                    <span style={{ fontSize: 12, color: "#7a5310", flex: 1 }}>{lv.reason || "On leave"} · {lv.to ? `until ${isoNice(lv.to)}` : "until further notice"}</span>
+                    <span style={{ fontSize: 10.5, fontWeight: 800, padding: "1px 7px", borderRadius: 9, background: C.accent, color: "#fff" }}>LEAVE</span>
+                    <input className="tt-in" value={(rec.work || {})[t] || ""} onChange={(e) => setWork(t, e.target.value)} placeholder="Work for the class (optional)" style={{ flexBasis: "100%", fontFamily: sans, fontSize: 12, height: 30, background: "#fff" }} />
+                  </div>);
+                  return (
                   <div key={t} style={{ display: "grid", gap: 6, padding: "6px 8px", borderRadius: 10, background: C.clashSoft, border: `1px solid ${C.clash}33` }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                       <b style={{ fontFamily: mono, color: "#8a1f17", minWidth: 50 }}>{t}</b>
@@ -6119,8 +6462,8 @@ function SubsView({ cfg, update, mobile, ask, limited }) {
             )}
             <input className="tt-in" placeholder="Search teacher" value={q} onChange={(e) => setQ(e.target.value)} style={{ fontFamily: sans, fontSize: 13, height: 34 }} />
             <div className="tt-scroll" style={{ display: "flex", flexWrap: "wrap", gap: 6, maxHeight: mobile ? 220 : 380, overflowY: "auto" }}>
-              {list.map((t) => { const on = !!abs[t], off = isOffDay(cfg, t, d); return (
-                <button key={t} className="tt-btn" disabled={off} onClick={() => toggleAbs(t)} title={off ? "Not working this day" : on ? "Marked absent — tap to undo" : "Tap to mark absent"}
+              {list.map((t) => { const on = !!abs[t], off = isOffDay(cfg, t, d) || !!onLeave(t); return (
+                <button key={t} className="tt-btn" disabled={off} onClick={() => toggleAbs(t)} title={onLeave(t) ? "On leave — change it in Teacher leave" : off ? "Not working this day" : on ? "Marked absent — tap to undo" : "Tap to mark absent"}
                   style={{ fontFamily: mono, fontWeight: 800, fontSize: 12.5, padding: "6px 10px", borderRadius: 9, cursor: off ? "default" : "pointer", border: `1.5px solid ${on ? C.clash : C.line}`, background: on ? C.clash : off ? "#f3f4f6" : "#fff", color: on ? "#fff" : off ? "#b4bccb" : C.ink, textDecoration: off ? "line-through" : "none" }}>{t}</button>
               ); })}
             </div>
@@ -6175,7 +6518,6 @@ function SubsView({ cfg, update, mobile, ask, limited }) {
       </div>}
 
       <div style={{ marginTop: 16 }}>{subsModeOf(cfg) === "turn" ? <RotationPanel cfg={cfg} update={update} date={date} counts={counts} ask={ask} limited={limited} /> : <FairPanel cfg={cfg} update={update} date={date} counts={counts} ask={ask} limited={limited} />}</div>
-      <div style={{ marginTop: 16 }}><SubsExemptPanel cfg={cfg} update={update} ask={ask} date={date} limited={limited} /></div>
       <div style={{ marginTop: 16 }}><CalendarPanel cfg={cfg} update={update} date={date} setDate={setDate} ask={ask} mobile={mobile} /></div>
       <div style={{ display: "grid", gridTemplateColumns: mobile ? "minmax(0,1fr)" : "repeat(2, minmax(0,1fr))", gap: 16, marginTop: 16 }}>
         <div style={card}>
@@ -6691,9 +7033,7 @@ function SetupView({ cfg, update, ask, askPw, mobile, teacherLoad, me, acc }) {
           <input className="tt-in" style={{ maxWidth: 380, fontSize: 14, padding: "9px 11px" }} value={cfg.school} onChange={(e) => update((n) => { n.school = e.target.value; })} placeholder="Your school name" />
         </div>
       </div>}
-      {can("year") && <YearCard cfg={cfg} update={update} askPw={askPw} />}
       {can("calendar") && <div style={{ marginBottom: 16 }}><CalendarPanel cfg={cfg} update={update} date={isoToday()} ask={ask} mobile={mobile} mode="setup" /></div>}
-      {(!acc || acc.manage) && <StaffAccessCard cfg={cfg} update={update} me={me} />}
       {can("school") && <LogoCard cfg={cfg} update={update} />}
       {can("school") && <StampCard cfg={cfg} update={update} mobile={mobile} />}
 
@@ -6759,20 +7099,6 @@ function SetupView({ cfg, update, ask, askPw, mobile, teacherLoad, me, acc }) {
       </div>
 
       </>}
-      {can("password") && <div style={{ ...card, marginBottom: 16 }}>
-        <Panelhead text="Admin password" count={cfg.adminPw ? "set" : "not set"} tone={cfg.adminPw ? "free" : undefined} />
-        <div style={{ padding: 14, display: "grid", gap: 10 }}>
-          <div style={{ fontSize: 12.5, color: C.sub, lineHeight: 1.6 }}>Needed for <b>Reset</b>, <b>Master reset</b>, <b>Clear all</b> (Assign timetable) and <b>Clear all mapping</b>. Everyone who signs in uses the same password.</div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            {cfg.adminPw && <input className="tt-in" type="password" placeholder="Current password" value={pwCur} onChange={(e) => setPwCur(e.target.value)} style={{ width: 170 }} />}
-            <input className="tt-in" type="password" placeholder="New password" value={pwNew} onChange={(e) => setPwNew(e.target.value)} style={{ width: 170 }} />
-            <input className="tt-in" type="password" placeholder="Repeat new password" value={pwNew2} onChange={(e) => setPwNew2(e.target.value)} style={{ width: 170 }} />
-            <button className="tt-btn" onClick={() => changePw(false)} style={solidBtn}>{cfg.adminPw ? "Change password" : "Set password"}</button>
-            {cfg.adminPw && <button className="tt-btn" onClick={() => changePw(true)} style={{ ...ghostBtn, color: C.clash }}>Remove password</button>}
-          </div>
-          {pwMsg && <div style={{ fontSize: 12.5, color: pwMsg.ok ? C.free : C.clash, fontWeight: 600 }}>{pwMsg.text}</div>}
-        </div>
-      </div>}
 
       {can("ctimport") && <ClassTeacherImport cfg={cfg} update={update} ask={ask} />}
       {can("availability") && <TeacherAvailability cfg={cfg} update={update} ask={ask} teacherLoad={teacherLoad} mobile={mobile} />}
@@ -6863,7 +7189,7 @@ var SCHOOL_LOGO = "", SCHOOL_WM = true;
 function openPrint(title, css, bodyHtml) {
   var w = window.open("", "_blank");
   if (!w) { alert("Please allow pop-ups for this site so the PDF can open, then choose 'Save as PDF' and paper size A4."); return; }
-  var wm = SCHOOL_LOGO && SCHOOL_WM ? '<img class="tt-wm" src="' + SCHOOL_LOGO + '" alt="">' : '';
+  var wm = (SCHOOL_LOGO && SCHOOL_WM ? '<img class="tt-wm" src="' + SCHOOL_LOGO + '" alt="">' : '') + NEXT_STAMPS; NEXT_STAMPS = "";
   var wmCss = wm ? ' .tt-wm{position:fixed;top:50%;left:50%;width:56%;max-width:150mm;max-height:62%;object-fit:contain;transform:translate(-50%,-50%);opacity:.09;z-index:9999;pointer-events:none;mix-blend-mode:multiply}' : '';
   w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>' + title + '</title>' + (SCHOOL_LOGO ? '<link rel="icon" href="' + SCHOOL_LOGO + '">' : '') + '<style>' + css + wmCss + '</style></head><body>' + wm + bodyHtml + '<scr' + 'ipt>window.onload=function(){setTimeout(function(){window.print();},350);};<\/scr' + 'ipt></body></html>');
   w.document.close();
@@ -6902,23 +7228,36 @@ function pdfLetterhead(cfg, kind, title, sub) {
   return '<div class="lh">' + (cfg.logo ? '<img src="' + cfg.logo + '" alt="">' : '') + '<div class="lt"><div class="ls">' + esc(cfg.school || "") + '</div><div class="lk">' + esc(kind) + (cfg.year ? ' &middot; ' + esc(cfg.year) : '') + '</div></div><div class="lr"><div class="lti">' + esc(title) + '</div>' + (sub ? '<div class="lsu">' + sub + '</div>' : '') + '</div></div>';
 }
 var STAMP_K = { S: 0.8, M: 1, L: 1.22 };
+var SIGN_PRESETS = { S: [40, 11.6], M: [50, 14.5], L: [61, 17.7] };
+var SEAL_PRESETS = { S: [19, 19], M: [24, 24], L: [29.5, 29.5] };
+var POS_PRESETS = { tl: [0, 0, "Top left"], tc: [50, 0, "Top centre"], tr: [100, 0, "Top right"], ml: [0, 50, "Middle left"], c: [50, 50, "Centre"], mr: [100, 50, "Middle right"], bl: [0, 100, "Bottom left"], bc: [50, 100, "Bottom centre"], br: [100, 100, "Bottom right"] };
+var NEXT_STAMPS = "";
 function stampGeom(cfg) {
-  var sh = 14.5 * (STAMP_K[cfg && cfg.signSize] || 1), sd = 24 * (STAMP_K[cfg && cfg.sealSize] || 1), pos = (cfg && cfg.sealPos) || "corner";
-  var sealCss = pos === "over" ? "left:50%;margin-left:" + (-sd / 2) + "mm;bottom:" + (-sd * 0.04) + "mm" : pos === "right" ? "right:-6mm;bottom:" + (-sd * 0.2) + "mm" : "left:-15mm;bottom:" + (-sd * 0.2) + "mm";
-  return { sh: sh, sd: sd, pos: pos, sealCss: sealCss, boxH: Math.max(15, sh + 1) };
+  var num = function (v, d, lo, hi) { var x = +v; return v !== undefined && v !== null && v !== "" && x >= lo && x <= hi ? x : d; };
+  var sk = (cfg && cfg.signSize) || "M", ek = (cfg && cfg.sealSize) || "M";
+  var sz = sk === "C" ? [num(cfg.signW, 50, 10, 150), num(cfg.signH, 14.5, 4, 80)] : SIGN_PRESETS[sk] || SIGN_PRESETS.M;
+  var ez = ek === "C" ? [num(cfg.sealW, 24, 8, 100), num(cfg.sealH, 24, 8, 100)] : SEAL_PRESETS[ek] || SEAL_PRESETS.M;
+  var pos = (cfg && cfg.sealPos) || "bl"; if (pos === "corner") pos = "bl";
+  var xy = pos === "custom" ? [num(cfg.sealX, 0, 0, 100), num(cfg.sealY, 100, 0, 100)] : POS_PRESETS[pos] ? POS_PRESETS[pos].slice(0, 2) : null;
+  var spos = (cfg && cfg.signPos) || "footer";
+  var sxy = spos === "custom" ? [num(cfg.signX, 100, 0, 100), num(cfg.signY, 100, 0, 100)] : POS_PRESETS[spos] ? POS_PRESETS[spos].slice(0, 2) : null;
+  var sd = ez[0], eh = ez[1];
+  var sealCss = pos === "over" ? "left:50%;margin-left:" + (-sd / 2) + "mm;bottom:" + (-eh * 0.04) + "mm" : pos === "right" ? "right:-6mm;bottom:" + (-eh * 0.2) + "mm" : "left:-15mm;bottom:" + (-eh * 0.2) + "mm";
+  return { sw: sz[0], sh: sz[1], ew: sd, eh: eh, sd: sd, pos: pos, xy: xy, spos: spos, sxy: sxy, sealCss: sealCss, boxH: Math.max(15, sz[1] + 1), boxW: Math.max(52, sz[0] + 2) };
 }
+function stampFixed(src, w, h, xy) { return '<img class="tt-pstamp" src="' + src + '" alt="" style="position:fixed;left:' + xy[0] + '%;top:' + xy[1] + '%;transform:translate(-' + xy[0] + '%,-' + xy[1] + '%);width:' + w + 'mm;height:' + h + 'mm;object-fit:contain;opacity:.92;mix-blend-mode:multiply;z-index:50">'; }
 function pdfFooter(left, sigs, cfg, kind) {
   var d = new Date().toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
   var on = cfg && (kind === "teacher" ? cfg.signOnTeacher !== false : cfg.signOnClass !== false);
-  var hmTitle = (cfg && cfg.hmTitle) || "Headmaster", g = stampGeom(cfg);
-  var corner = on && cfg.seal && g.pos === "corner" && sigs.indexOf("Headmaster") >= 0;
-  var cornerSeal = corner ? '<div style="flex-shrink:0;margin-right:5mm;align-self:flex-end"><img src="' + cfg.seal + '" alt="" style="display:block;width:' + g.sd + 'mm;height:' + g.sd + 'mm;object-fit:contain;opacity:.92;mix-blend-mode:multiply"></div>' : '';
-  return '<div class="ft">' + cornerSeal + '<div class="gen">' + left + '<br>Generated ' + esc(d) + '</div>' + sigs.map(function (s) {
+  var hmTitle = (cfg && cfg.hmTitle) || "Headmaster", g = stampGeom(cfg), hasHM = sigs.indexOf("Headmaster") >= 0;
+  // seal or signature placed anywhere on the sheet: added once per document (it repeats on every page)
+  NEXT_STAMPS = on && hasHM ? (cfg.seal && g.xy ? stampFixed(cfg.seal, g.ew, g.eh, g.xy) : "") + (cfg.hmSign && g.sxy ? stampFixed(cfg.hmSign, g.sw, g.sh, g.sxy) : "") : "";
+  return '<div class="ft"><div class="gen">' + left + '<br>Generated ' + esc(d) + '</div>' + sigs.map(function (s) {
     var isHM = s === "Headmaster";
     if (!isHM) return '<div class="sig"><div class="sgi" style="height:' + g.boxH + 'mm"></div><div class="sgl">' + esc(s) + '</div></div>';
-    var img = on && cfg.hmSign ? '<img class="sg" src="' + cfg.hmSign + '" alt="" style="max-height:' + g.sh + 'mm;max-width:50mm">' : '';
-    var seal = on && cfg.seal && !corner ? '<img class="seal" src="' + cfg.seal + '" alt="" style="width:' + g.sd + 'mm;height:' + g.sd + 'mm;left:auto;right:auto;bottom:auto;' + g.sealCss + '">' : '';
-    return '<div class="sig hm"><div class="sgi" style="height:' + g.boxH + 'mm">' + seal + img + '</div><div class="sgl">' + esc(hmTitle) + (cfg && cfg.hmName ? '<span class="sgn">' + esc(cfg.hmName) + '</span>' : '') + '</div></div>';
+    var img = on && cfg.hmSign && !g.sxy ? '<img class="sg" src="' + cfg.hmSign + '" alt="" style="max-height:' + g.sh + 'mm;max-width:' + g.sw + 'mm;width:auto;height:auto">' : '';
+    var seal = on && cfg.seal && !g.xy ? '<img class="seal" src="' + cfg.seal + '" alt="" style="width:' + g.ew + 'mm;height:' + g.eh + 'mm;left:auto;right:auto;bottom:auto;' + g.sealCss + '">' : '';
+    return '<div class="sig hm" style="width:' + g.boxW + 'mm"><div class="sgi" style="height:' + g.boxH + 'mm">' + seal + img + '</div><div class="sgl">' + esc(hmTitle) + (cfg && cfg.hmName ? '<span class="sgn">' + esc(cfg.hmName) + '</span>' : '') + '</div></div>';
   }).join("") + '</div>';
 }
 function gridCss(paper) {
