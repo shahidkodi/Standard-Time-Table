@@ -73,7 +73,6 @@ export default function TeacherPage({ token }) {
         <h1 style={{ fontSize: 18, margin: "0 0 8px" }}>{st.notFound ? "This link isn't active" : "Couldn't load the timetable"}</h1>
         <p style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.6, margin: 0 }}>{st.notFound ? "The link may have been replaced with a new one. Please ask the school office for your current link." : "Check your internet connection and try again."}</p>
         {!st.notFound && <button onClick={load} style={{ marginTop: 14, border: "none", background: C.g1, color: "#fff", padding: "10px 18px", borderRadius: 10, fontWeight: 700, fontFamily: sans }}>Try again</button>}
-        <div style={{ marginTop: 18 }}><a href="/?admin=1" style={{ fontSize: 12, color: C.sub }}>Staff login</a></div>
       </div>
     </div>
   );
@@ -172,8 +171,7 @@ export default function TeacherPage({ token }) {
 
         <footer style={{ textAlign: "center", fontSize: 11.5, color: C.sub, lineHeight: 1.7 }}>
           {at ? `Updated ${at.toLocaleString(undefined, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })} · ` : ""}Read-only · refreshes by itself<br />
-          Tip: use your browser's <b>Add to Home screen</b> to open this like an app.<br />
-          <a href="/?admin=1" style={{ color: C.sub }}>Staff login</a>
+          Tip: use your browser's <b>Add to Home screen</b> to open this like an app.
         </footer>
       </main>
     </>
