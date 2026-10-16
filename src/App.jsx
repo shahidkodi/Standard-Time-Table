@@ -12,7 +12,7 @@ import { supabase } from "./supabaseClient";
    ============================================================ */
 
 const STORE_KEY = "tt_cfg_v2";
-const APP_VERSION = "2026-10-16 f";
+const APP_VERSION = "2026-10-16 g";
 
 const WEEK_ORDER = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const DAY_FULL = { MON: "Monday", TUE: "Tuesday", WED: "Wednesday", THU: "Thursday", FRI: "Friday", SAT: "Saturday", SUN: "Sunday" };
@@ -5584,6 +5584,7 @@ function LeaveView({ cfg, update, ask, mobile, limited }) {
   const save = () => {
     if (!form.t || !form.from) { setMsg("Choose the teacher and the first day of leave."); return; }
     if (form.to && form.to < form.from) { setMsg("The last day is before the first day."); return; }
+    if (form.to && form.absent) { let k = 0; for (let d = form.from, i = 0; d <= form.to && i < 30; d = isoShift(d, 1), i++) { const dd = dayOf(cfg, d); if (dd && !isOffDay(cfg, form.t, dd)) k++; } if (k <= 3) { setMsg(`That is ${k} school day${k === 1 ? "" : "s"}. Leave of 3 days or less is marked in Daily substitution — tap the teacher and choose "2 school days" or "3 school days". Teacher leave is for longer leave.`); return; } }
     const reason = form.reason === "Other" ? (form.other.trim() || "Leave") : form.reason;
     const clash = (cfg.leaves || []).find((l) => l.id !== form.id && l.t === form.t && (!l.to || l.to >= form.from) && (!form.to || form.to >= l.from));
     if (clash) { setMsg(`${form.t} already has leave from ${isoNice(clash.from)}${clash.to ? " to " + isoNice(clash.to) : ""}. Edit that one instead.`); return; }
@@ -5613,12 +5614,12 @@ function LeaveView({ cfg, update, ask, mobile, limited }) {
   const onNow = leavesOn(cfg, today);
   return (
     <div>
-      <ViewHeader title="Teacher leave & exemptions" note="Long leave — a week or several months. The teacher is kept out of substitution duties for those dates and their classes get substitutes. Their timetable is never changed."
+      <ViewHeader title="Teacher leave & exemptions" note="Long leave — more than 3 school days (a week, months…). The teacher is kept out of substitution duties for those dates and their classes get substitutes. Their timetable is never changed. For 1–3 days, mark the teacher absent in Daily substitution."
         meta={[["On leave today", onNow.length, onNow.length ? "warn" : undefined], ["Upcoming", cur.filter((l) => l.from > today).length], ["Exemptions", Object.keys(cfg.subsExempt || {}).length]]} />
       <div style={{ ...card, marginBottom: 16 }}>
-        <Panelhead text="Teacher leave" count={cur.length ? `${cur.length} current / upcoming` : "none"} />
+        <Panelhead text="Long leave — more than 3 days" count={cur.length ? `${cur.length} current / upcoming` : "none"} />
         <div style={{ padding: 12, display: "grid", gap: 10 }}>
-          {!form && !limited && <div><button className="tt-btn" onClick={() => { setForm(blank()); setMsg(""); }} style={solidBtn}>+ Add leave</button></div>}
+          {!form && !limited && <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}><button className="tt-btn" onClick={() => { setForm(blank()); setMsg(""); }} style={solidBtn}>+ Add long leave</button><span style={{ fontSize: 12, color: C.sub }}>Absent for 1–3 days? Mark it in <b>Daily substitution</b>.</span></div>}
           {form && (
             <div style={{ border: `1.5px solid ${th.accent}55`, borderRadius: 14, padding: 12, display: "grid", gap: 10, background: "#fbfdfd" }}>
               <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "140px 160px 160px minmax(0,1fr)", gap: 10 }}>
@@ -6384,10 +6385,31 @@ function SubsView({ cfg, update, mobile, ask, limited }) {
   }, [date, needs]);
   const setCal = (fn) => update((n) => { n.calendar = { ...(n.calendar || {}) }; const nx = fn(n.calendar[date] ? { ...n.calendar[date] } : null); if (nx) n.calendar[date] = nx; else delete n.calendar[date]; if (!Object.keys(n.calendar).length) delete n.calendar; tidySubs(n, date, true); });
   const setWork = (t, v) => edit((r) => { r.work = { ...(r.work || {}) }; if (v) r.work[t] = v; else delete r.work[t]; });
-  const toggleAbs = (t) => !onLeave(t) && edit((r) => { if (r.absent[t]) { delete r.absent[t]; if (r.reason) delete r.reason[t]; } else r.absent[t] = "full"; }, true);
+  const toggleAbs = (t) => !onLeave(t) && edit((r, n) => {
+    if (r.absent[t]) {
+      const sp = (r.span || {})[t];
+      if (sp) for (const dt of sp.days) if (dt !== date && n.subs[dt]) { const x = n.subs[dt]; if (x.absent) delete x.absent[t]; if (x.reason) delete x.reason[t]; if (x.span) delete x.span[t]; tidySubs(n, dt, false); }
+      delete r.absent[t]; if (r.reason) delete r.reason[t]; if (r.span) { delete r.span[t]; if (!Object.keys(r.span).length) delete r.span; }
+    } else r.absent[t] = "full";
+  }, true);
+  // absent for 1, 2 or 3 school days: the following days are marked too (longer leave goes in Teacher leave)
+  const spanDays = (n, t, k) => { const out = [date]; let dt = date; for (let i = 0; out.length < k && i < 21; i++) { dt = isoShift(dt, 1); const dd = dayOf(n, dt); if (dd && !isOffDay(n, t, dd)) out.push(dt); } return out; };
+  const setSpan = (t, k) => update((n) => {
+    n.subs = n.subs || {};
+    const r0 = n.subs[date] || (n.subs[date] = { absent: {}, assign: {} }), old = ((r0.span || {})[t] || {}).days || [date];
+    for (const dt of old) if (dt !== date && n.subs[dt]) { const x = n.subs[dt]; if (x.absent) delete x.absent[t]; if (x.reason) delete x.reason[t]; if (x.span) delete x.span[t]; tidySubs(n, dt, false); }
+    const days = spanDays(n, t, k), why = (r0.reason || {})[t];
+    for (const dt of days) {
+      const x = n.subs[dt] || (n.subs[dt] = { absent: {}, assign: {} }); x.absent = x.absent || {}; x.assign = x.assign || {};
+      if (dt !== date || !x.absent[t]) x.absent[t] = "full";
+      if (why) x.reason = { ...(x.reason || {}), [t]: why };
+      if (days.length > 1) x.span = { ...(x.span || {}), [t]: { days } }; else if (x.span) { delete x.span[t]; if (!Object.keys(x.span).length) delete x.span; }
+      tidySubs(n, dt, dt >= isoToday());
+    }
+  });
   const setPart = (t, p) => edit((r) => { r.absent[t] = p === "some" ? "p:" : p; }, true);
   const togglePeriod = (t, p) => edit((r) => { const cur = new Set(partPeriods(cfg, r.absent[t])); if (cur.has(p)) cur.delete(p); else cur.add(p); r.absent[t] = "p:" + [...cur].sort((a, b) => a - b).join(","); }, true);
-  const setReason = (t, v) => edit((r) => { r.reason = { ...(r.reason || {}) }; if (v === "Leave") delete r.reason[t]; else r.reason[t] = v; });
+  const setReason = (t, v) => edit((r, n) => { for (const dt of ((r.span || {})[t] || {}).days || [date]) { const x = dt === date ? r : n.subs[dt]; if (!x) continue; x.reason = { ...(x.reason || {}) }; if (v === "Leave") delete x.reason[t]; else x.reason[t] = v; } });
   const pick = (key, u) => edit((r, n) => {
     const prev = r.assign[key];
     n.subsOwed = { ...(n.subsOwed || {}) };
@@ -6453,9 +6475,14 @@ function SubsView({ cfg, update, mobile, ask, limited }) {
                         <option value="full">Whole day</option><option value="am">Forenoon — FN (P1–P{fnCount(cfg)})</option><option value="pm">Afternoon — AN (P{fnCount(cfg) + 1}–P{cfg.periods.length})</option><option value="some">Some periods…</option>
                       </select>
                       <select className="tt-sel" value={(rec.reason || {})[t] || "Leave"} onChange={(e) => setReason(t, e.target.value)} style={{ width: "auto", flex: "0 1 110px", fontFamily: sans, fontSize: 12.5 }}>{ABS_REASONS.map((x) => <option key={x}>{x}</option>)}</select>
+                      {(() => { const sp = (rec.span || {})[t], k = sp ? sp.days.length : 1, idx = sp ? sp.days.indexOf(date) : 0; return (
+                        <select className="tt-sel" aria-label={`Days absent for ${t}`} value={k} disabled={idx > 0} title={idx > 0 ? `Day ${idx + 1} of ${k} — change it on ${isoNice(sp.days[0])}` : "Mark the next school days too"} onChange={(e) => setSpan(t, +e.target.value)} style={{ width: "auto", flex: "0 1 120px", fontFamily: sans, fontSize: 12.5 }}>
+                          {idx > 0 ? <option value={k}>Day {idx + 1} of {k}</option> : [1, 2, 3].map((x) => <option key={x} value={x}>{x === 1 ? "Today only" : `${x} school days`}</option>)}
+                        </select>); })()}
                       <button className="tt-btn" onClick={() => toggleAbs(t)} aria-label={`Remove ${t}`} style={{ border: "none", background: "#fff", borderRadius: 20, width: 24, height: 24, cursor: "pointer", color: C.clash, fontWeight: 800 }}>×</button>
                     </div>
                     {some && <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>{g.periods.map((pn, p) => <button key={p} className="tt-btn" onClick={() => togglePeriod(t, p)} style={{ minWidth: 38, padding: "4px 6px", borderRadius: 8, fontSize: 12, fontWeight: 800, cursor: "pointer", border: `1.5px solid ${sel.has(p) ? C.clash : C.line}`, background: sel.has(p) ? C.clash : "#fff", color: sel.has(p) ? "#fff" : C.sub }}>P{pn}</button>)}</div>}
+                    {(rec.span || {})[t] && <div style={{ fontSize: 11.5, color: "#8a1f17" }}>Absent {rec.span[t].days.map((x) => isoNice(x)).join(", ")}. Longer than 3 days? Use <b>Teacher leave</b>.</div>}
                     <input className="tt-in" value={(rec.work || {})[t] || ""} onChange={(e) => setWork(t, e.target.value)} placeholder="Work for the class (optional), e.g. Maths p.42 Ex 3.1" style={{ fontFamily: sans, fontSize: 12, height: 30, background: "#fff" }} />
                   </div>); })}
               </div>
