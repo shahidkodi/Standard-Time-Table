@@ -12,7 +12,7 @@ import { supabase } from "./supabaseClient";
    ============================================================ */
 
 const STORE_KEY = "tt_cfg_v2";
-const APP_VERSION = "2026-10-17 e";
+const APP_VERSION = "2026-10-17 f";
 
 const WEEK_ORDER = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const DAY_FULL = { MON: "Monday", TUE: "Tuesday", WED: "Wednesday", THU: "Thursday", FRI: "Friday", SAT: "Saturday", SUN: "Sunday" };
@@ -5378,7 +5378,7 @@ function SubsExemptPanel({ cfg, update, ask, date, limited }) {
   );
 }
 /* ---------------- Change history: who changed what, and when ---------------- */
-var LOG_NAMES = { school: "school name", year: "academic year", days: "working days", periods: "periods per day", fnCount: "FN / AN split", classes: "classes", singles: "teachers", subjects: "subjects", classTeacher: "class teachers", bkey: "mapping", stdPeriods: "standard periods", combined: "combined subjects", rules: "scheduling rules", classRules: "class rules", twice: "twice-a-day rules", locked: "frozen periods", commonPeriods: "common periods", teacherDays: "teacher availability", classMaxP: "periods per class", access: "staff access", accessDefault: "staff access", roles: "staff access", subsExempt: "substitution exemptions", dummy: "dummy periods", ptimes: "period times", breaks: "breaks", phones: "WhatsApp numbers", subsMode: "substitution method", subsAuto: "substitution settings", subsPreferClass: "substitution settings", subsRotationStart: "substitution counting", extraDuties: "extra duties", rooms: "rooms & labs", prefs: "teaching-quality settings", logo: "school logo", logoIcon: "school logo", wmApp: "watermark", wmPdf: "watermark", hmSign: "HM signature", seal: "school seal", hmTitle: "signature title", hmName: "signature name", signOnClass: "signature settings", signOnTeacher: "signature settings", signSize: "signature settings", sealSize: "signature settings", sealPos: "signature settings", versions: "saved versions", yearStart: "academic year dates", yearEnd: "academic year dates", teacherLinks: "teacher links", adminPw: "admin password", snapshots: "safety copies" };
+var LOG_NAMES = { school: "school name", year: "academic year", days: "working days", periods: "periods per day", fnCount: "FN / AN split", classes: "classes", singles: "teachers", subjects: "subjects", classTeacher: "class teachers", bkey: "mapping", stdPeriods: "standard periods", combined: "combined subjects", rules: "scheduling rules", classRules: "class rules", twice: "twice-a-day rules", locked: "frozen periods", commonPeriods: "common periods", teacherDays: "teacher availability", classMaxP: "periods per class", access: "staff access", accessDefault: "staff access", roles: "staff access", subsExempt: "substitution exemptions", sections: "sections", subsCross: "cover between sections", secExempt: "section exemptions", langSubs: "language subjects", dummy: "dummy periods", ptimes: "period times", breaks: "breaks", phones: "WhatsApp numbers", subsMode: "substitution method", subsAuto: "substitution settings", subsPreferClass: "substitution settings", subsRotationStart: "substitution counting", extraDuties: "extra duties", rooms: "rooms & labs", prefs: "teaching-quality settings", logo: "school logo", logoIcon: "school logo", wmApp: "watermark", wmPdf: "watermark", hmSign: "HM signature", seal: "school seal", hmTitle: "signature title", hmName: "signature name", signOnClass: "signature settings", signOnTeacher: "signature settings", signSize: "signature settings", sealSize: "signature settings", sealPos: "signature settings", versions: "saved versions", yearStart: "academic year dates", yearEnd: "academic year dates", teacherLinks: "teacher links", adminPw: "admin password", snapshots: "safety copies" };
 var LOG_SKIP = ["grid", "subs", "calendar", "changeLog", "subsOwed", "lastBackupDl", "combinedV2", "combinedV3"];
 function describeChange(a, b) {
   const out = []; if (!a || !b) return out;
@@ -6130,7 +6130,7 @@ function subCounts(cfg, date) {
 // turn order: most leisure (free) periods in the week first
 function rotationRank(cfg) {
   const leisure = {};
-  for (const t of cfg.singles) { let f = 0; for (const d of teacherWorkDays(cfg, t)) for (let p = 0; p < cfg.periods.length; p++) if (!isDummySlot(cfg, d, p) && !teacherAt(cfg, t, d, p)) f++; const x = (cfg.subsExempt || {})[t]; leisure[t] = x && x.mode === "always" ? 0 : x && x.mode === "reduce" ? Math.min(f, Math.max(0, +x.count || 0)) : f; }
+  for (const t of cfg.singles) { let f = 0; for (const d of teacherWorkDays(cfg, t)) for (let p = 0; p < cfg.periods.length; p++) if (!isDummySlot(cfg, d, p) && !teacherAt(cfg, t, d, p)) f++; const x = (cfg.subsExempt || {})[t]; leisure[t] = (x && x.mode === "always") || secExemptOf(cfg, t) ? 0 : x && x.mode === "reduce" ? Math.min(f, Math.max(0, +x.count || 0)) : f; }
   const order = cfg.singles.slice().sort((a, b) => leisure[b] - leisure[a] || a.localeCompare(b));
   const rank = {}; order.forEach((t, i) => (rank[t] = i + 1));
   return { order, rank, leisure };
@@ -6166,12 +6166,15 @@ function subCandidates(cfg, date, need, counts) {
   const today = {}; Object.entries(assign).forEach(([k, u]) => { if (u && k !== need.key) today[u] = (today[u] || 0) + 1; });
   const cls = String(need.cls).split(", ");
   const own = assign[need.key];
+  const needSec = cfg.classes.includes(cls[0]) ? secOfClass(cfg, cls[0]) : null;
   const round = rotRound(cfg, counts), pointer = rotPointer(cfg, counts, round);
   const out = [];
   for (const u of cfg.singles) {
     if (u === need.t || isOffDay(cfg, u, d) || absentAt(cfg, date, u, need.p) || takenAt.has(u)) continue;
     const exi = exemptInfo(cfg, u, date), xw = (cfg.subsExempt || {})[u], capHit = xw && +xw.maxWeek > 0 && weekDuties(cfg, u, date) - (assign[need.key] === u ? 1 : 0) >= +xw.maxWeek;
-    const blocked = exi ? exi.text : capHit ? `already ${xw.maxWeek} this week (limit)` : (xw && xw.mode === "reduce" && !(+xw.count > 0)) ? "counted as 0 free periods" : null;
+    const cp = crossPolicy(cfg, u, needSec); if (cp === "never") continue;
+    const sxe = secExemptOf(cfg, u);
+    const blocked = exi ? exi.text : sxe ? sxe : capHit ? `already ${xw.maxWeek} this week (limit)` : (xw && xw.mode === "reduce" && !(+xw.count > 0)) ? "counted as 0 free periods" : null;
     if (teacherAt(g, u, d, need.p)) continue;
     let freeToday = 0; for (let p = 0; p < g.periods.length; p++) if (!isDummySlot(cfg, d, p) && !teacherAt(g, u, d, p) && !absentAt(cfg, date, u, p)) freeToday++;
     const knows = cls.some((c) => cfg.classTeacher[c] === u || (cfg.bkey[c] || []).some((r) => String(r.teacher || "").split(" ").includes(u)));
@@ -6193,9 +6196,125 @@ function subCandidates(cfg, date, need, counts) {
       : mode === "turn"
       ? [own === u ? null : rk.owed ? "missed a turn — first in line" : rk.passed ? "skipped earlier — owed" : null, `rank ${counts.rank[u]}`, `${done} turn${done === 1 ? "" : "s"} done`, ct ? "class teacher" : knows ? `teaches ${cls[0]}` : null].filter(Boolean)
       : [ct ? "class teacher" : knows ? `teaches ${cls[0]}` : null, sameSub ? `teaches ${need.sub}` : null, `${freeToday} free today`, `${m} this month`].filter(Boolean);
-    out.push(blocked ? { u, score: -1e12, why: [blocked], m, freeToday, eff, done, remain, pct, blocked: true } : { u, score, why, m, freeToday, eff, done, remain, pct });
+    const far = cp === "ifneeded";
+    out.push(blocked ? { u, score: -1e12, why: [blocked], m, freeToday, eff, done, remain, pct, blocked: true } : { u, score: far ? score - 1e9 : score, why: far ? ["other section — only if no one else", ...why] : why, m, freeToday, eff, done, remain, pct });
   }
   return out.sort((a, b) => b.score - a.score || a.m - b.m || a.u.localeCompare(b.u));
+}
+/* ---------------- Sections (groups of standards) and who may cover whom ---------------- */
+// cfg.sections = [{ id, name, stds: ["1","2",…] }]; cfg.langSubs = [...]; cfg.subsCross["a>b"] = "allow" | "ifneeded" | "never"; cfg.secExempt[id] = "nonlang" | "all"
+function defaultSections(cfg) {
+  const st = standardsOf(cfg).map(String), num = (s) => parseInt(s, 10);
+  const grp = [["s1", "Lower primary (LP)", (n) => n >= 1 && n <= 4], ["s2", "Upper primary (UP)", (n) => n >= 5 && n <= 7], ["s3", "High school (HS)", (n) => n >= 8 && n <= 10], ["s4", "Higher secondary", (n) => n >= 11 && n <= 12]];
+  const out = grp.map(([id, name, f]) => ({ id, name, stds: st.filter((s) => f(num(s))) })).filter((x) => x.stds.length);
+  const rest = st.filter((s) => !out.some((x) => x.stds.includes(s))); if (rest.length) out.push({ id: "s9", name: "Other", stds: rest });
+  return out;
+}
+function sectionsOf(cfg) { return Array.isArray(cfg.sections) && cfg.sections.length ? cfg.sections : defaultSections(cfg); }
+function secOfClass(cfg, c) { const st = String(stdOf(c)); const x = sectionsOf(cfg).find((s) => (s.stds || []).map(String).includes(st)); return x ? x.id : null; }
+function langSubsOf(cfg) { if (Array.isArray(cfg.langSubs)) return cfg.langSubs; return (cfg.subjects || []).filter((s) => /^(LAN|ARA|ARABIC|SAN|SANSKRIT|URDU|HIN|HINDI)/i.test(s)); }
+var SECMAP = new WeakMap();
+// periods each teacher has in each section, and how many of them are language periods
+function teacherSecMap(cfg) {
+  const key = JSON.stringify([sectionsOf(cfg), langSubsOf(cfg)]), hit = cfg.grid && SECMAP.get(cfg.grid);
+  if (hit && hit.key === key) return hit.map;
+  const cm = {}; (cfg.combined || []).forEach((x) => (cm[x.name] = x));
+  const L = new Set(langSubsOf(cfg)), map = {}, secOf = {};
+  for (const c of cfg.classes) secOf[c] = secOfClass(cfg, c);
+  for (const c of cfg.classes) for (const d of cfg.days) ((cfg.grid[c] || {})[d] || []).forEach((sl) => {
+    if (!sl || !sl[0]) return; const s = cm[sl[0]] || cm[baseName(sl[0])], ts = s ? s.teachers : String(sl[0]).split(" ");
+    for (const t of ts) { const m = map[t] || (map[t] = { secs: {}, lang: 0, tot: 0 }); m.tot++; if (L.has(sl[1])) m.lang++; if (secOf[c]) m.secs[secOf[c]] = (m.secs[secOf[c]] || 0) + 1; }
+  });
+  for (const c of cfg.classes) { const t = cfg.classTeacher[c]; if (t && secOf[c]) { const m = map[t] || (map[t] = { secs: {}, lang: 0, tot: 0 }); if (!m.secs[secOf[c]]) m.secs[secOf[c]] = 0.5; } }
+  if (cfg.grid) SECMAP.set(cfg.grid, { key, map });
+  return map;
+}
+function teacherSecs(cfg, t) { const m = teacherSecMap(cfg)[t]; return m ? Object.keys(m.secs) : []; }
+function primarySec(cfg, t) { const m = teacherSecMap(cfg)[t]; if (!m) return null; let best = null, n = -1; for (const [k, v] of Object.entries(m.secs)) if (v > n) { best = k; n = v; } return best; }
+function isLangTeacher(cfg, t) { const m = teacherSecMap(cfg)[t]; return !!m && m.tot > 0 && m.lang * 2 > m.tot; }
+function secExemptOf(cfg, t) {
+  const ex = cfg.secExempt || {}; if (!Object.keys(ex).length) return null;
+  const p = primarySec(cfg, t); if (!p || !ex[p]) return null;
+  const nm = (sectionsOf(cfg).find((s) => s.id === p) || {}).name || "section";
+  if (ex[p] === "all") return `${nm} — exempt`;
+  if (ex[p] === "nonlang" && !isLangTeacher(cfg, t)) return `${nm} — exempt`;
+  return null;
+}
+const CROSS_RANK = { allow: 2, ifneeded: 1, never: 0 };
+function crossPolicy(cfg, t, needSec) {
+  if (!needSec) return "same"; const secs = teacherSecs(cfg, t); if (!secs.length || secs.includes(needSec)) return "same";
+  let best = "never"; for (const s of secs) { const v = (cfg.subsCross || {})[s + ">" + needSec] || "ifneeded"; if (CROSS_RANK[v] > CROSS_RANK[best]) best = v; }
+  return best;
+}
+function SectionsPanel({ cfg, update, limited, mobile }) {
+  const th = CUR_TH || THEMES.teal;
+  const secs = sectionsOf(cfg), custom = Array.isArray(cfg.sections) && cfg.sections.length;
+  const map = teacherSecMap(cfg), langs = langSubsOf(cfg);
+  const [open, setOpen] = useState(false);
+  const allStd = [...new Set([...Array.from({ length: 12 }, (_, i) => String(i + 1)), ...standardsOf(cfg).map(String)])];
+  const setSecs = (fn) => update((n) => { const cur = (Array.isArray(n.sections) && n.sections.length ? n.sections : defaultSections(n)).map((x) => ({ ...x, stds: [...(x.stds || [])] })); n.sections = fn(cur); });
+  const togStd = (id, st) => setSecs((L) => L.map((x) => (x.id === id ? { ...x, stds: x.stds.includes(st) ? x.stds.filter((y) => y !== st) : [...x.stds, st].sort((a, b) => +a - +b) } : { ...x, stds: x.stds.filter((y) => y !== st) })));
+  const members = (id) => cfg.singles.filter((t) => primarySec(cfg, t) === id);
+  const teach = (id) => cfg.singles.filter((t) => teacherSecs(cfg, t).includes(id));
+  const pol = (a, b) => (cfg.subsCross || {})[a + ">" + b] || "ifneeded";
+  const setPol = (a, b, v) => update((n) => { n.subsCross = { ...(n.subsCross || {}), [a + ">" + b]: v }; });
+  const setEx = (id, v) => update((n) => { n.secExempt = { ...(n.secExempt || {}) }; if (v) n.secExempt[id] = v; else delete n.secExempt[id]; if (!Object.keys(n.secExempt).length) delete n.secExempt; });
+  const chip = (on, col) => ({ border: `1.5px solid ${on ? col || th.accent : C.line}`, background: on ? `${col || th.accent}14` : "#fff", color: on ? col || th.g2 : C.sub, borderRadius: 9, padding: "3px 9px", fontSize: 12, fontWeight: 700, cursor: limited ? "default" : "pointer" });
+  const polName = { allow: "Allowed", ifneeded: "Only if no one else", never: "Never" };
+  return (
+    <div style={card}>
+      <Panelhead text="Sections — who may cover whom" count={secs.map((s) => s.name.replace(/ \(.*\)$/, "")).join(" · ") || "none"} />
+      <div style={{ padding: 12, display: "grid", gap: 12 }}>
+        <div className="tt-callout">Classes are grouped into <b>sections</b> by standard (for example Std 1–4 and Std 5–7). A teacher belongs to the section where they teach most. Choose whether teachers of one section may cover classes of another — <b>allowed</b>, <b>only if no one else is free</b>, or <b>never</b> — and exempt a whole section from substitution duty in one click.</div>
+        <div style={{ display: "grid", gap: 8 }}>
+          {secs.map((s) => { const mem = members(s.id), nl = mem.filter((t) => !isLangTeacher(cfg, t)), lg = mem.filter((t) => isLangTeacher(cfg, t)), ex = (cfg.secExempt || {})[s.id] || ""; return (
+            <div key={s.id} style={{ border: `1px solid ${C.line}`, borderRadius: 12, padding: "10px 12px", display: "grid", gap: 8, background: ex ? "#fdf6ec" : "#fff" }}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <b style={{ fontSize: 14 }}>{s.name}</b>
+                <span style={{ fontSize: 12, color: C.sub }}>Std {s.stds.join(", ") || "—"} · {cfg.classes.filter((c) => secOfClass(cfg, c) === s.id).length} classes · {mem.length} teacher{mem.length === 1 ? "" : "s"} ({lg.length} language)</span>
+                <label style={{ marginLeft: "auto", display: "inline-flex", gap: 6, alignItems: "center", fontSize: 12.5, fontWeight: 700, color: C.sub }}>Substitution duty
+                  <select className="tt-sel" disabled={limited} value={ex} onChange={(e) => setEx(s.id, e.target.value)} style={{ width: mobile ? 210 : 300, height: 32, fontFamily: sans, fontSize: 12.5, fontWeight: 700, borderColor: ex ? C.accent : undefined }}>
+                    <option value="">Everyone takes substitution</option>
+                    <option value="nonlang">Exempt all except language teachers ({nl.length})</option>
+                    <option value="all">Exempt all, including language teachers ({mem.length})</option>
+                  </select>
+                </label>
+              </div>
+              {ex && <div style={{ fontSize: 12, color: "#7a5310" }}>Exempt: <b style={{ fontFamily: mono }}>{(ex === "all" ? mem : nl).join(" ") || "nobody"}</b>{ex === "nonlang" && lg.length ? <> · still take duty: <span style={{ fontFamily: mono }}>{lg.join(" ")}</span></> : null}</div>}
+            </div>); })}
+        </div>
+        {secs.length > 1 && <div className="tt-scroll" style={{ overflowX: "auto" }}>
+          <table style={{ borderCollapse: "separate", borderSpacing: 4 }}>
+            <thead><tr><th style={{ ...th0, textAlign: "left", background: "none" }}>Teachers of ↓ covering classes of →</th>{secs.map((s) => <th key={s.id} style={{ ...th0, background: "none" }}>{s.name}</th>)}</tr></thead>
+            <tbody>{secs.map((a) => (
+              <tr key={a.id}><td style={{ fontSize: 12.5, fontWeight: 800, paddingRight: 8, whiteSpace: "nowrap" }}>{a.name}</td>
+                {secs.map((b) => <td key={b.id}>{a.id === b.id ? <span style={{ display: "inline-block", minWidth: 150, textAlign: "center", fontSize: 12, color: C.free, fontWeight: 700 }}>✓ own section</span>
+                  : <select className="tt-sel" disabled={limited} value={pol(a.id, b.id)} onChange={(e) => setPol(a.id, b.id, e.target.value)} style={{ width: 170, height: 32, fontFamily: sans, fontSize: 12.5, fontWeight: 700, color: pol(a.id, b.id) === "never" ? C.clash : pol(a.id, b.id) === "allow" ? C.free : "#94620b" }}>{Object.entries(polName).map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>}</td>)}
+              </tr>))}</tbody>
+          </table>
+        </div>}
+        {secs.length < 2 && <div style={{ fontSize: 12.5, color: C.sub }}>Only one section has classes in the app now. Add the other classes (for example Std 1–4 with their timetables) to use cover between sections.</div>}
+        {!limited && <div><button className="tt-btn" onClick={() => setOpen(!open)} style={{ ...ghostBtn, fontSize: 12.5 }}>{open ? "Close" : "Change sections & language subjects"}</button></div>}
+        {open && !limited && <div style={{ display: "grid", gap: 10, border: `1.5px dashed ${C.line}`, borderRadius: 12, padding: 12 }}>
+          {secs.map((s) => (
+            <div key={s.id} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <input className="tt-in" value={s.name} onChange={(e) => setSecs((L) => L.map((x) => (x.id === s.id ? { ...x, name: e.target.value } : x)))} style={{ width: 190, height: 32, fontFamily: sans, fontSize: 13, fontWeight: 700 }} />
+              <span style={{ fontSize: 12, color: C.sub }}>Standards:</span>
+              {allStd.map((st) => <button key={st} className="tt-btn" onClick={() => togStd(s.id, st)} style={chip(s.stds.includes(st))}>{st}</button>)}
+              {secs.length > 1 && <button className="tt-btn" onClick={() => setSecs((L) => L.filter((x) => x.id !== s.id))} style={{ border: "none", background: "transparent", color: C.clash, fontSize: 16, cursor: "pointer" }} aria-label="Remove section">×</button>}
+            </div>))}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button className="tt-btn" onClick={() => setSecs((L) => [...L, { id: "s" + Date.now(), name: "New section", stds: [] }])} style={ghostBtn}>+ Add a section</button>
+            {custom && <button className="tt-btn" onClick={() => update((n) => { delete n.sections; })} style={ghostBtn}>Back to the usual (Std 1–4 · 5–7 · 8–10)</button>}
+          </div>
+          <div style={{ display: "grid", gap: 6 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 700 }}>Language subjects <span style={{ fontWeight: 500, color: C.sub }}>(a teacher whose periods are mostly these is a language teacher)</span></div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{cfg.subjects.map((x) => { const on = langs.includes(x); return <button key={x} className="tt-btn" onClick={() => update((n) => { const L = langSubsOf(n); n.langSubs = on ? L.filter((y) => y !== x) : [...L, x]; })} style={{ ...chip(on, "#7c3aed"), fontFamily: mono }}>{on ? "✓ " : ""}{x}</button>; })}</div>
+          </div>
+        </div>}
+      </div>
+    </div>
+  );
 }
 /* ---------------- Dummy periods: on the timetable only for show — not counted, never covered ---------------- */
 // cfg.dummy = { slots: ["MON|7", …] (period index, whole school), subs: ["T-PET", …] (lessons for show) }
@@ -6657,6 +6776,7 @@ function SubsView({ cfg, update, mobile, ask, limited }) {
       </div>}
 
       <div style={{ marginTop: 16 }}>{subsModeOf(cfg) === "turn" ? <RotationPanel cfg={cfg} update={update} date={date} counts={counts} ask={ask} limited={limited} /> : <FairPanel cfg={cfg} update={update} date={date} counts={counts} ask={ask} limited={limited} />}</div>
+      <div style={{ marginTop: 16 }}><SectionsPanel cfg={cfg} update={update} limited={limited} mobile={mobile} /></div>
       <div style={{ marginTop: 16 }}><DummyPanel cfg={cfg} update={update} limited={limited} mobile={mobile} /></div>
       <div style={{ marginTop: 16 }}><CalendarPanel cfg={cfg} update={update} date={date} setDate={setDate} ask={ask} mobile={mobile} /></div>
       <div style={{ display: "grid", gridTemplateColumns: mobile ? "minmax(0,1fr)" : "repeat(2, minmax(0,1fr))", gap: 16, marginTop: 16 }}>
