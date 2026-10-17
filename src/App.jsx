@@ -12,7 +12,7 @@ import { supabase } from "./supabaseClient";
    ============================================================ */
 
 const STORE_KEY = "tt_cfg_v2";
-const APP_VERSION = "2026-10-17 f";
+const APP_VERSION = "2026-10-17 h";
 
 const WEEK_ORDER = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const DAY_FULL = { MON: "Monday", TUE: "Tuesday", WED: "Wednesday", THU: "Thursday", FRI: "Friday", SAT: "Saturday", SUN: "Sunday" };
@@ -1740,7 +1740,7 @@ function GridTable({ cfg, render }) {
               );
             })}
           </tr>
-          {breaksAfter(cfg, pi).map((b) => <tr key={b.id}><td colSpan={cfg.days.length + 1} style={{ padding: "3px 8px", background: "#fdf2e3", color: "#94620b", fontSize: 11, fontWeight: 800, letterSpacing: 1, textAlign: "center", textTransform: "uppercase", borderBottom: `1px solid ${C.line}` }}>{b.name || "Break"}{brkTime(b) ? ` · ${brkTime(b)}` : ""}</td></tr>)}
+          {breaksAfter(cfg, pi).map((b) => <tr key={b.id}><td colSpan={cfg.days.length + 1} style={{ padding: "3px 8px", background: "#fdf2e3", color: "#94620b", fontSize: 11, fontWeight: 800, letterSpacing: 1, textAlign: "center", textTransform: "uppercase", borderBottom: `1px solid ${C.line}` }}>{b.name || "Break"}{brkTime(b, cfg) ? ` · ${brkTime(b, cfg)}` : ""}</td></tr>)}
           </React.Fragment>
         ))}
       </tbody>
@@ -4895,6 +4895,24 @@ function PhoneInput({ cfg, update, t, width }) {
   const bad = v && !normPhone(v);
   return <input className="tt-in" type="tel" inputMode="tel" value={v} onChange={(e) => setV(e.target.value)} onBlur={save} onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()} placeholder="WhatsApp no." title={bad ? "Enter a 10-digit mobile number (or with country code)" : "WhatsApp number — the link is sent straight to this chat"} style={{ width: width || 140, height: 30, fontFamily: sans, fontSize: 12.5, borderColor: bad ? C.clash : undefined, background: cur ? "#f2fbf6" : "#fff" }} />;
 }
+// read teacher codes + numbers from rows of a CSV / Excel sheet (header optional: Teacher/Code/Name + Phone/Mobile/WhatsApp/Number)
+function phoneRows(cfg, rows) {
+  const cell = (v) => { let s = String(v == null ? "" : v).trim(); if (/^\d(\.\d+)?e\+?\d+$/i.test(s)) s = Number(s).toFixed(0); return s; };
+  const up = (s) => s.toUpperCase().replace(/\s+/g, " ");
+  const T = new Map(cfg.singles.map((t) => [up(t), t]));
+  let tc = -1, pc = -1, start = 0;
+  const h = (rows[0] || []).map((x) => cell(x).toLowerCase());
+  if (h.some((x) => /phone|mobile|whats|number|contact|\bno\b/.test(x))) { pc = h.findIndex((x) => /phone|mobile|whats|number|contact|\bno\b/.test(x)); tc = h.findIndex((x) => /teacher|code|short|initial|name/.test(x)); start = 1; }
+  const found = {}, bad = [], unknown = [];
+  for (const r0 of rows.slice(start)) {
+    const r = (r0 || []).map(cell); if (!r.some(Boolean)) continue;
+    let t = tc >= 0 ? T.get(up(r[tc] || "")) : null; if (!t) for (const x of r) { const y = T.get(up(x)); if (y) { t = y; break; } }
+    let p = pc >= 0 ? normPhone(r[pc]) : ""; if (!p) for (const x of r) { const y = normPhone(x); if (y && /\d{10}/.test(x.replace(/\D/g, ""))) { p = y; break; } }
+    const label = r.filter(Boolean).slice(0, 3).join(" ");
+    if (t && p) found[t] = p; else if (!t && p) unknown.push(label); else if (t || r.some(Boolean)) bad.push(label);
+  }
+  return { found, bad, unknown };
+}
 function ShareLinkButton({ cfg, t }) {
   const [open, setOpen] = useState(false);
   const [msg, setMsg] = useState("");
@@ -4944,6 +4962,19 @@ function TeacherLinksPanel({ cfg, update, ask, pubState, publishNow, mobile }) {
   const phones = cfg.phones || {};
   const withNo = cfg.singles.filter((t) => phones[t]);
   const nextT = withNo.find((t) => !sent[t]);
+  const phFile = useRef(null);
+  const [phPrev, setPhPrev] = useState(null);
+  const onPhFile = async (f) => {
+    if (!f) return;
+    try {
+      const rows = /\.xlsx$/i.test(f.name) ? await readXlsxRows(f) : /\.xls$/i.test(f.name) ? null : parseDelimited(await f.text());
+      if (!rows) { setMsg("Old .xls files can't be read — in Excel choose File → Save As → Excel Workbook (.xlsx) or CSV."); return; }
+      const r = phoneRows(cfg, rows); setPhPrev({ ...r, name: f.name });
+      if (!Object.keys(r.found).length) setMsg("No teacher codes with numbers found in that file. Put the teacher code (as in the app) in one column and the mobile number in the next.");
+    } catch (e) { setMsg("Couldn't read the file: " + ((e && e.message) || e)); }
+  };
+  const savePh = () => { const f = phPrev.found, k = Object.keys(f).length; update((n) => { n.phones = { ...(n.phones || {}), ...f }; }); setMsg(`${k} number${k === 1 ? "" : "s"} saved from ${phPrev.name}.`); setPhPrev(null); };
+  const dlPhones = () => downloadText(`${(cfg.school || "school").replace(/[^\w-]+/g, "_")}_whatsapp_numbers.csv`, "\ufeffTeacher,WhatsApp number\r\n" + cfg.singles.map((t) => `${t},${phones[t] || ""}`).join("\r\n") + "\r\n");
   const sendTo = (t) => { openWa(phones[t], linkText(cfg, t)); markSent(t); };
   const saveBulk = () => { const found = {}, bad = []; for (const line of String(bulk || "").split(/\r?\n/)) { const m = line.trim().match(/^([A-Za-z0-9][A-Za-z0-9\- ]*?)[\s,:;\t]+(\+?[\d\s\-]{10,})$/); if (!m) { if (line.trim()) bad.push(line.trim()); continue; } const t = cfg.singles.find((x) => x.toUpperCase() === m[1].trim().toUpperCase()), p = normPhone(m[2]); if (t && p) found[t] = p; else bad.push(line.trim()); }
     update((n) => { n.phones = { ...(n.phones || {}), ...found }; }); setMsg(`${Object.keys(found).length} number${Object.keys(found).length === 1 ? "" : "s"} saved.${bad.length ? ` Not understood: ${bad.slice(0, 5).join(" · ")}${bad.length > 5 ? " …" : ""}` : ""}`); setBulk(null); };
@@ -5000,8 +5031,18 @@ function TeacherLinksPanel({ cfg, update, ask, pubState, publishNow, mobile }) {
             <span style={{ flex: "1 1 240px", fontSize: 12.5, color: C.ink }}>Add each teacher's <b>WhatsApp number</b> and the link goes <b>straight to their chat</b> — just press Send. {withNo.length} of {cfg.singles.length} numbers added{withNo.length ? ` · ${withNo.filter((t) => sent[t]).length} sent from this device` : ""}.</span>
             {nextT && <button className="tt-btn" onClick={() => sendTo(nextT)} style={{ ...solidBtn, background: "linear-gradient(135deg, #25a35a, #128c4b)", padding: "6px 12px", fontSize: 12.5 }}>Send next: {nextT} →</button>}
             {withNo.length > 0 && !nextT && <button className="tt-btn" onClick={() => { setSent({}); lsSet("tt_wa_sent", "{}"); }} style={{ ...ghostBtn, padding: "5px 10px", fontSize: 12 }}>All sent ✓ · start again</button>}
+            <button className="tt-btn" onClick={() => phFile.current && phFile.current.click()} style={{ ...ghostBtn, padding: "5px 10px", fontSize: 12 }}>Upload CSV / Excel</button>
+            <button className="tt-btn" onClick={dlPhones} title="A CSV with every teacher code — fill in the numbers in Excel and upload it back" style={{ ...ghostBtn, padding: "5px 10px", fontSize: 12 }}>Download list</button>
             <button className="tt-btn" onClick={() => setBulk(bulk === null ? "" : null)} style={{ ...ghostBtn, padding: "5px 10px", fontSize: 12 }}>{bulk === null ? "Paste many numbers" : "Close"}</button>
+            <input ref={phFile} type="file" accept=".csv,.xlsx,.xls,.tsv,.txt" style={{ display: "none" }} onChange={(e) => { onPhFile(e.target.files && e.target.files[0]); e.target.value = ""; }} />
           </div>
+          {phPrev && Object.keys(phPrev.found).length > 0 && <div style={{ display: "grid", gap: 8, padding: "10px 12px", borderRadius: 12, border: `1px solid ${C.line}`, background: "#fff" }}>
+            <div style={{ fontSize: 13 }}><b>{Object.keys(phPrev.found).length}</b> number{Object.keys(phPrev.found).length === 1 ? "" : "s"} found in <b>{phPrev.name}</b>{Object.keys(phPrev.found).filter((t) => phones[t] && phones[t] !== phPrev.found[t]).length ? ` · ${Object.keys(phPrev.found).filter((t) => phones[t] && phones[t] !== phPrev.found[t]).length} will replace an older number` : ""}.</div>
+            <div style={{ display: "flex", gap: 5, flexWrap: "wrap", maxHeight: 120, overflowY: "auto" }}>{Object.entries(phPrev.found).map(([t, p]) => <span key={t} style={{ fontSize: 11.5, fontFamily: mono, padding: "2px 7px", borderRadius: 7, background: "#f2fbf6", border: "1px solid #128c4b33" }}><b>{t}</b> +{p}</span>)}</div>
+            {phPrev.unknown.length > 0 && <div style={{ fontSize: 12, color: C.clash }}>Teacher code not found ({phPrev.unknown.length}): {phPrev.unknown.slice(0, 6).join(" · ")}{phPrev.unknown.length > 6 ? " …" : ""} — use the codes exactly as in the app.</div>}
+            {phPrev.bad.length > 0 && <div style={{ fontSize: 12, color: C.sub }}>Skipped ({phPrev.bad.length}, no valid number): {phPrev.bad.slice(0, 6).join(" · ")}{phPrev.bad.length > 6 ? " …" : ""}</div>}
+            <div style={{ display: "flex", gap: 8 }}><button className="tt-btn" onClick={savePh} style={solidBtn}>Save these numbers</button><button className="tt-btn" onClick={() => setPhPrev(null)} style={ghostBtn}>Cancel</button></div>
+          </div>}
           {bulk !== null && <div style={{ display: "grid", gap: 6 }}>
             <textarea className="tt-in" value={bulk} onChange={(e) => setBulk(e.target.value)} placeholder={"One teacher per line — code and number, e.g.\nKPM 9847012345\nMFK, 9446012345"} style={{ fontFamily: mono, fontSize: 12.5, minHeight: 110 }} />
             <div><button className="tt-btn" onClick={saveBulk} style={solidBtn}>Save numbers</button></div>
@@ -5378,7 +5419,7 @@ function SubsExemptPanel({ cfg, update, ask, date, limited }) {
   );
 }
 /* ---------------- Change history: who changed what, and when ---------------- */
-var LOG_NAMES = { school: "school name", year: "academic year", days: "working days", periods: "periods per day", fnCount: "FN / AN split", classes: "classes", singles: "teachers", subjects: "subjects", classTeacher: "class teachers", bkey: "mapping", stdPeriods: "standard periods", combined: "combined subjects", rules: "scheduling rules", classRules: "class rules", twice: "twice-a-day rules", locked: "frozen periods", commonPeriods: "common periods", teacherDays: "teacher availability", classMaxP: "periods per class", access: "staff access", accessDefault: "staff access", roles: "staff access", subsExempt: "substitution exemptions", sections: "sections", subsCross: "cover between sections", secExempt: "section exemptions", langSubs: "language subjects", dummy: "dummy periods", ptimes: "period times", breaks: "breaks", phones: "WhatsApp numbers", subsMode: "substitution method", subsAuto: "substitution settings", subsPreferClass: "substitution settings", subsRotationStart: "substitution counting", extraDuties: "extra duties", rooms: "rooms & labs", prefs: "teaching-quality settings", logo: "school logo", logoIcon: "school logo", wmApp: "watermark", wmPdf: "watermark", hmSign: "HM signature", seal: "school seal", hmTitle: "signature title", hmName: "signature name", signOnClass: "signature settings", signOnTeacher: "signature settings", signSize: "signature settings", sealSize: "signature settings", sealPos: "signature settings", versions: "saved versions", yearStart: "academic year dates", yearEnd: "academic year dates", teacherLinks: "teacher links", adminPw: "admin password", snapshots: "safety copies" };
+var LOG_NAMES = { school: "school name", year: "academic year", days: "working days", periods: "periods per day", fnCount: "FN / AN split", classes: "classes", singles: "teachers", subjects: "subjects", classTeacher: "class teachers", bkey: "mapping", stdPeriods: "standard periods", combined: "combined subjects", rules: "scheduling rules", classRules: "class rules", twice: "twice-a-day rules", locked: "frozen periods", commonPeriods: "common periods", teacherDays: "teacher availability", classMaxP: "periods per class", access: "staff access", accessDefault: "staff access", roles: "staff access", subsExempt: "substitution exemptions", sections: "sections", subsCross: "cover between sections", secExempt: "section exemptions", langSubs: "language subjects", dummy: "dummy periods", ptimes: "period times", breaks: "breaks", phones: "WhatsApp numbers", timeFmt: "time format", untimed: "classes without a timetable", subsMode: "substitution method", subsAuto: "substitution settings", subsPreferClass: "substitution settings", subsRotationStart: "substitution counting", extraDuties: "extra duties", rooms: "rooms & labs", prefs: "teaching-quality settings", logo: "school logo", logoIcon: "school logo", wmApp: "watermark", wmPdf: "watermark", hmSign: "HM signature", seal: "school seal", hmTitle: "signature title", hmName: "signature name", signOnClass: "signature settings", signOnTeacher: "signature settings", signSize: "signature settings", sealSize: "signature settings", sealPos: "signature settings", versions: "saved versions", yearStart: "academic year dates", yearEnd: "academic year dates", teacherLinks: "teacher links", adminPw: "admin password", snapshots: "safety copies" };
 var LOG_SKIP = ["grid", "subs", "calendar", "changeLog", "subsOwed", "lastBackupDl", "combinedV2", "combinedV3"];
 function describeChange(a, b) {
   const out = []; if (!a || !b) return out;
@@ -5729,14 +5770,14 @@ function specialN(cfg, e) { return Math.max(1, Math.min(cfg.periods.length, +e.n
 var VCFG = new WeakMap();
 // the timetable as it runs on that date (a special day replaces the followed day's grid)
 function cfgOn(cfg, date) {
-  const e = calEntry(cfg, date); if (!e || e.kind !== "special" || !e.grid) return cfg;
-  const d = dayOf(cfg, date); if (!d) return cfg;
+  const e = calEntry(cfg, date); if (!e || e.kind !== "special" || !e.grid) return untimedCfg(cfg);
+  const d = dayOf(cfg, date); if (!d) return untimedCfg(cfg);
   let m = VCFG.get(cfg); if (!m) { m = new Map(); VCFG.set(cfg, m); }
-  const hit = m.get(date); if (hit && hit.e === e) return hit.v;
+  const hit = m.get(date); if (hit && hit.e === e) return untimedCfg(hit.v);
   const n = specialN(cfg, e), grid = {};
   for (const c of cfg.classes) { const row = (e.grid[c] || []).slice(0, n).map((s) => (Array.isArray(s) ? s : [null, null])); while (row.length < n) row.push([null, null]); grid[c] = { ...(cfg.grid[c] || {}), [d]: row }; }
   const v = { ...cfg, grid, periods: cfg.periods.slice(0, n), _base: cfg };
-  m.set(date, { e, v }); return v;
+  m.set(date, { e, v }); return untimedCfg(v);
 }
 function makeSpecial(cfg, day, label, n) { const grid = {}; for (const c of cfg.classes) grid[c] = clone(((cfg.grid[c] || {})[day]) || emptyDay(cfg.periods.length)); return { kind: "special", day, label: label || "", n: n || cfg.periods.length, grid }; }
 function dayLabel(cfg, date) {
@@ -5754,6 +5795,7 @@ function tidySubs(n, date, auto) {
     r.assign = r.assign || {}; r.absent = r.absent || {};
     const keys = new Set(subsNeeds(n, date).map((x) => x.key)); for (const k of Object.keys(r.assign)) if (!keys.has(k) || !r.assign[k]) delete r.assign[k];
     if (r.work) { const am = absentMap(n, date); for (const t of Object.keys(r.work)) if (!am[t] || !r.work[t]) delete r.work[t]; if (!Object.keys(r.work).length) delete r.work; }
+    if (r.pick) { const am = absentMap(n, date); for (const t of Object.keys(r.pick)) if (!am[t]) delete r.pick[t]; if (!Object.keys(r.pick).length) delete r.pick; }
     if (!Object.keys(r.absent).length && !Object.keys(r.assign).length && !r.note) delete n.subs[date];
   }
   const cut = isoShift(isoToday(), -400);
@@ -6109,7 +6151,9 @@ function subsNeeds(cfg, date) {
   const g = cfgOn(cfg, date), work = rec.work || {};
   for (const t of Object.keys(abs)) {
     if (!cfg.singles.includes(t)) continue;
-    for (const p of partPeriods(g, abs[t])) { if (isDummySlot(cfg, d, p)) continue; const r = teacherAt(g, t, d, p); if (r && !(r.extra && !r.cover) && !isDummySub(cfg, r.sub)) out.push({ key: `${t}|${p}`, t, p, cls: r.c, sub: r.sub, combined: !!r.combined, work: work[t] || "" }); }
+    for (const p of partPeriods(g, abs[t])) { if (isDummySlot(cfg, d, p)) continue; const r = teacherAt(g, t, d, p); if (!r || (r.extra && !r.cover) || isDummySub(cfg, r.sub)) continue;
+      const vt = !r.combined && !!(((g.grid[r.c] || {})[d] || [])[p] || [])[2]; if (vt && !untimedOn(cfg, rec, t, r.c, p)) continue;
+      out.push({ key: `${t}|${p}`, t, p, cls: r.c, sub: r.sub, combined: !!r.combined, work: work[t] || "", ...(vt ? { untimed: true } : {}) }); }
   }
   return out.sort((a, b) => a.p - b.p || cmpClass(a.cls, b.cls));
 }
@@ -6128,8 +6172,8 @@ function subCounts(cfg, date) {
   return { month, total, last, rot, rank: rk.rank, leisure: rk.leisure, start };
 }
 // turn order: most leisure (free) periods in the week first
-function rotationRank(cfg) {
-  const leisure = {};
+function rotationRank(cfg0) {
+  const leisure = {}, cfg = untimedCfg(cfg0);
   for (const t of cfg.singles) { let f = 0; for (const d of teacherWorkDays(cfg, t)) for (let p = 0; p < cfg.periods.length; p++) if (!isDummySlot(cfg, d, p) && !teacherAt(cfg, t, d, p)) f++; const x = (cfg.subsExempt || {})[t]; leisure[t] = (x && x.mode === "always") || secExemptOf(cfg, t) ? 0 : x && x.mode === "reduce" ? Math.min(f, Math.max(0, +x.count || 0)) : f; }
   const order = cfg.singles.slice().sort((a, b) => leisure[b] - leisure[a] || a.localeCompare(b));
   const rank = {}; order.forEach((t, i) => (rank[t] = i + 1));
@@ -6201,6 +6245,125 @@ function subCandidates(cfg, date, need, counts) {
   }
   return out.sort((a, b) => b.score - a.score || a.m - b.m || a.u.localeCompare(b.u));
 }
+/* ---------------- Classes without a period timetable ---------------- */
+// cfg.untimed[c] = { mode: "one", t? }            one teacher takes every period that is not entered in the timetable
+//                = { mode: "shared", teachers: [] } shared by a few teachers; on the day, tick the periods the absent one had
+// Only substitution sees these filled-in periods — the class timetable, printouts and clash checks use what was entered.
+const UNTIMED_SUB = "All subjects", SHARED_SUB = "Shared class";
+var UNT = new WeakMap();
+function untimedOf(cfg) { return cfg.untimed || {}; }
+function untimedTeachers(cfg, c) { const u = untimedOf(cfg)[c]; if (!u) return []; if (u.mode === "one") { const t = u.t || cfg.classTeacher[c]; return t && cfg.singles.includes(t) ? [t] : []; } return (u.teachers || []).filter((t) => cfg.singles.includes(t)); }
+function entryCount(cfg, c) { let k = 0, all = 0; for (const d of cfg.days) for (const sl of ((cfg.grid[c] || {})[d] || [])) { all++; if (sl && sl[0]) k++; } return { k, all: all || cfg.days.length * cfg.periods.length }; }
+function untimedGrid(cfg) {
+  const un = untimedOf(cfg), cls = Object.keys(un).filter((c) => cfg.classes.includes(c)); if (!cls.length || !cfg.grid) return cfg.grid;
+  const key = JSON.stringify([un, cls.map((c) => cfg.classTeacher[c]), cfg.periods.length, cfg.days, cfg.teacherDays || {}, cfg.singles.length]);
+  const hit = UNT.get(cfg.grid); if (hit && hit.key === key) return hit.g;
+  const g = { ...cfg.grid };
+  for (const c of cls) {
+    const ts = untimedTeachers(cfg, c); if (!ts.length || !cfg.grid[c]) continue;
+    const one = un[c].mode === "one", row = {};
+    for (const d of Object.keys(cfg.grid[c])) row[d] = (cfg.grid[c][d] || []).map((sl, p) => {
+      if (sl && sl[0]) return sl;
+      const free = ts.filter((t) => !isOffDay(cfg, t, d) && !teacherAt(cfg, t, d, p));
+      return free.length ? [free.join(" "), one ? UNTIMED_SUB : SHARED_SUB, true] : sl;
+    });
+    g[c] = row;
+  }
+  UNT.set(cfg.grid, { key, g }); return g;
+}
+function untimedCfg(cfg) { const g = untimedGrid(cfg); return g === cfg.grid ? cfg : { ...cfg, grid: g, _base: cfg._base || cfg }; }
+// the filled-in (not entered) periods a teacher has in such classes on a day: [{ c, mode, ps }]
+function untimedPeriods(cfg, g, t, d) {
+  const out = {};
+  for (let p = 0; p < g.periods.length; p++) {
+    if (isDummySlot(cfg, d, p)) continue;
+    const r = teacherAt(g, t, d, p); if (!r || r.combined) continue;
+    const sl = ((g.grid[r.c] || {})[d] || [])[p]; if (!sl || !sl[2]) continue;
+    (out[r.c] || (out[r.c] = { c: r.c, mode: (untimedOf(cfg)[r.c] || {}).mode, ps: [] })).ps.push(p);
+  }
+  return Object.values(out);
+}
+function untimedOn(cfg, rec, t, c, p) { const pk = (rec.pick || {})[t]; return pk ? pk.includes(p) : (untimedOf(cfg)[c] || {}).mode === "one"; }
+function UntimedPick({ cfg, g, d, t, rec, part, onSet }) {
+  const th = CUR_TH || THEMES.teal;
+  const groups = untimedPeriods(cfg, g, t, d).map((x) => ({ ...x, ps: x.ps.filter((p) => part.includes(p)) })).filter((x) => x.ps.length);
+  if (!groups.length) return null;
+  const allPs = groups.flatMap((x) => x.ps);
+  const cur = new Set(allPs.filter((p) => untimedOn(cfg, rec, t, groups.find((x) => x.ps.includes(p)).c, p)));
+  const set = (s) => onSet([...s].sort((a, b) => a - b));
+  const tog = (p) => { const s = new Set(cur); if (s.has(p)) s.delete(p); else s.add(p); set(s); };
+  return (
+    <div style={{ display: "grid", gap: 5, padding: "7px 9px", borderRadius: 9, background: "#fff", border: `1px dashed ${th.accent}88` }}>
+      {groups.map((x) => (
+        <div key={x.c} style={{ display: "grid", gap: 5 }}>
+          <span style={{ fontSize: 11.5, color: C.ink, lineHeight: 1.4 }}>{x.mode === "one"
+            ? <><b>{x.c}</b> has no period timetable — {t} takes every period not entered. <b>Untick</b> any period that needs no substitute.</>
+            : <><b>{x.c}</b> is shared and has no period timetable — <b>tick the periods {t} had</b> today.</>}</span>
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
+            {x.ps.map((p) => { const on = cur.has(p); return <button key={p} className="tt-btn" aria-pressed={on} title={`${x.c} · P${cfg.periods[p]}${on ? " — needs a substitute" : ""}`} onClick={() => tog(p)} style={{ minWidth: 34, padding: "3px 7px", borderRadius: 7, fontSize: 12, fontWeight: 800, fontFamily: mono, border: `1.5px solid ${on ? C.clash : C.line}`, background: on ? C.clash : "#fff", color: on ? "#fff" : C.sub }}>P{cfg.periods[p]}</button>; })}
+            <button className="tt-btn" onClick={() => { const s = new Set(cur); x.ps.forEach((p) => s.add(p)); set(s); }} style={{ ...ghostBtn, padding: "2px 8px", fontSize: 11.5 }}>All</button>
+            <button className="tt-btn" onClick={() => { const s = new Set(cur); x.ps.forEach((p) => s.delete(p)); set(s); }} style={{ ...ghostBtn, padding: "2px 8px", fontSize: 11.5 }}>None</button>
+          </div>
+        </div>))}
+    </div>);
+}
+function UntimedPanel({ cfg, update, limited, mobile }) {
+  const th = CUR_TH || THEMES.teal;
+  const un = untimedOf(cfg);
+  const [all, setAll] = useState(false);
+  const inc = (c) => { const e = entryCount(cfg, c); return e.k * 2 < e.all; };
+  const shown = cfg.classes.filter((c) => all || un[c] || inc(c)).sort(cmpClass);
+  const stds = [...new Set(shown.map(stdOf))];
+  const mapped = (c) => [...new Set((cfg.bkey[c] || []).filter((r) => !langSubsOf(cfg).includes(r.sub)).flatMap((r) => String(r.teacher || "").split(" ")).filter((t) => cfg.singles.includes(t)))];
+  const setMode = (list, m) => update((n) => { n.untimed = { ...(n.untimed || {}) }; for (const c of list) { if (!m) delete n.untimed[c]; else if (m === "one") n.untimed[c] = { mode: "one", ...(n.untimed[c] && n.untimed[c].t ? { t: n.untimed[c].t } : {}) }; else n.untimed[c] = { mode: "shared", teachers: (n.untimed[c] && n.untimed[c].teachers) || mapped(c).filter((t) => t !== n.classTeacher[c]).concat(n.classTeacher[c] ? [n.classTeacher[c]] : []).slice(0, 4) }; } if (!Object.keys(n.untimed).length) delete n.untimed; });
+  const setOne = (c, t) => update((n) => { n.untimed = { ...(n.untimed || {}), [c]: { mode: "one", ...(t && t !== n.classTeacher[c] ? { t } : {}) } }; });
+  const togT = (c, t) => update((n) => { const cur = (n.untimed && n.untimed[c] && n.untimed[c].teachers) || []; n.untimed = { ...(n.untimed || {}), [c]: { mode: "shared", teachers: cur.includes(t) ? cur.filter((x) => x !== t) : [...cur, t] } }; });
+  const sel = { height: 32, fontFamily: sans, fontSize: 12.5, fontWeight: 700 };
+  const nSet = Object.keys(un).filter((c) => cfg.classes.includes(c)).length;
+  return (
+    <div style={card}>
+      <Panelhead text="Classes without a period timetable" count={nSet ? `${nSet} class${nSet === 1 ? "" : "es"}` : "none"} />
+      <div style={{ padding: 12, display: "grid", gap: 12 }}>
+        <div className="tt-callout">For classes whose periods are <b>not in the app</b> — for example a class where <b>one teacher takes the whole day</b>, or a class shared by two or three teachers without fixed times. Enter only what you know (such as language periods) in the timetable. When the teacher is absent, the app finds the periods to cover: <b>one teacher</b> — every period not entered; <b>shared</b> — you tick the periods on the day. These teachers are also treated as busy in those periods, so they are not picked to cover other classes. The class timetable and printouts are not changed.</div>
+        {!shown.length && <div style={{ fontSize: 12.5, color: C.sub }}>Every class has a full timetable. Add the classes first in <b>Classes & setup</b> (with the class teacher), then set them here.</div>}
+        {stds.map((st) => { const cs = shown.filter((c) => stdOf(c) === st), m0 = (un[cs[0]] || {}).mode || "", same = cs.every((c) => ((un[c] || {}).mode || "") === m0); return (
+          <div key={st} style={{ border: `1px solid ${C.line}`, borderRadius: 12, overflow: "hidden" }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: "8px 12px", background: `${th.accent}0c`, borderBottom: `1px solid ${C.line}` }}>
+              <b style={{ fontSize: 13.5 }}>Standard {st}</b><span style={{ fontSize: 12, color: C.sub }}>{cs.length} class{cs.length === 1 ? "" : "es"}</span>
+              <label style={{ marginLeft: "auto", display: "inline-flex", gap: 6, alignItems: "center", fontSize: 12, fontWeight: 700, color: C.sub }}>All classes
+                <select className="tt-sel" aria-label={`All classes of standard ${st}`} disabled={limited} value={same ? m0 : "mixed"} onChange={(e) => e.target.value !== "mixed" && setMode(cs, e.target.value)} style={{ ...sel, width: mobile ? 180 : 250 }}>
+                  {!same && <option value="mixed">Mixed</option>}
+                  <option value="">Has a timetable</option><option value="one">One teacher (class teacher)</option><option value="shared">Shared by teachers</option>
+                </select></label>
+            </div>
+            {cs.map((c) => { const u = un[c] || {}, e = entryCount(cfg, c), ct = cfg.classTeacher[c], ts = u.mode === "shared" ? u.teachers || [] : [], who = u.mode === "one" ? u.t || ct : null; return (
+              <div key={c} style={{ display: "grid", gap: 6, padding: "8px 12px", borderTop: `1px solid ${C.line}` }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <b style={{ fontFamily: mono, minWidth: 48 }}>{c}</b>
+                  <span style={{ fontSize: 11.5, color: C.sub, flex: "1 1 140px" }}>{e.k} of {e.all} periods entered{ct ? ` · class teacher ${ct}` : " · no class teacher"}</span>
+                  <select className="tt-sel" aria-label={`${c} timetable`} disabled={limited} value={u.mode || ""} onChange={(ev) => setMode([c], ev.target.value)} style={{ ...sel, width: mobile ? 170 : 220, borderColor: u.mode ? th.accent : undefined }}>
+                    <option value="">Has a timetable</option><option value="one">One teacher</option><option value="shared">Shared by teachers</option>
+                  </select>
+                  {u.mode === "one" && <select className="tt-sel" aria-label={`${c} teacher`} disabled={limited} value={who || ""} onChange={(ev) => setOne(c, ev.target.value)} style={{ ...sel, width: 110 }}>
+                    {!who && <option value="">Choose…</option>}{cfg.singles.map((t) => <option key={t} value={t}>{t}{t === ct ? " (CT)" : ""}</option>)}
+                  </select>}
+                </div>
+                {u.mode === "one" && !who && <div style={{ fontSize: 11.5, color: C.clash }}>Set the class teacher in Classes & setup, or choose the teacher here.</div>}
+                {u.mode === "shared" && <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
+                  <span style={{ fontSize: 11.5, color: C.sub }}>Teachers:</span>
+                  {ts.map((t) => <button key={t} className="tt-btn" disabled={limited} onClick={() => togT(c, t)} title="Remove" style={{ border: `1.5px solid ${th.accent}`, background: `${th.accent}14`, color: th.g2, borderRadius: 9, padding: "2px 8px", fontSize: 12, fontWeight: 700, fontFamily: mono }}>{t} ×</button>)}
+                  {!limited && <select className="tt-sel" aria-label={`Add teacher to ${c}`} value="" onChange={(ev) => ev.target.value && togT(c, ev.target.value)} style={{ ...sel, width: 120, height: 28 }}>
+                    <option value="">+ teacher</option>
+                    {[...mapped(c), ...cfg.singles.filter((t) => !mapped(c).includes(t))].filter((t) => !ts.includes(t)).map((t) => <option key={t} value={t}>{t}{t === ct ? " (CT)" : mapped(c).includes(t) ? " · mapped" : ""}</option>)}
+                  </select>}
+                  {!ts.length && <span style={{ fontSize: 11.5, color: C.clash }}>Add the teachers who share this class.</span>}
+                </div>}
+              </div>); })}
+          </div>); })}
+        <div><button className="tt-btn" onClick={() => setAll(!all)} style={{ ...ghostBtn, padding: "5px 10px", fontSize: 12 }}>{all ? "Show only classes with most periods missing" : "Show all classes"}</button></div>
+      </div>
+    </div>);
+}
 /* ---------------- Sections (groups of standards) and who may cover whom ---------------- */
 // cfg.sections = [{ id, name, stds: ["1","2",…] }]; cfg.langSubs = [...]; cfg.subsCross["a>b"] = "allow" | "ifneeded" | "never"; cfg.secExempt[id] = "nonlang" | "all"
 function defaultSections(cfg) {
@@ -6215,7 +6378,8 @@ function secOfClass(cfg, c) { const st = String(stdOf(c)); const x = sectionsOf(
 function langSubsOf(cfg) { if (Array.isArray(cfg.langSubs)) return cfg.langSubs; return (cfg.subjects || []).filter((s) => /^(LAN|ARA|ARABIC|SAN|SANSKRIT|URDU|HIN|HINDI)/i.test(s)); }
 var SECMAP = new WeakMap();
 // periods each teacher has in each section, and how many of them are language periods
-function teacherSecMap(cfg) {
+function teacherSecMap(cfg0) {
+  const cfg = untimedCfg(cfg0);
   const key = JSON.stringify([sectionsOf(cfg), langSubsOf(cfg)]), hit = cfg.grid && SECMAP.get(cfg.grid);
   if (hit && hit.key === key) return hit.map;
   const cm = {}; (cfg.combined || []).forEach((x) => (cm[x.name] = x));
@@ -6615,6 +6779,8 @@ function SubsView({ cfg, update, mobile, ask, limited }) {
   }, [date, needs]);
   const setCal = (fn) => update((n) => { n.calendar = { ...(n.calendar || {}) }; const nx = fn(n.calendar[date] ? { ...n.calendar[date] } : null); if (nx) n.calendar[date] = nx; else delete n.calendar[date]; if (!Object.keys(n.calendar).length) delete n.calendar; tidySubs(n, date, true); });
   const setWork = (t, v) => edit((r) => { r.work = { ...(r.work || {}) }; if (v) r.work[t] = v; else delete r.work[t]; });
+  const setPick = (t, ps) => edit((r) => { r.pick = { ...(r.pick || {}), [t]: ps }; }, true);
+  const pickBox = (t) => <UntimedPick cfg={cfg} g={g} d={d} t={t} rec={rec} part={partPeriods(g, abs[t])} onSet={(ps) => setPick(t, ps)} />;
   const toggleAbs = (t) => !onLeave(t) && edit((r, n) => {
     if (r.absent[t]) {
       const sp = (r.span || {})[t];
@@ -6695,6 +6861,7 @@ function SubsView({ cfg, update, mobile, ask, limited }) {
                     <b style={{ fontFamily: mono, color: "#8a4b0f", minWidth: 50 }}>{t}</b>
                     <span style={{ fontSize: 12, color: "#7a5310", flex: 1 }}>{lv.reason || "On leave"} · {lv.to ? `until ${isoNice(lv.to)}` : "until further notice"}</span>
                     <span style={{ fontSize: 10.5, fontWeight: 800, padding: "1px 7px", borderRadius: 9, background: C.accent, color: "#fff" }}>LEAVE</span>
+                    <div style={{ flexBasis: "100%" }}>{pickBox(t)}</div>
                     <input className="tt-in" value={(rec.work || {})[t] || ""} onChange={(e) => setWork(t, e.target.value)} placeholder="Work for the class (optional)" style={{ flexBasis: "100%", fontFamily: sans, fontSize: 12, height: 30, background: "#fff" }} />
                   </div>);
                   return (
@@ -6713,6 +6880,7 @@ function SubsView({ cfg, update, mobile, ask, limited }) {
                     </div>
                     {some && <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>{g.periods.map((pn, p) => <button key={p} className="tt-btn" onClick={() => togglePeriod(t, p)} style={{ minWidth: 38, padding: "4px 6px", borderRadius: 8, fontSize: 12, fontWeight: 800, cursor: "pointer", border: `1.5px solid ${sel.has(p) ? C.clash : C.line}`, background: sel.has(p) ? C.clash : "#fff", color: sel.has(p) ? "#fff" : C.sub }}>P{pn}</button>)}</div>}
                     {(rec.span || {})[t] && <div style={{ fontSize: 11.5, color: "#8a1f17" }}>Absent {rec.span[t].days.map((x) => isoNice(x)).join(", ")}. Longer than 3 days? Use <b>Teacher leave</b>.</div>}
+                    {pickBox(t)}
                     <input className="tt-in" value={(rec.work || {})[t] || ""} onChange={(e) => setWork(t, e.target.value)} placeholder="Work for the class (optional), e.g. Maths p.42 Ex 3.1" style={{ fontFamily: sans, fontSize: 12, height: 30, background: "#fff" }} />
                   </div>); })}
               </div>
@@ -6776,6 +6944,7 @@ function SubsView({ cfg, update, mobile, ask, limited }) {
       </div>}
 
       <div style={{ marginTop: 16 }}>{subsModeOf(cfg) === "turn" ? <RotationPanel cfg={cfg} update={update} date={date} counts={counts} ask={ask} limited={limited} /> : <FairPanel cfg={cfg} update={update} date={date} counts={counts} ask={ask} limited={limited} />}</div>
+      <div style={{ marginTop: 16 }}><UntimedPanel cfg={cfg} update={update} limited={limited} mobile={mobile} /></div>
       <div style={{ marginTop: 16 }}><SectionsPanel cfg={cfg} update={update} limited={limited} mobile={mobile} /></div>
       <div style={{ marginTop: 16 }}><DummyPanel cfg={cfg} update={update} limited={limited} mobile={mobile} /></div>
       <div style={{ marginTop: 16 }}><CalendarPanel cfg={cfg} update={update} date={date} setDate={setDate} ask={ask} mobile={mobile} /></div>
@@ -7212,9 +7381,35 @@ function TeacherAvailability({ cfg, update, ask, teacherLoad = {}, mobile }) {
 function tmin(v) { const m = /^(\d{1,2}):(\d{2})/.exec(v || ""); return m ? +m[1] * 60 + +m[2] : null; }
 function tstr(n) { n = ((n % 1440) + 1440) % 1440; return `${String(Math.floor(n / 60)).padStart(2, "0")}:${String(n % 60).padStart(2, "0")}`; }
 function t12(v) { const n = tmin(v); if (n === null) return ""; const h = Math.floor(n / 60) % 12 || 12; return `${h}:${String(n % 60).padStart(2, "0")}`; }
-function pTime(cfg, i) { const x = (cfg.ptimes || [])[i]; return x && x.s && x.e ? `${t12(x.s)}–${t12(x.e)}` : ""; }
+// cfg.timeFmt: "12" (9:30) · "12ap" (9:30 AM) · "24" (13:30)
+function timeFmtOf(cfg) { return (cfg && cfg.timeFmt) || "12"; }
+function fmtT(cfg, v) { const n = tmin(v); if (n === null) return ""; const f = timeFmtOf(cfg); if (f === "24") return tstr(n); return t12(v) + (f === "12ap" ? (n >= 720 ? " PM" : " AM") : ""); }
+function fmtRange(cfg, s, e) { if (!s || !e) return ""; if (timeFmtOf(cfg) === "12ap") { const a = tmin(s), b = tmin(e); if (a !== null && b !== null && (a >= 720) === (b >= 720)) return `${t12(s)}–${t12(e)} ${b >= 720 ? "PM" : "AM"}`; } return `${fmtT(cfg, s)}–${fmtT(cfg, e)}`; }
+// typed time → "HH:MM" (24-hour); accepts 9:30, 9.30, 0930, 9:30 pm, 21:30
+function parseTimeText(txt, mer, fmt) {
+  const m = /^\s*(\d{1,2})(?:\s*[:.\s]\s*(\d{2})|(\d{2}))?\s*(?:([apAP])\.?\s*[mM]?\.?)?\s*$/.exec(String(txt || "")); if (!m) return null;
+  let h = +m[1]; const mm = +(m[2] || m[3] || 0), ap = m[4] ? m[4].toLowerCase() : mer; if (mm > 59 || h > 23) return null;
+  if (h >= 1 && h <= 12 && (m[4] || fmt !== "24")) { if (ap === "a") h = h % 12; else if (ap === "p") h = (h % 12) + 12; else if (h < 7) h += 12; }
+  return tstr(h * 60 + mm);
+}
+function TimeInput({ cfg, value, onChange, style, label }) {
+  const f = timeFmtOf(cfg), twelve = f !== "24";
+  const show = (v) => (tmin(v) === null ? "" : twelve ? t12(v) : tstr(tmin(v)));
+  const [txt, setTxt] = useState(show(value));
+  useEffect(() => { setTxt(show(value)); }, [value, f]);
+  const n = tmin(value), pm = n !== null && n >= 720;
+  const commit = () => { if (!txt.trim()) { if (value) onChange(""); return; } const v = parseTimeText(txt, n === null ? undefined : pm ? "p" : "a", f); if (v === null) { setTxt(show(value)); return; } if (v !== value) onChange(v); else setTxt(show(value)); };
+  const flip = () => { if (n === null) return; onChange(tstr(n + (pm ? -720 : 720))); };
+  const w = parseInt((style && style.width) || 112, 10);
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
+      <input className="tt-in" aria-label={label} inputMode="numeric" value={txt} placeholder="--:--" onChange={(e) => setTxt(e.target.value)} onBlur={commit} onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()} style={{ ...style, width: twelve ? w - 40 : w, textAlign: "center", fontVariantNumeric: "tabular-nums" }} />
+      {twelve && <button type="button" className="tt-btn" aria-label={label ? `${label} AM/PM` : "AM/PM"} title="Tap to switch AM / PM" onClick={flip} disabled={n === null} style={{ width: 37, height: (style && style.height) || 32, borderRadius: 8, border: `1px solid ${C.line}`, background: n === null ? "#f5f6f7" : pm ? "#eef2fb" : "#fdf6e6", color: n === null ? C.sub : pm ? "#2e4a8a" : "#94620b", fontSize: 11.5, fontWeight: 800, cursor: n === null ? "default" : "pointer", padding: 0 }}>{n === null ? "–" : pm ? "PM" : "AM"}</button>}
+    </span>);
+}
+function pTime(cfg, i) { const x = (cfg.ptimes || [])[i]; return x && x.s && x.e ? fmtRange(cfg, x.s, x.e) : ""; }
 function breaksAfter(cfg, i) { return (cfg.breaks || []).filter((b) => +b.after === i && i < cfg.periods.length - 1).sort((a, b) => (tmin(a.s) || 0) - (tmin(b.s) || 0)); }
-function brkTime(b) { return b.s && b.e ? `${t12(b.s)}–${t12(b.e)}` : ""; }
+function brkTime(b, cfg) { return b.s && b.e ? fmtRange(cfg, b.s, b.e) : ""; }
 function PeriodTimesPanel({ cfg, update, mobile }) {
   const th = CUR_TH || THEMES.teal;
   const P = cfg.periods.length, T = cfg.ptimes || [], B = (cfg.breaks || []).slice().sort((a, b) => a.after - b.after || (tmin(a.s) || 0) - (tmin(b.s) || 0));
@@ -7242,8 +7437,14 @@ function PeriodTimesPanel({ cfg, update, mobile }) {
       <Panelhead text="Period times & breaks" count={T.some((x) => x && x.s) ? `${B.length} break${B.length === 1 ? "" : "s"}` : "not set"} />
       <div style={{ padding: 14, display: "grid", gap: 12 }}>
         <div className="tt-callout">Set when each period starts and ends, and the breaks between them (interval, lunch…). The times are printed on the class and teacher timetables, with each break as a narrow column in its place. All periods get the same width and every day the same height.</div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={lab}>Time format</span>
+          {[["12", "12-hour", "1:30"], ["12ap", "12-hour + AM/PM", "1:30 PM"], ["24", "24-hour", "13:30"]].map(([k, nm, ex]) => { const on = timeFmtOf(cfg) === k; return (
+            <button key={k} className="tt-btn" aria-pressed={on} onClick={() => update((n) => { if (k === "12") delete n.timeFmt; else n.timeFmt = k; })} style={{ border: `1.5px solid ${on ? th.accent : C.line}`, background: on ? `${th.accent}14` : "#fff", color: on ? th.g2 : C.sub, borderRadius: 9, padding: "5px 11px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>{nm} <span style={{ fontFamily: mono, fontWeight: 600, opacity: 0.75 }}>· {ex}</span></button>); })}
+          <span style={{ fontSize: 11.5, color: C.sub }}>Used here and on the printed timetables. You can type 9:30, 9.30, 0930, 2:15 pm or 14:15.</span>
+        </div>
         <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", padding: "10px 12px", borderRadius: 12, background: "#f8fafc", border: `1px solid ${C.line}` }}>
-          <label style={{ display: "grid", gap: 4 }}><span style={lab}>School starts</span><input type="time" className="tt-in" value={auto.start} onChange={(e) => setAuto({ ...auto, start: e.target.value })} style={inp} /></label>
+          <label style={{ display: "grid", gap: 4 }}><span style={lab}>School starts</span><TimeInput cfg={cfg} label="School starts" value={auto.start} onChange={(v) => setAuto({ ...auto, start: v })} style={inp} /></label>
           <label style={{ display: "grid", gap: 4 }}><span style={lab}>Each period (min)</span><input type="number" min={5} max={120} className="tt-in" value={auto.len} onChange={(e) => setAuto({ ...auto, len: e.target.value })} style={{ ...inp, width: 90, textAlign: "center" }} /></label>
           <button className="tt-btn" onClick={fill} style={solidBtn}>Fill all times</button>
           <span style={{ fontSize: 12, color: C.sub, flex: "1 1 200px" }}>Fills every period one after another and keeps each break's length. You can then change any time by hand.</span>
@@ -7255,15 +7456,15 @@ function PeriodTimesPanel({ cfg, update, mobile }) {
               <React.Fragment key={i}>
                 <tr>
                   <td style={{ fontWeight: 800, fontFamily: mono, color: th.g2 }}>P{pn}{i === fnCount(cfg) - 1 ? <span style={{ fontSize: 10, color: C.accent, fontFamily: sans }}> · end of FN</span> : null}</td>
-                  <td><input type="time" className="tt-in" value={x.s || ""} onChange={(e) => setT(i, "s", e.target.value)} style={inp} /></td>
-                  <td><input type="time" className="tt-in" value={x.e || ""} onChange={(e) => setT(i, "e", e.target.value)} style={inp} /></td>
+                  <td><TimeInput cfg={cfg} label={`P${pn} starts`} value={x.s || ""} onChange={(v) => setT(i, "s", v)} style={inp} /></td>
+                  <td><TimeInput cfg={cfg} label={`P${pn} ends`} value={x.e || ""} onChange={(v) => setT(i, "e", v)} style={inp} /></td>
                   <td style={{ textAlign: "center", fontSize: 12.5, color: a !== null && b !== null && b > a ? C.ink : C.sub }}>{a !== null && b !== null && b > a ? b - a : "—"}</td>
                 </tr>
                 {B.filter((bk) => +bk.after === i).map((bk) => (
                   <tr key={bk.id} style={{ background: "#fdf2e3" }}>
                     <td style={{ padding: "4px 6px", borderRadius: 8 }}><input className="tt-in" value={bk.name || ""} onChange={(e) => setB(bk.id, "name", e.target.value)} placeholder="Interval" style={{ ...inp, width: mobile ? 110 : 130, fontWeight: 700, color: "#94620b" }} /></td>
-                    <td><input type="time" className="tt-in" value={bk.s || ""} onChange={(e) => setB(bk.id, "s", e.target.value)} style={inp} /></td>
-                    <td><input type="time" className="tt-in" value={bk.e || ""} onChange={(e) => setB(bk.id, "e", e.target.value)} style={inp} /></td>
+                    <td><TimeInput cfg={cfg} label={`${bk.name || "Break"} starts`} value={bk.s || ""} onChange={(v) => setB(bk.id, "s", v)} style={inp} /></td>
+                    <td><TimeInput cfg={cfg} label={`${bk.name || "Break"} ends`} value={bk.e || ""} onChange={(v) => setB(bk.id, "e", v)} style={inp} /></td>
                     <td style={{ whiteSpace: "nowrap" }}>
                       <select className="tt-sel" value={bk.after} onChange={(e) => setB(bk.id, "after", e.target.value)} title="Comes after" style={{ width: 92, height: 32, fontFamily: sans, fontSize: 12.5 }}>{cfg.periods.slice(0, -1).map((p2, j) => <option key={j} value={j}>after P{p2}</option>)}</select>
                       <button className="tt-btn" onClick={() => delB(bk.id)} aria-label="Remove break" style={{ border: "none", background: "transparent", color: C.clash, fontSize: 18, cursor: "pointer", marginLeft: 4 }}>×</button>
@@ -7345,25 +7546,44 @@ function SetupView({ cfg, update, ask, askPw, mobile, teacherLoad, me, acc }) {
   const addSubject = () => { const s = newSub.trim().toUpperCase(); if (!s || cfg.subjects.includes(s)) return; update((n) => n.subjects.push(s)); setNewSub(""); };
   const delSubject = (s) => ask(`Remove subject ${s}? It is also taken out of the Standard periods table. Mapping rows and timetable periods that still use it stay until you change them (or use "Rename subject" to change it everywhere).`, () => update((n) => { n.subjects = n.subjects.filter((x) => x !== s); for (const st of Object.keys(n.stdPeriods || {})) if (n.stdPeriods[st]) delete n.stdPeriods[st][s]; }));
   const [subFrom, setSubFrom] = useState(""); const [subTo, setSubTo] = useState("");
-  const renameSubject = () => { const a = subFrom, b = subTo.trim().toUpperCase(); if (!a || !b || a === b) return; ask(`Rename subject ${a} to ${b} everywhere — subject list, Standard periods, Mapping, the timetable, combined subjects and rules?`, () => update((n) => {
+  const [chipEd, setChipEd] = useState(null);   // { kind: "sub" | "tch", from, to }
+  const renameSubject = (a0, b0) => { const a = typeof a0 === "string" ? a0 : subFrom, b = String(typeof b0 === "string" ? b0 : subTo).trim().toUpperCase(); if (!a || !b || a === b) return; ask(`Rename subject ${a} to ${b} everywhere — subject list, Standard periods, Mapping, the timetable, combined subjects and rules?${cfg.subjects.includes(b) ? ` ${b} already exists, so the two are joined into one.` : ""}`, () => update((n) => {
     n.subjects = [...new Set(n.subjects.map((x) => (x === a ? b : x)))];
     for (const st of Object.keys(n.stdPeriods || {})) { const o = n.stdPeriods[st]; if (o && o[a] !== undefined) { const m = {}; for (const k of Object.keys(o)) { if (k === a) { if (m[b] === undefined) m[b] = o[a]; } else m[k] = o[k]; } n.stdPeriods[st] = m; } }
     for (const c of n.classes) { (n.bkey[c] || []).forEach((r) => { if (r.sub === a) r.sub = b; }); for (const d of n.days) (n.grid[c] && n.grid[c][d] || []).forEach((sl) => { if (sl && sl[1] === a) sl[1] = b; }); const cr = (n.classRules || {})[c]; if (cr) for (const k of Object.keys(cr)) if (cr[k] && cr[k].sub === a) cr[k].sub = b; }
     (n.combined || []).forEach((x) => { if (x.sub === a) x.sub = b; });
     for (const key of ["rules", "twice"]) if (n[key] && n[key][a] !== undefined) { n[key][b] = n[key][a]; delete n[key][a]; }
     if (n.dummy && n.dummy.subs) n.dummy.subs = n.dummy.subs.map((x) => (x === a ? b : x));
-  })); setSubFrom(""); setSubTo(""); };
+    if (Array.isArray(n.langSubs)) n.langSubs = [...new Set(n.langSubs.map((x) => (x === a ? b : x)))];
+    for (const e of Object.values(n.calendar || {})) if (e && e.grid) for (const row of Object.values(e.grid)) (row || []).forEach((sl) => { if (sl && sl[1] === a) sl[1] = b; });
+  })); setSubFrom(""); setSubTo(""); setChipEd(null); };
   const addTeacher = () => { const t = newTch.trim().toUpperCase(); if (!t || cfg.singles.includes(t)) return; update((n) => { n.singles.push(t); n.singles.sort(); }); setNewTch(""); };
   const delTeacher = (t) => ask(`Remove teacher ${t}? They’ll be cleared as class teacher where set; mapping/timetable entries using them stay until you change them.`, () => update((n) => {
     n.singles = n.singles.filter((x) => x !== t);
     for (const c of n.classes) if (n.classTeacher[c] === t) n.classTeacher[c] = null;
   }));
-  const doRename = () => { const oldN = renFrom, newN = renTo.trim().toUpperCase(); if (!oldN || !newN || oldN === newN) return; update((n) => {
+  const doRename = (o0, n0) => { const oldN = typeof o0 === "string" ? o0 : renFrom, newN = String(typeof n0 === "string" ? n0 : renTo).trim().toUpperCase(); if (!oldN || !newN || oldN === newN) return; if (cfg.singles.includes(newN)) { setErr(`${newN} is already a teacher — choose another name.`); return; } setErr(""); update((n) => {
+    const sw = (code) => (code === oldN ? newN : code && String(code).includes(" ") ? String(code).split(" ").map((x) => (x === oldN ? newN : x)).join(" ") : code);
     n.singles = [...new Set(n.singles.map((t) => t === oldN ? newN : t))];
-    for (const c of n.classes) { if (n.classTeacher[c] === oldN) n.classTeacher[c] = newN; (n.bkey[c] || []).forEach((r) => { if (r.teacher === oldN) r.teacher = newN; }); for (const d of n.days) (n.grid[c][d] || []).forEach((sl) => { if (sl[0] === oldN) sl[0] = newN; }); }
+    for (const c of n.classes) { if (n.classTeacher[c] === oldN) n.classTeacher[c] = newN; (n.bkey[c] || []).forEach((r) => { r.teacher = sw(r.teacher); }); for (const d of n.days) ((n.grid[c] || {})[d] || []).forEach((sl) => { if (sl && sl[0]) sl[0] = sw(sl[0]); }); }
+    for (const e of Object.values(n.calendar || {})) if (e && e.grid) for (const row of Object.values(e.grid)) (row || []).forEach((sl) => { if (sl && sl[0]) sl[0] = sw(sl[0]); });
+    for (const k of ["phones", "subsExempt", "subsOwed", "teacherLinks"]) if (n[k] && n[k][oldN] !== undefined) { n[k] = { ...n[k], [newN]: n[k][oldN] }; delete n[k][oldN]; }
+    (n.leaves || []).forEach((l) => { if (l.t === oldN) l.t = newN; });
+    if (n.untimed) for (const u of Object.values(n.untimed)) { if (u.t === oldN) u.t = newN; if (u.teachers) u.teachers = u.teachers.map((x) => (x === oldN ? newN : x)); }
     (n.combined || []).forEach((se) => { se.teachers = se.teachers.map((t) => t === oldN ? newN : t); });
     if (n.teacherDays && n.teacherDays[oldN]) { n.teacherDays[newN] = n.teacherDays[oldN]; delete n.teacherDays[oldN]; }
-  }); setRenFrom(""); setRenTo(""); };
+  }); setRenFrom(""); setRenTo(""); setChipEd(null); };
+  const chipEdit = (kind, v) => {
+    const e = chipEd && chipEd.kind === kind && chipEd.from === v ? chipEd : null;
+    if (!e) return null;
+    const go = () => (kind === "sub" ? renameSubject(v, e.to) : doRename(v, e.to));
+    return <span key={v} style={{ display: "inline-flex", alignItems: "center", gap: 3, padding: "2px 3px", borderRadius: 7, border: `1.5px solid ${C.accent}`, background: "#fff" }}>
+      <input className="tt-in" autoFocus aria-label={`New name for ${v}`} value={e.to} onChange={(ev) => setChipEd({ ...e, to: ev.target.value.toUpperCase() })} onKeyDown={(ev) => { if (ev.key === "Enter") go(); if (ev.key === "Escape") setChipEd(null); }} style={{ width: Math.max(70, e.to.length * 9 + 24), height: 26, fontFamily: mono, fontSize: 12, padding: "0 6px" }} />
+      <button className="tt-btn" title="Rename everywhere" aria-label="Save new name" onClick={go} style={{ border: "none", background: C.free, color: "#fff", borderRadius: 6, width: 24, height: 24, fontWeight: 800, cursor: "pointer" }}>✓</button>
+      <button className="tt-btn" aria-label="Cancel" onClick={() => setChipEd(null)} style={{ border: "none", background: "transparent", color: C.sub, fontSize: 15, cursor: "pointer" }}>×</button>
+    </span>;
+  };
+  const penBtn = (kind, v) => <button className="tt-btn" title={`Rename ${v} — changes it everywhere, nothing is deleted`} aria-label={`Rename ${v}`} onClick={() => setChipEd({ kind, from: v, to: v })} style={{ border: "none", background: "transparent", color: C.sub, fontSize: 12, cursor: "pointer", lineHeight: 1, padding: "0 1px" }}>✎</button>;
 
   return (
     <div>
@@ -7478,7 +7698,7 @@ function SetupView({ cfg, update, ask, askPw, mobile, teacherLoad, me, acc }) {
           <div style={card}>
             <Panelhead text="Subjects" count={cfg.subjects.length} />
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: 14 }}>
-              {cfg.subjects.map((s) => <span key={s} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontFamily: mono, fontSize: 12, padding: "4px 5px 4px 9px", background: SUBJECT_TINT[s] || "#eee", borderRadius: 7 }}>{s}<button className="tt-btn" onClick={() => delSubject(s)} style={{ border: "none", background: "transparent", color: C.clash, fontSize: 14, cursor: "pointer", lineHeight: 1 }}>×</button></span>)}
+              {cfg.subjects.map((s) => chipEdit("sub", s) || <span key={s} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontFamily: mono, fontSize: 12, padding: "4px 5px 4px 9px", background: SUBJECT_TINT[s] || "#eee", borderRadius: 7 }}>{s}{penBtn("sub", s)}<button className="tt-btn" onClick={() => delSubject(s)} style={{ border: "none", background: "transparent", color: C.clash, fontSize: 14, cursor: "pointer", lineHeight: 1 }}>×</button></span>)}
             </div>
             <div style={{ borderTop: `1px solid ${C.line}`, padding: 14, display: "flex", gap: 8 }}>
               <input className="tt-in" placeholder="new subject" value={newSub} onChange={(e) => setNewSub(e.target.value)} />
@@ -7488,7 +7708,7 @@ function SetupView({ cfg, update, ask, askPw, mobile, teacherLoad, me, acc }) {
               <span style={{ fontSize: 12, color: C.sub, fontWeight: 700 }}>Rename subject:</span>
               <select className="tt-sel" style={{ width: 110 }} value={subFrom} onChange={(e) => setSubFrom(e.target.value)}><option value="">pick…</option>{[...new Set([...cfg.subjects, ...Object.values(cfg.stdPeriods || {}).flatMap((o) => Object.keys(o || {}))])].sort().map((x) => <option key={x}>{x}</option>)}</select>
               <input className="tt-in" style={{ width: 110 }} placeholder="new name" value={subTo} onChange={(e) => setSubTo(e.target.value)} />
-              <button className="tt-btn" onClick={renameSubject} style={ghostBtn}>Rename everywhere</button>
+              <button className="tt-btn" onClick={() => renameSubject()} style={ghostBtn}>Rename everywhere</button>
             </div>
           </div>
           <div style={card}>
@@ -7497,10 +7717,10 @@ function SetupView({ cfg, update, ask, askPw, mobile, teacherLoad, me, acc }) {
               <span style={{ fontSize: 12, color: C.sub, fontWeight: 700 }}>Rename teacher:</span>
               <select className="tt-sel" style={{ width: 110 }} value={renFrom} onChange={(e) => setRenFrom(e.target.value)}><option value="">pick…</option>{cfg.singles.map((t) => <option key={t}>{t}</option>)}</select>
               <input className="tt-in" style={{ width: 120 }} placeholder="new name" value={renTo} onChange={(e) => setRenTo(e.target.value)} />
-              <button className="tt-btn" onClick={doRename} style={ghostBtn}>Rename everywhere</button>
+              <button className="tt-btn" onClick={() => doRename()} style={ghostBtn}>Rename everywhere</button>
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: 14, maxHeight: 180, overflowY: "auto" }}>
-              {cfg.singles.map((t) => <span key={t} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontFamily: mono, fontSize: 12, padding: "4px 5px 4px 9px", background: "#eef0f2", borderRadius: 7 }}>{t}<button className="tt-btn" onClick={() => delTeacher(t)} style={{ border: "none", background: "transparent", color: C.clash, fontSize: 14, cursor: "pointer", lineHeight: 1 }}>×</button></span>)}
+              {cfg.singles.map((t) => chipEdit("tch", t) || <span key={t} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontFamily: mono, fontSize: 12, padding: "4px 5px 4px 9px", background: "#eef0f2", borderRadius: 7 }}>{t}{penBtn("tch", t)}<button className="tt-btn" onClick={() => delTeacher(t)} style={{ border: "none", background: "transparent", color: C.clash, fontSize: 14, cursor: "pointer", lineHeight: 1 }}>×</button></span>)}
             </div>
             <div style={{ borderTop: `1px solid ${C.line}`, padding: 14, display: "flex", gap: 8 }}>
               <input className="tt-in" placeholder="new teacher code" value={newTch} onChange={(e) => setNewTch(e.target.value)} />
@@ -7561,7 +7781,7 @@ function gridHead(cfg) {
 // break columns: one tall cell per break, written in the first row only
 function brkCells(cfg, pi, di) {
   if (di) return "";
-  return breaksAfter(cfg, pi).map(function (b) { return "<td class='brk' rowspan='" + cfg.days.length + "'><div class='v'>" + esc(b.name || "Break") + (brkTime(b) ? " &middot; " + esc(brkTime(b)) : "") + "</div></td>"; }).join("");
+  return breaksAfter(cfg, pi).map(function (b) { return "<td class='brk' rowspan='" + cfg.days.length + "'><div class='v'>" + esc(b.name || "Break") + (brkTime(b, cfg) ? " &middot; " + esc(brkTime(b, cfg)) : "") + "</div></td>"; }).join("");
 }
 function gridCols(cfg) { var s = "<colgroup><col style='width:24mm'>"; for (var pi = 0; pi < cfg.periods.length; pi++) { s += "<col>"; breaksAfter(cfg, pi).forEach(function () { s += "<col style='width:9mm'>"; }); } return s + "</colgroup>"; }
 function gridFitCss(cfg, paper) {
