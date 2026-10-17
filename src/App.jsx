@@ -12,7 +12,7 @@ import { supabase } from "./supabaseClient";
    ============================================================ */
 
 const STORE_KEY = "tt_cfg_v2";
-const APP_VERSION = "2026-10-17 a";
+const APP_VERSION = "2026-10-17 b";
 
 const WEEK_ORDER = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const DAY_FULL = { MON: "Monday", TUE: "Tuesday", WED: "Wednesday", THU: "Thursday", FRI: "Friday", SAT: "Saturday", SUN: "Sunday" };
@@ -4853,6 +4853,19 @@ function exportQrCardsPDF(cfg, list) {
   const cards = list.map((t) => { const url = teacherLink(cfg, t); return `<div class="cd"><div class="sc">${cfg.logo ? `<img src="${cfg.logo}" alt="">` : ""}${esc(cfg.school || "")}</div><div class="t">${esc(t)}</div><div class="q">${qrSvg(url, 4)}</div><div class="h">Scan to see your timetable<br>and substitutions</div></div>`; }).join("");
   openPrint(esc(cfg.school) + " - Teacher QR cards", css, `<div class="g">${cards}</div>`);
 }
+// WhatsApp numbers: cfg.phones[t] = digits with country code (India 91 is added to a 10-digit number)
+function normPhone(v) { let d = String(v || "").replace(/\D/g, ""); if (d.length === 11 && d[0] === "0") d = d.slice(1); if (d.length === 10) d = "91" + d; return d.length >= 11 && d.length <= 15 ? d : ""; }
+function waLink(phone, text) { const p = normPhone(phone); return "https://wa.me/" + (p || "") + "?text=" + encodeURIComponent(text); }
+function openWa(phone, text) { try { window.open(waLink(phone, text), "_blank"); } catch (e) { /* ignore */ } }
+function linkText(cfg, t) { return `Dear ${t}, here is your personal timetable${cfg.school ? ` (${cfg.school})` : ""}. It shows today's periods and any substitution duty, and updates by itself:\n${teacherLink(cfg, t)}`; }
+function PhoneInput({ cfg, update, t, width }) {
+  const cur = (cfg.phones || {})[t] || "";
+  const [v, setV] = useState(cur);
+  useEffect(() => { setV(cur); }, [cur]);
+  const save = () => { const p = normPhone(v); if (p === cur) { setV(cur); return; } update((n) => { n.phones = { ...(n.phones || {}) }; if (p) n.phones[t] = p; else delete n.phones[t]; }); setV(p); };
+  const bad = v && !normPhone(v);
+  return <input className="tt-in" type="tel" inputMode="tel" value={v} onChange={(e) => setV(e.target.value)} onBlur={save} onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()} placeholder="WhatsApp no." title={bad ? "Enter a 10-digit mobile number (or with country code)" : "WhatsApp number — the link is sent straight to this chat"} style={{ width: width || 140, height: 30, fontFamily: sans, fontSize: 12.5, borderColor: bad ? C.clash : undefined, background: cur ? "#f2fbf6" : "#fff" }} />;
+}
 function ShareLinkButton({ cfg, t }) {
   const [open, setOpen] = useState(false);
   const [msg, setMsg] = useState("");
@@ -4869,7 +4882,7 @@ function ShareLinkButton({ cfg, t }) {
           <div style={{ fontSize: 11, color: C.sub, wordBreak: "break-all", margin: "6px 0 10px" }}>{url}</div>
           <div style={{ display: "flex", gap: 6, justifyContent: "center" }}>
             <button className="tt-btn" onClick={copy} style={{ ...ghostBtn, padding: "5px 10px", fontSize: 12 }}>Copy</button>
-            <button className="tt-btn" onClick={() => { try { window.open("https://wa.me/?text=" + encodeURIComponent(`Your timetable (${cfg.school || ""}): ${url}`), "_blank"); } catch (e) { /* ignore */ } }} style={{ ...ghostBtn, padding: "5px 10px", fontSize: 12, color: "#128c4b" }}>WhatsApp</button>
+            <button className="tt-btn" onClick={() => openWa((cfg.phones || {})[t], linkText(cfg, t))} title={(cfg.phones || {})[t] ? `Send to +${cfg.phones[t]}` : "Add the WhatsApp number in Data & backup → Teacher links to send it straight to the teacher"} style={{ ...ghostBtn, padding: "5px 10px", fontSize: 12, color: "#128c4b" }}>WhatsApp{(cfg.phones || {})[t] ? " ✓" : ""}</button>
             <button className="tt-btn" onClick={() => setOpen(false)} style={{ ...ghostBtn, padding: "5px 10px", fontSize: 12 }}>Close</button>
           </div>
           {msg && <div style={{ fontSize: 12, color: C.free, fontWeight: 700, marginTop: 6 }}>{msg}</div>}
@@ -4894,6 +4907,15 @@ revoke all on function public.get_teacher_page(text) from public;
 grant execute on function public.get_teacher_page(text) to anon, authenticated;`;
 function TeacherLinksPanel({ cfg, update, ask, pubState, publishNow, mobile }) {
   const [q, setQ] = useState("");
+  const [bulk, setBulk] = useState(null);
+  const [sent, setSent] = useState(() => { try { return JSON.parse(lsGet("tt_wa_sent", "{}")) || {}; } catch (e) { return {}; } });
+  const markSent = (t) => { const n = { ...sent, [t]: Date.now() }; setSent(n); lsSet("tt_wa_sent", JSON.stringify(n)); };
+  const phones = cfg.phones || {};
+  const withNo = cfg.singles.filter((t) => phones[t]);
+  const nextT = withNo.find((t) => !sent[t]);
+  const sendTo = (t) => { openWa(phones[t], linkText(cfg, t)); markSent(t); };
+  const saveBulk = () => { const found = {}, bad = []; for (const line of String(bulk || "").split(/\r?\n/)) { const m = line.trim().match(/^([A-Za-z0-9][A-Za-z0-9\- ]*?)[\s,:;\t]+(\+?[\d\s\-]{10,})$/); if (!m) { if (line.trim()) bad.push(line.trim()); continue; } const t = cfg.singles.find((x) => x.toUpperCase() === m[1].trim().toUpperCase()), p = normPhone(m[2]); if (t && p) found[t] = p; else bad.push(line.trim()); }
+    update((n) => { n.phones = { ...(n.phones || {}), ...found }; }); setMsg(`${Object.keys(found).length} number${Object.keys(found).length === 1 ? "" : "s"} saved.${bad.length ? ` Not understood: ${bad.slice(0, 5).join(" · ")}${bad.length > 5 ? " …" : ""}` : ""}`); setBulk(null); };
   const [qr, setQr] = useState("");
   const [msg, setMsg] = useState("");
   const th = CUR_TH || THEMES.teal;
@@ -4942,16 +4964,28 @@ function TeacherLinksPanel({ cfg, update, ask, pubState, publishNow, mobile }) {
             </span>
           </div>
           {msg && <div style={{ fontSize: 12.5, color: C.free, fontWeight: 600 }}>{msg}</div>}
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: "9px 12px", borderRadius: 12, background: "#f2fbf6", border: "1px solid #128c4b33" }}>
+            <span style={{ fontSize: 16 }}>📲</span>
+            <span style={{ flex: "1 1 240px", fontSize: 12.5, color: C.ink }}>Add each teacher's <b>WhatsApp number</b> and the link goes <b>straight to their chat</b> — just press Send. {withNo.length} of {cfg.singles.length} numbers added{withNo.length ? ` · ${withNo.filter((t) => sent[t]).length} sent from this device` : ""}.</span>
+            {nextT && <button className="tt-btn" onClick={() => sendTo(nextT)} style={{ ...solidBtn, background: "linear-gradient(135deg, #25a35a, #128c4b)", padding: "6px 12px", fontSize: 12.5 }}>Send next: {nextT} →</button>}
+            {withNo.length > 0 && !nextT && <button className="tt-btn" onClick={() => { setSent({}); lsSet("tt_wa_sent", "{}"); }} style={{ ...ghostBtn, padding: "5px 10px", fontSize: 12 }}>All sent ✓ · start again</button>}
+            <button className="tt-btn" onClick={() => setBulk(bulk === null ? "" : null)} style={{ ...ghostBtn, padding: "5px 10px", fontSize: 12 }}>{bulk === null ? "Paste many numbers" : "Close"}</button>
+          </div>
+          {bulk !== null && <div style={{ display: "grid", gap: 6 }}>
+            <textarea className="tt-in" value={bulk} onChange={(e) => setBulk(e.target.value)} placeholder={"One teacher per line — code and number, e.g.\nKPM 9847012345\nMFK, 9446012345"} style={{ fontFamily: mono, fontSize: 12.5, minHeight: 110 }} />
+            <div><button className="tt-btn" onClick={saveBulk} style={solidBtn}>Save numbers</button></div>
+          </div>}
           <input className="tt-in" placeholder="Search teacher" value={q} onChange={(e) => setQ(e.target.value)} style={{ maxWidth: 260, fontFamily: sans, fontSize: 13, height: 34 }} />
           <div className="tt-scroll" style={{ maxHeight: 420, overflowY: "auto", display: "grid", gap: 6 }}>
             {list.map((t) => { const url = teacherLink(cfg, t); return (
               <div key={t} style={{ border: `1px solid ${C.line}`, borderRadius: 12, padding: "8px 10px", display: "grid", gap: 8 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                   <b style={{ fontFamily: mono, minWidth: 64 }}>{t}</b>
-                  <span style={{ flex: "1 1 200px", minWidth: 0, fontSize: 12, color: C.sub, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: mobile ? "normal" : "nowrap", wordBreak: "break-all" }}>{url}</span>
+                  <PhoneInput cfg={cfg} update={update} t={t} width={mobile ? 130 : 140} />
+                  <span style={{ flex: "1 1 160px", minWidth: 0, fontSize: 12, color: C.sub, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: mobile ? "normal" : "nowrap", wordBreak: "break-all" }}>{url}</span>
                   <span style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
                     <button className="tt-btn" onClick={() => copy(url, `${t}'s link`)} style={{ ...ghostBtn, padding: "4px 9px", fontSize: 12 }}>Copy</button>
-                    <button className="tt-btn" onClick={() => { try { window.open("https://wa.me/?text=" + encodeURIComponent(`Your timetable (${cfg.school || ""}): ${url}`), "_blank"); } catch (e) { /* ignore */ } }} style={{ ...ghostBtn, padding: "4px 9px", fontSize: 12, color: "#128c4b" }}>WhatsApp</button>
+                    <button className="tt-btn" onClick={() => (phones[t] ? sendTo(t) : openWa("", linkText(cfg, t)))} title={phones[t] ? `Send straight to +${phones[t]}` : "No number yet — WhatsApp asks you to pick the chat"} style={{ ...ghostBtn, padding: "4px 9px", fontSize: 12, color: "#fff", background: phones[t] ? "#128c4b" : "#7fbf98", borderColor: "transparent" }}>{phones[t] ? (sent[t] ? "Sent ✓ · again" : "Send on WhatsApp") : "WhatsApp"}</button>
                     <button className="tt-btn" onClick={() => setQr(qr === t ? "" : t)} style={{ ...ghostBtn, padding: "4px 9px", fontSize: 12 }}>{qr === t ? "Hide QR" : "QR"}</button>
                     <button className="tt-btn" onClick={() => window.open(url, "_blank")} style={{ ...ghostBtn, padding: "4px 9px", fontSize: 12 }}>Open</button>
                     <button className="tt-btn" onClick={() => renew(t)} title="Make a new link (the old one stops working)" style={{ ...ghostBtn, padding: "4px 9px", fontSize: 12, color: C.sub }}>New link</button>
@@ -5313,7 +5347,7 @@ function SubsExemptPanel({ cfg, update, ask, date, limited }) {
   );
 }
 /* ---------------- Change history: who changed what, and when ---------------- */
-var LOG_NAMES = { school: "school name", year: "academic year", days: "working days", periods: "periods per day", fnCount: "FN / AN split", classes: "classes", singles: "teachers", subjects: "subjects", classTeacher: "class teachers", bkey: "mapping", stdPeriods: "standard periods", combined: "combined subjects", rules: "scheduling rules", classRules: "class rules", twice: "twice-a-day rules", locked: "frozen periods", commonPeriods: "common periods", teacherDays: "teacher availability", classMaxP: "periods per class", access: "staff access", accessDefault: "staff access", roles: "staff access", subsExempt: "substitution exemptions", dummy: "dummy periods", subsMode: "substitution method", subsAuto: "substitution settings", subsPreferClass: "substitution settings", subsRotationStart: "substitution counting", extraDuties: "extra duties", rooms: "rooms & labs", prefs: "teaching-quality settings", logo: "school logo", logoIcon: "school logo", wmApp: "watermark", wmPdf: "watermark", hmSign: "HM signature", seal: "school seal", hmTitle: "signature title", hmName: "signature name", signOnClass: "signature settings", signOnTeacher: "signature settings", signSize: "signature settings", sealSize: "signature settings", sealPos: "signature settings", versions: "saved versions", yearStart: "academic year dates", yearEnd: "academic year dates", teacherLinks: "teacher links", adminPw: "admin password", snapshots: "safety copies" };
+var LOG_NAMES = { school: "school name", year: "academic year", days: "working days", periods: "periods per day", fnCount: "FN / AN split", classes: "classes", singles: "teachers", subjects: "subjects", classTeacher: "class teachers", bkey: "mapping", stdPeriods: "standard periods", combined: "combined subjects", rules: "scheduling rules", classRules: "class rules", twice: "twice-a-day rules", locked: "frozen periods", commonPeriods: "common periods", teacherDays: "teacher availability", classMaxP: "periods per class", access: "staff access", accessDefault: "staff access", roles: "staff access", subsExempt: "substitution exemptions", dummy: "dummy periods", phones: "WhatsApp numbers", subsMode: "substitution method", subsAuto: "substitution settings", subsPreferClass: "substitution settings", subsRotationStart: "substitution counting", extraDuties: "extra duties", rooms: "rooms & labs", prefs: "teaching-quality settings", logo: "school logo", logoIcon: "school logo", wmApp: "watermark", wmPdf: "watermark", hmSign: "HM signature", seal: "school seal", hmTitle: "signature title", hmName: "signature name", signOnClass: "signature settings", signOnTeacher: "signature settings", signSize: "signature settings", sealSize: "signature settings", sealPos: "signature settings", versions: "saved versions", yearStart: "academic year dates", yearEnd: "academic year dates", teacherLinks: "teacher links", adminPw: "admin password", snapshots: "safety copies" };
 var LOG_SKIP = ["grid", "subs", "calendar", "changeLog", "subsOwed", "lastBackupDl", "combinedV2", "combinedV3"];
 function describeChange(a, b) {
   const out = []; if (!a || !b) return out;
@@ -6580,6 +6614,7 @@ function SubsView({ cfg, update, mobile, ask, limited }) {
                           {cands.map((c, i) => <option key={c.u} value={c.u}>{i === 0 && !c.blocked ? "★ " : c.blocked ? "⛔ " : ""}{c.u} — {c.why.join(", ")}</option>)}
                         </select>
                         {!cur && best && <button className="tt-btn" onClick={() => pick(n.key, best.u)} style={{ ...solidBtn, padding: "6px 12px" }}>Use {best.u}</button>}
+                        {cur && (cfg.phones || {})[cur] && <button className="tt-btn" title={`Tell ${cur} on WhatsApp`} onClick={() => openWa(cfg.phones[cur], `Dear ${cur}, substitution on ${isoNice(date, true)}: P${cfg.periods[n.p]} · ${n.cls} · ${n.sub} (for ${n.t}).${n.work ? ` Work: ${n.work}.` : ""}${teacherLink(cfg, cur) ? `\nYour page: ${teacherLink(cfg, cur)}` : ""}`)} style={{ ...ghostBtn, padding: "6px 10px", color: "#128c4b", borderColor: "#128c4b55" }}>📲</button>}
                       </div>
                     </div>
                   );
