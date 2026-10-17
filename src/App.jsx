@@ -12,7 +12,7 @@ import { supabase } from "./supabaseClient";
    ============================================================ */
 
 const STORE_KEY = "tt_cfg_v2";
-const APP_VERSION = "2026-10-17 b";
+const APP_VERSION = "2026-10-17 c";
 
 const WEEK_ORDER = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const DAY_FULL = { MON: "Monday", TUE: "Tuesday", WED: "Wednesday", THU: "Thursday", FRI: "Friday", SAT: "Saturday", SUN: "Sunday" };
@@ -920,6 +920,7 @@ export default function App() {
         .tt-cellhover:hover{filter:brightness(.97)}
         @keyframes ttfade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
         .tt-fade{animation:ttfade .25s ease}
+        .tt-qr svg{display:block;width:100%!important;height:100%!important}
         @keyframes ttslide{from{transform:translateX(-100%)}to{transform:none}}
         @media print{.tt-noprint{display:none!important}.tt-printarea{box-shadow:none!important;border:none!important}body{background:#fff!important}.tt-printtitle{display:block!important}.tt-printhead{display:flex!important}.tt-vh{box-shadow:none!important;background:#fff!important}}
       `}</style>
@@ -4876,16 +4877,18 @@ function ShareLinkButton({ cfg, t }) {
     <span style={{ position: "relative" }}>
       <PrintBtn onClick={() => setOpen(!open)} icon="download" light label="Share link" sub={`${t}'s own page`} />
       {open && (
-        <div style={{ position: "absolute", right: 0, top: "110%", zIndex: 40, width: 280, background: "#fff", border: `1px solid ${C.line}`, borderRadius: 14, boxShadow: "0 12px 30px rgba(0,0,0,.18)", padding: 14, textAlign: "center" }}>
-          <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>{t}'s timetable link</div>
-          <div dangerouslySetInnerHTML={{ __html: qrSvg(url, 4) }} style={{ width: 160, height: 160, margin: "0 auto" }} />
-          <div style={{ fontSize: 11, color: C.sub, wordBreak: "break-all", margin: "6px 0 10px" }}>{url}</div>
-          <div style={{ display: "flex", gap: 6, justifyContent: "center" }}>
-            <button className="tt-btn" onClick={copy} style={{ ...ghostBtn, padding: "5px 10px", fontSize: 12 }}>Copy</button>
-            <button className="tt-btn" onClick={() => openWa((cfg.phones || {})[t], linkText(cfg, t))} title={(cfg.phones || {})[t] ? `Send to +${cfg.phones[t]}` : "Add the WhatsApp number in Data & backup → Teacher links to send it straight to the teacher"} style={{ ...ghostBtn, padding: "5px 10px", fontSize: 12, color: "#128c4b" }}>WhatsApp{(cfg.phones || {})[t] ? " ✓" : ""}</button>
-            <button className="tt-btn" onClick={() => setOpen(false)} style={{ ...ghostBtn, padding: "5px 10px", fontSize: 12 }}>Close</button>
+        <div className="tt-noprint" onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 120, background: "rgba(16,25,40,.5)", display: "grid", placeItems: "center", padding: 16 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: "min(340px, 100%)", maxHeight: "calc(100vh - 32px)", overflowY: "auto", background: "#fff", borderRadius: 16, boxShadow: "0 16px 40px rgba(0,0,0,.3)", padding: 18, textAlign: "center" }}>
+            <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 10 }}>{t}'s timetable link</div>
+            <div className="tt-qr" dangerouslySetInnerHTML={{ __html: qrSvg(url, 6) }} style={{ width: "min(240px, 70vw)", aspectRatio: "1 / 1", margin: "0 auto", background: "#fff" }} />
+            <div style={{ fontSize: 11.5, color: C.sub, wordBreak: "break-all", margin: "10px 0 12px" }}>{url}</div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
+              <button className="tt-btn" onClick={copy} style={{ ...ghostBtn, padding: "7px 12px", fontSize: 13 }}>Copy</button>
+              <button className="tt-btn" onClick={() => openWa((cfg.phones || {})[t], linkText(cfg, t))} title={(cfg.phones || {})[t] ? `Send to +${cfg.phones[t]}` : "Add the WhatsApp number in Data & backup → Teacher links to send it straight to the teacher"} style={{ ...ghostBtn, padding: "7px 12px", fontSize: 13, color: "#fff", background: "#128c4b", borderColor: "transparent" }}>WhatsApp{(cfg.phones || {})[t] ? " ✓" : ""}</button>
+              <button className="tt-btn" onClick={() => setOpen(false)} style={{ ...ghostBtn, padding: "7px 12px", fontSize: 13 }}>Close</button>
+            </div>
+            {msg && <div style={{ fontSize: 12.5, color: C.free, fontWeight: 700, marginTop: 8 }}>{msg}</div>}
           </div>
-          {msg && <div style={{ fontSize: 12, color: C.free, fontWeight: 700, marginTop: 6 }}>{msg}</div>}
         </div>
       )}
     </span>
@@ -4991,7 +4994,7 @@ function TeacherLinksPanel({ cfg, update, ask, pubState, publishNow, mobile }) {
                     <button className="tt-btn" onClick={() => renew(t)} title="Make a new link (the old one stops working)" style={{ ...ghostBtn, padding: "4px 9px", fontSize: 12, color: C.sub }}>New link</button>
                   </span>
                 </div>
-                {qr === t && <div dangerouslySetInnerHTML={{ __html: qrSvg(url, 4) }} style={{ width: 170, height: 170 }} />}
+                {qr === t && <div className="tt-qr" dangerouslySetInnerHTML={{ __html: qrSvg(url, 4) }} style={{ width: 170, height: 170 }} />}
               </div>); })}
           </div>
         </div>
