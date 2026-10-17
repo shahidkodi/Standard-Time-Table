@@ -12,7 +12,7 @@ import { supabase } from "./supabaseClient";
    ============================================================ */
 
 const STORE_KEY = "tt_cfg_v2";
-const APP_VERSION = "2026-10-17 d";
+const APP_VERSION = "2026-10-17 e";
 
 const WEEK_ORDER = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const DAY_FULL = { MON: "Monday", TUE: "Tuesday", WED: "Wednesday", THU: "Thursday", FRI: "Friday", SAT: "Saturday", SUN: "Sunday" };
@@ -33,15 +33,24 @@ const tintOf = (hex, a = 0.13) => {
   return `rgba(${r},${g},${b},${a})`;
 };
 const SUBJECT_TINT = Object.fromEntries(Object.entries(SUBJECT_BAR).map(([k, v]) => [k, tintOf(v, 0.17)]));
-// every subject gets its own colour (fixed ones above, the rest from this list); every teacher their own text colour
-const GEN_SUB_COLS = ["#d1495b", "#2a9d8f", "#8d6cab", "#e76f51", "#457b9d", "#6a994e", "#bc6c25", "#b5179e", "#0081a7", "#9c6644", "#ef476f", "#118ab2", "#7f5539", "#5e60ce", "#06a77d", "#c9184a", "#4d908e", "#f3722c"];
+// one clear pastel fill + matching dark ink per subject — no two subjects share a colour
+const SUB_PALETTE = [
+  ["#FFE3B3", "#985400"], ["#CFE6FF", "#1C4F8A"], ["#D2F2D6", "#1D6B34"], ["#FAD2E1", "#9B1C4C"], ["#E5D9FB", "#5A2CA0"], ["#FFF1A8", "#7A5F00"],
+  ["#C6F0EA", "#0D6B62"], ["#FFD5C4", "#A23A10"], ["#DCE8C4", "#4C6421"], ["#D8E0F2", "#2D4473"], ["#F6D3F2", "#88207F"], ["#EBDFCB", "#6A5030"],
+  ["#BDE8D6", "#0D6A48"], ["#FFD9D9", "#A12727"], ["#DDE3FF", "#3531A0"], ["#F3DDB8", "#7A4806"], ["#D9F1BE", "#3E6A12"], ["#E8D3C4", "#6D3A1E"],
+];
+const SUB_FIXED = { MAT: 0, ENG: 1, SS: 2, HIN: 4, LAN: 3, "MAL-2": 6, "MAL 2": 6, "MAL II": 6, MAL: 6, BS: 8, PET: 7, "T-PET": 13, IT: 14, ITT: 14, ITP: 9, LB: 11, TAB: 10, "T-LAB": 10, AE: 5, WE: 16, SV: 12, "AE-WE": 5, ARA: 15, SAN: 17, URDU: 17 };
 var TEACHER_COL = {};
 function ensureColors(cfg) {
   if (!cfg) return;
-  const seen = new Set(cfg.subjects || []);
-  for (const c of cfg.classes || []) for (const d of cfg.days || []) for (const sl of (cfg.grid && cfg.grid[c] && cfg.grid[c][d]) || []) if (sl && sl[1]) seen.add(sl[1]);
-  let k = Object.keys(SUBJECT_BAR).filter((s) => SUBJECT_BAR[s] && GEN_SUB_COLS.includes(SUBJECT_BAR[s])).length;
-  for (const s of seen) if (!SUBJECT_BAR[s]) { SUBJECT_BAR[s] = GEN_SUB_COLS[k++ % GEN_SUB_COLS.length]; SUBJECT_TINT[s] = tintOf(SUBJECT_BAR[s], 0.17); }
+  const subs = []; const add = (s) => { if (s && !subs.includes(s)) subs.push(s); };
+  (cfg.subjects || []).forEach(add);
+  for (const c of cfg.classes || []) for (const d of cfg.days || []) for (const sl of (cfg.grid && cfg.grid[c] && cfg.grid[c][d]) || []) if (sl) add(sl[1]);
+  const taken = {}, pick = {};
+  for (const s of subs) { const f = SUB_FIXED[String(s).toUpperCase()]; if (f !== undefined && taken[f] === undefined) { taken[f] = s; pick[s] = f; } }
+  let k = 0;
+  for (const s of subs) { if (pick[s] !== undefined) continue; let tries = 0; while (taken[k % SUB_PALETTE.length] !== undefined && tries < SUB_PALETTE.length) { k++; tries++; } const i = k % SUB_PALETTE.length; taken[i] = s; pick[s] = i; k++; }
+  for (const s of subs) { const [fill, ink] = SUB_PALETTE[pick[s]]; SUBJECT_TINT[s] = fill; SUBJECT_BAR[s] = ink; }
   const T = {}; (cfg.singles || []).slice().sort().forEach((t, i) => { T[t] = `hsl(${Math.round((i * 137.508) % 360)}, ${i % 2 ? 70 : 58}%, ${i % 3 === 0 ? 27 : i % 3 === 1 ? 33 : 30}%)`; });
   TEACHER_COL = T;
 }
@@ -1723,7 +1732,7 @@ function GridTable({ cfg, render }) {
               const r = render(d, pi);
               const bar = r.sub ? SUBJECT_BAR[r.sub] : null;
               return (
-                <td key={d} className="tt-cellhover" style={{ ...cellTd, height: rowH, padding: "4px 5px", overflow: "hidden", background: r.bg, boxShadow: r.clash ? `inset 0 0 0 2px ${C.clash}` : bar ? `inset 3px 0 0 ${bar}` : "none" }}>
+                <td key={d} className="tt-cellhover" style={{ ...cellTd, height: rowH, padding: "4px 5px", overflow: "hidden", background: r.bg, boxShadow: r.clash ? `inset 0 0 0 2px ${C.clash}` : "none", border: r.sub && SUBJECT_TINT[r.sub] ? "2px solid #fff" : undefined }}>
                   {r.free ? <span style={{ color: C.free, fontSize: 11, fontWeight: 600 }}>free</span>
                     : r.t ? (<><div style={{ fontFamily: mono, fontWeight: 700, fontSize: 12.5, color: C.ink, whiteSpace: "normal", wordBreak: "break-word", overflowWrap: "anywhere", lineHeight: 1.25, maxHeight: 32, overflow: "hidden" }}>{r.tc ? String(r.t).split(" ").map((x, i) => <span key={i} style={{ color: teacherCol(x) }}>{i ? " " : ""}{x}</span>) : r.t}</div><div style={{ fontSize: 10.5, color: bar || C.sub, marginTop: 2, fontWeight: 700, letterSpacing: 0.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.s}</div></>)
                     : <span style={{ color: "#c4ccd6", fontSize: 12 }}>—</span>}
@@ -7416,7 +7425,7 @@ function openPrint(title, css, bodyHtml) {
   w.document.close();
 }
 
-function subTint(sub) { var hex = SUBJECT_BAR[sub]; if (!hex) return "#ffffff"; var nn = parseInt(hex.slice(1), 16); return "rgba(" + ((nn >> 16) & 255) + "," + ((nn >> 8) & 255) + "," + (nn & 255) + ",0.2)"; }
+function subTint(sub) { return SUBJECT_TINT[sub] || "#ffffff"; }
 function subCol(sub) { return SUBJECT_BAR[sub] || "#444"; }
 
 
@@ -7440,7 +7449,7 @@ function gridFitCss(cfg, paper) {
   return " table{height:auto!important;flex:none!important} tbody tr{height:" + rh + "mm} td{overflow:hidden} .ft{margin-top:auto!important}" +
     " thead th .tm{font-size:10px;font-weight:700;opacity:.92;margin-top:1px;white-space:nowrap}" +
     " th.brk{background:#d98a2b!important;padding:0} td.brk{background:#fdf2e3!important;color:#94620b;padding:0;font-size:10.5px;font-weight:800;letter-spacing:.6px;text-transform:uppercase} td.brk .v{writing-mode:vertical-rl;transform:rotate(180deg);white-space:nowrap;margin:0 auto;display:inline-block}" +
-    " td .s .tc{font-weight:800}";
+    " td .s .tc{font-weight:800} td.fc{border:2px solid #fff!important;border-radius:0} td.fc .t{letter-spacing:.3px}";
 }
 
 function teacherAt(cfg, t, d, p) {
@@ -7522,7 +7531,7 @@ function exportClassesPDF(cfg, paper, only) {
         var cs = (cfg.combined || []).find(function (x) { return x.name === slot[0]; }); var who = cs ? cs.teachers.join(" ") : slot[0];
         if (p >= classPeriods(cfg, c)) { row += '<td style="background:#e4e6ea"></td>' + brkCells(cfg, p, di); continue; }
         if (slot[0]) { var key = slot[1] + "|" + who; if (!sum[key]) { sum[key] = { sub: slot[1], who: who, n: 0 }; order.push(key); } sum[key].n++; }
-        row += slot[0] ? ('<td style="background:' + subTint(slot[1]) + ';border-left:5px solid ' + subCol(slot[1]) + '"><span class="t" style="color:' + subCol(slot[1]) + '">' + esc(slot[1]) + '</span><br><span class="s">' + String(who).split(" ").map(function (x) { return '<span class="tc" style="color:' + teacherCol(x) + '">' + esc(x) + '</span>'; }).join(" ") + '</span></td>') : "<td></td>";
+        row += slot[0] ? ('<td class="fc" style="background:' + subTint(slot[1]) + '"><span class="t" style="color:' + subCol(slot[1]) + '">' + esc(slot[1]) + '</span><br><span class="s">' + String(who).split(" ").map(function (x) { return '<span class="tc" style="color:' + teacherCol(x) + '">' + esc(x) + '</span>'; }).join(" ") + '</span></td>') : "<td></td>";
         row += brkCells(cfg, p, di);
       }
       body += row + "</tr>";
@@ -7545,7 +7554,7 @@ function exportTeachersPDF(cfg, paper, only) {
       for (var p = 0; p < cfg.periods.length; p++) {
         var r = teacherAt(cfg, t, d, p);
         if (r) { placed++; String(r.c).split(", ").forEach(function (x) { cls[x] = 1; }); }
-        row += (r ? ('<td style="background:' + subTint(r.sub) + ';border-left:5px solid ' + subCol(r.sub) + '"><span class="t">' + esc(r.c) + '</span><br><span class="s" style="color:' + subCol(r.sub) + '">' + esc(r.sub) + (r.combined ? " &middot; combined" : "") + '</span></td>') : (off ? '<td style="background:#e4e6ea;color:#8a93a3;font-size:11px">off</td>' : "<td></td>")) + brkCells(cfg, p, di);
+        row += (r ? ('<td class="fc" style="background:' + subTint(r.sub) + '"><span class="t">' + esc(r.c) + '</span><br><span class="s" style="color:' + subCol(r.sub) + '">' + esc(r.sub) + (r.combined ? " &middot; combined" : "") + '</span></td>') : (off ? '<td style="background:#e4e6ea;color:#8a93a3;font-size:11px">off</td>' : "<td></td>")) + brkCells(cfg, p, di);
       }
       body += row + "</tr>";
     }
