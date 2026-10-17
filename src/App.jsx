@@ -12,7 +12,7 @@ import { supabase } from "./supabaseClient";
    ============================================================ */
 
 const STORE_KEY = "tt_cfg_v2";
-const APP_VERSION = "2026-10-17 c";
+const APP_VERSION = "2026-10-17 d";
 
 const WEEK_ORDER = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const DAY_FULL = { MON: "Monday", TUE: "Tuesday", WED: "Wednesday", THU: "Thursday", FRI: "Friday", SAT: "Saturday", SUN: "Sunday" };
@@ -32,7 +32,20 @@ const tintOf = (hex, a = 0.13) => {
   const n = parseInt(hex.slice(1), 16); const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
   return `rgba(${r},${g},${b},${a})`;
 };
-const SUBJECT_TINT = Object.fromEntries(Object.entries(SUBJECT_BAR).map(([k, v]) => [k, tintOf(v)]));
+const SUBJECT_TINT = Object.fromEntries(Object.entries(SUBJECT_BAR).map(([k, v]) => [k, tintOf(v, 0.17)]));
+// every subject gets its own colour (fixed ones above, the rest from this list); every teacher their own text colour
+const GEN_SUB_COLS = ["#d1495b", "#2a9d8f", "#8d6cab", "#e76f51", "#457b9d", "#6a994e", "#bc6c25", "#b5179e", "#0081a7", "#9c6644", "#ef476f", "#118ab2", "#7f5539", "#5e60ce", "#06a77d", "#c9184a", "#4d908e", "#f3722c"];
+var TEACHER_COL = {};
+function ensureColors(cfg) {
+  if (!cfg) return;
+  const seen = new Set(cfg.subjects || []);
+  for (const c of cfg.classes || []) for (const d of cfg.days || []) for (const sl of (cfg.grid && cfg.grid[c] && cfg.grid[c][d]) || []) if (sl && sl[1]) seen.add(sl[1]);
+  let k = Object.keys(SUBJECT_BAR).filter((s) => SUBJECT_BAR[s] && GEN_SUB_COLS.includes(SUBJECT_BAR[s])).length;
+  for (const s of seen) if (!SUBJECT_BAR[s]) { SUBJECT_BAR[s] = GEN_SUB_COLS[k++ % GEN_SUB_COLS.length]; SUBJECT_TINT[s] = tintOf(SUBJECT_BAR[s], 0.17); }
+  const T = {}; (cfg.singles || []).slice().sort().forEach((t, i) => { T[t] = `hsl(${Math.round((i * 137.508) % 360)}, ${i % 2 ? 70 : 58}%, ${i % 3 === 0 ? 27 : i % 3 === 1 ? 33 : 30}%)`; });
+  TEACHER_COL = T;
+}
+function teacherCol(t) { return TEACHER_COL[t] || "#16213a"; }
 const mono = "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
 const sans = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
 
@@ -889,6 +902,7 @@ export default function App() {
   const safeTch = cfg.singles.includes(tch) ? tch : cfg.singles[0];
   const safeFday = cfg.days.includes(fday) ? fday : cfg.days[0];
 
+  ensureColors(cfg);
   SCHOOL_LOGO = cfg.logo || ""; SCHOOL_WM = cfg.wmPdf !== false; SCHOOL_NAME = cfg.school || ""; CUR_TH = TH; CUR_VIEW = view;
   const publishNow = (rows) => { if (rows) publishRows(rows); else if (cfg.teacherLinks && cfg.teacherLinks.on) publishRows(buildTeacherPages(cfg)); };
   const ctx = { setView, me, acc, limited, pubState, publishNow, cfg, update, expand, occupancy, clashTokens, teacherLoad, ask, askPw, isCombined, combinedByBase, mobile };
@@ -1230,7 +1244,7 @@ function ClassView({ cfg, cls, expand, clashTokens, combinedByBase }) {
           const [t, s] = cfg.grid[cls][d][pi];
           const clash = expand(t).some((x) => clashTokens(d, pi).has(x));
           const ses = t && combinedByBase ? combinedByBase[t] : null;
-          return { t: ses ? ses.teachers.join(" ") : t, s: ses ? `${s} · combined` : s, bg: t ? (SUBJECT_TINT[s] || "#fff") : "#fafafa", clash, sub: s };
+          return { t: ses ? ses.teachers.join(" ") : t, tc: true, s: ses ? `${s} · combined` : s, bg: t ? (SUBJECT_TINT[s] || "#fff") : "#fafafa", clash, sub: s };
         }} />
       </div>
     </div>
@@ -1257,7 +1271,7 @@ function TeacherView({ cfg, tch, occupancy, teacherLoad, combinedByBase }) {
         <GridTable cfg={cfg} render={(d, pi) => {
           const r = lookup(d, pi);
           if (!r) { const ex = extraAt(cfg, tch, d, pi); if (ex) return { t: ex.label, s: ex.kind === "class" ? "outside this timetable" : ex.kind === "lss" ? "LSS / USS coaching" : "non-teaching duty", bg: (DUTY_STYLE[ex.kind] || DUTY_STYLE.duty)[1] }; return { free: true, bg: C.freeSoft }; }
-          return { t: r.cn, s: `${r.subj || ""}${r.combined ? " · combined" : r.code !== tch ? " · " + r.code : ""}`, bg: r.combined ? C.accentSoft : SUBJECT_TINT[r.subj] || "#fff", sub: r.subj };
+          return { t: r.cn, s: `${r.subj || ""}${r.combined ? " · combined" : r.code !== tch ? " · " + r.code : ""}`, bg: SUBJECT_TINT[r.subj] || (r.combined ? C.accentSoft : "#fff"), sub: r.subj };
         }} />
       </div>
     </div>
@@ -1692,28 +1706,33 @@ function NavDrawer({ open, onClose, view, setView, TH, school, logo, status = {}
 }
 
 function GridTable({ cfg, render }) {
+  const rowH = 54;
   return (
     <div className="tt-scroll" style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
     <table style={{ ...tbl, minWidth: (cfg.days.length + 1) * 78 }}>
+      <colgroup><col style={{ width: 70 }} />{cfg.days.map((d) => <col key={d} />)}</colgroup>
       <thead>
-        <tr><th style={{ ...th, width: 54 }}>Period</th>{cfg.days.map((d) => <th key={d} style={th}>{DAY_FULL[d]}</th>)}</tr>
+        <tr><th style={{ ...th, width: 70 }}>Period</th>{cfg.days.map((d) => <th key={d} style={th}>{DAY_FULL[d]}</th>)}</tr>
       </thead>
       <tbody>
         {cfg.periods.map((p, pi) => (
-          <tr key={p}>
-            <td style={perTd}>{p}</td>
+          <React.Fragment key={p}>
+          <tr style={{ height: rowH }}>
+            <td style={{ ...perTd, height: rowH, padding: "4px 4px" }}>{p}{pTime(cfg, pi) && <div style={{ fontSize: 9.5, fontWeight: 600, opacity: 0.9, fontFamily: sans, whiteSpace: "nowrap" }}>{pTime(cfg, pi)}</div>}</td>
             {cfg.days.map((d) => {
               const r = render(d, pi);
               const bar = r.sub ? SUBJECT_BAR[r.sub] : null;
               return (
-                <td key={d} className="tt-cellhover" style={{ ...cellTd, background: r.bg, boxShadow: r.clash ? `inset 0 0 0 2px ${C.clash}` : bar ? `inset 3px 0 0 ${bar}` : "none" }}>
+                <td key={d} className="tt-cellhover" style={{ ...cellTd, height: rowH, padding: "4px 5px", overflow: "hidden", background: r.bg, boxShadow: r.clash ? `inset 0 0 0 2px ${C.clash}` : bar ? `inset 3px 0 0 ${bar}` : "none" }}>
                   {r.free ? <span style={{ color: C.free, fontSize: 11, fontWeight: 600 }}>free</span>
-                    : r.t ? (<><div style={{ fontFamily: mono, fontWeight: 700, fontSize: 12.5, color: C.ink, whiteSpace: "normal", wordBreak: "break-word", overflowWrap: "anywhere", lineHeight: 1.3 }}>{r.t}</div><div style={{ fontSize: 10.5, color: bar || C.sub, marginTop: 2, fontWeight: 600, letterSpacing: 0.2 }}>{r.s}</div></>)
+                    : r.t ? (<><div style={{ fontFamily: mono, fontWeight: 700, fontSize: 12.5, color: C.ink, whiteSpace: "normal", wordBreak: "break-word", overflowWrap: "anywhere", lineHeight: 1.25, maxHeight: 32, overflow: "hidden" }}>{r.tc ? String(r.t).split(" ").map((x, i) => <span key={i} style={{ color: teacherCol(x) }}>{i ? " " : ""}{x}</span>) : r.t}</div><div style={{ fontSize: 10.5, color: bar || C.sub, marginTop: 2, fontWeight: 700, letterSpacing: 0.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.s}</div></>)
                     : <span style={{ color: "#c4ccd6", fontSize: 12 }}>—</span>}
                 </td>
               );
             })}
           </tr>
+          {breaksAfter(cfg, pi).map((b) => <tr key={b.id}><td colSpan={cfg.days.length + 1} style={{ padding: "3px 8px", background: "#fdf2e3", color: "#94620b", fontSize: 11, fontWeight: 800, letterSpacing: 1, textAlign: "center", textTransform: "uppercase", borderBottom: `1px solid ${C.line}` }}>{b.name || "Break"}{brkTime(b) ? ` · ${brkTime(b)}` : ""}</td></tr>)}
+          </React.Fragment>
         ))}
       </tbody>
     </table>
@@ -5004,7 +5023,7 @@ function TeacherLinksPanel({ cfg, update, ask, pubState, publishNow, mobile }) {
 }
 /* ---------------- Crop before upload ---------------- */
 function fnCount(cfg) { const P = cfg.periods.length, v = Number(cfg.fnCount); return P <= 1 ? P : Math.max(1, Math.min(P - 1, v > 0 ? v : Math.ceil(P / 2))); }
-function fnCss(cfg) { const n = fnCount(cfg); return n > 0 && n < cfg.periods.length ? ` tr>*:nth-child(${n + 2}){border-left:3px solid #d98a2b!important}` : ""; }
+function fnCss(cfg) { const n = fnCount(cfg); if ((cfg.breaks || []).length) return ""; return n > 0 && n < cfg.periods.length ? ` tr>*:nth-child(${n + 2}){border-left:3px solid #d98a2b!important}` : ""; }
 function rotateDataUrl(src, deg) {
   return loadImg(src).then((img) => {
     const w = img.naturalWidth, h = img.naturalHeight, cv = document.createElement("canvas");
@@ -5350,7 +5369,7 @@ function SubsExemptPanel({ cfg, update, ask, date, limited }) {
   );
 }
 /* ---------------- Change history: who changed what, and when ---------------- */
-var LOG_NAMES = { school: "school name", year: "academic year", days: "working days", periods: "periods per day", fnCount: "FN / AN split", classes: "classes", singles: "teachers", subjects: "subjects", classTeacher: "class teachers", bkey: "mapping", stdPeriods: "standard periods", combined: "combined subjects", rules: "scheduling rules", classRules: "class rules", twice: "twice-a-day rules", locked: "frozen periods", commonPeriods: "common periods", teacherDays: "teacher availability", classMaxP: "periods per class", access: "staff access", accessDefault: "staff access", roles: "staff access", subsExempt: "substitution exemptions", dummy: "dummy periods", phones: "WhatsApp numbers", subsMode: "substitution method", subsAuto: "substitution settings", subsPreferClass: "substitution settings", subsRotationStart: "substitution counting", extraDuties: "extra duties", rooms: "rooms & labs", prefs: "teaching-quality settings", logo: "school logo", logoIcon: "school logo", wmApp: "watermark", wmPdf: "watermark", hmSign: "HM signature", seal: "school seal", hmTitle: "signature title", hmName: "signature name", signOnClass: "signature settings", signOnTeacher: "signature settings", signSize: "signature settings", sealSize: "signature settings", sealPos: "signature settings", versions: "saved versions", yearStart: "academic year dates", yearEnd: "academic year dates", teacherLinks: "teacher links", adminPw: "admin password", snapshots: "safety copies" };
+var LOG_NAMES = { school: "school name", year: "academic year", days: "working days", periods: "periods per day", fnCount: "FN / AN split", classes: "classes", singles: "teachers", subjects: "subjects", classTeacher: "class teachers", bkey: "mapping", stdPeriods: "standard periods", combined: "combined subjects", rules: "scheduling rules", classRules: "class rules", twice: "twice-a-day rules", locked: "frozen periods", commonPeriods: "common periods", teacherDays: "teacher availability", classMaxP: "periods per class", access: "staff access", accessDefault: "staff access", roles: "staff access", subsExempt: "substitution exemptions", dummy: "dummy periods", ptimes: "period times", breaks: "breaks", phones: "WhatsApp numbers", subsMode: "substitution method", subsAuto: "substitution settings", subsPreferClass: "substitution settings", subsRotationStart: "substitution counting", extraDuties: "extra duties", rooms: "rooms & labs", prefs: "teaching-quality settings", logo: "school logo", logoIcon: "school logo", wmApp: "watermark", wmPdf: "watermark", hmSign: "HM signature", seal: "school seal", hmTitle: "signature title", hmName: "signature name", signOnClass: "signature settings", signOnTeacher: "signature settings", signSize: "signature settings", sealSize: "signature settings", sealPos: "signature settings", versions: "saved versions", yearStart: "academic year dates", yearEnd: "academic year dates", teacherLinks: "teacher links", adminPw: "admin password", snapshots: "safety copies" };
 var LOG_SKIP = ["grid", "subs", "calendar", "changeLog", "subsOwed", "lastBackupDl", "combinedV2", "combinedV3"];
 function describeChange(a, b) {
   const out = []; if (!a || !b) return out;
@@ -7059,6 +7078,80 @@ function TeacherAvailability({ cfg, update, ask, teacherLoad = {}, mobile }) {
   );
 }
 
+/* ---------------- Period times & breaks ---------------- */
+// cfg.ptimes = [{ s: "09:30", e: "10:15" }, …] one per period; cfg.breaks = [{ id, after: periodIndex, name, s, e }]
+function tmin(v) { const m = /^(\d{1,2}):(\d{2})/.exec(v || ""); return m ? +m[1] * 60 + +m[2] : null; }
+function tstr(n) { n = ((n % 1440) + 1440) % 1440; return `${String(Math.floor(n / 60)).padStart(2, "0")}:${String(n % 60).padStart(2, "0")}`; }
+function t12(v) { const n = tmin(v); if (n === null) return ""; const h = Math.floor(n / 60) % 12 || 12; return `${h}:${String(n % 60).padStart(2, "0")}`; }
+function pTime(cfg, i) { const x = (cfg.ptimes || [])[i]; return x && x.s && x.e ? `${t12(x.s)}–${t12(x.e)}` : ""; }
+function breaksAfter(cfg, i) { return (cfg.breaks || []).filter((b) => +b.after === i && i < cfg.periods.length - 1).sort((a, b) => (tmin(a.s) || 0) - (tmin(b.s) || 0)); }
+function brkTime(b) { return b.s && b.e ? `${t12(b.s)}–${t12(b.e)}` : ""; }
+function PeriodTimesPanel({ cfg, update, mobile }) {
+  const th = CUR_TH || THEMES.teal;
+  const P = cfg.periods.length, T = cfg.ptimes || [], B = (cfg.breaks || []).slice().sort((a, b) => a.after - b.after || (tmin(a.s) || 0) - (tmin(b.s) || 0));
+  const [auto, setAuto] = useState({ start: (T[0] && T[0].s) || "09:30", len: (() => { const a = tmin(T[0] && T[0].s), b = tmin(T[0] && T[0].e); return a !== null && b !== null && b > a ? b - a : 45; })() });
+  const setT = (i, k, v) => update((n) => { const a = Array.from({ length: n.periods.length }, (_, j) => ({ ...((n.ptimes || [])[j] || {}) })); a[i][k] = v; n.ptimes = a; });
+  const setB = (id, k, v) => update((n) => { n.breaks = (n.breaks || []).map((b) => (b.id === id ? { ...b, [k]: k === "after" ? +v : v } : b)); });
+  const addB = () => update((n) => { const after = Math.min(n.periods.length - 2, Math.max(0, fnCount(n) - 1)); const pe = tmin(((n.ptimes || [])[after] || {}).e); n.breaks = [...(n.breaks || []), { id: "b" + Date.now(), after, name: (n.breaks || []).length ? "Interval" : "Lunch break", s: pe !== null ? tstr(pe) : "", e: pe !== null ? tstr(pe + 10) : "" }]; });
+  const delB = (id) => update((n) => { n.breaks = (n.breaks || []).filter((b) => b.id !== id); if (!n.breaks.length) delete n.breaks; });
+  const fill = () => update((n) => {
+    let t = tmin(auto.start); const len = Math.max(5, +auto.len || 45); if (t === null) return;
+    const a = [], bs = (n.breaks || []).map((b) => ({ ...b }));
+    for (let i = 0; i < n.periods.length; i++) {
+      a.push({ s: tstr(t), e: tstr(t + len) }); t += len;
+      for (const b of bs.filter((x) => +x.after === i).sort((x, y) => (tmin(x.s) || 0) - (tmin(y.s) || 0))) { const d0 = tmin(b.s), d1 = tmin(b.e); const dur = d0 !== null && d1 !== null && d1 > d0 ? d1 - d0 : 10; b.s = tstr(t); b.e = tstr(t + dur); t += dur; }
+    }
+    n.ptimes = a; if (bs.length) n.breaks = bs;
+  });
+  // checks: each period ends after it starts, and nothing overlaps
+  const seq = []; for (let i = 0; i < P; i++) { const x = T[i] || {}; seq.push([`P${cfg.periods[i]}`, tmin(x.s), tmin(x.e)]); for (const b of breaksAfter(cfg, i)) seq.push([b.name || "Break", tmin(b.s), tmin(b.e)]); }
+  const probs = []; let last = null; for (const [nm, s, e] of seq) { if (s === null || e === null) continue; if (e <= s) probs.push(`${nm} ends before it starts`); if (last && s < last[1]) probs.push(`${nm} starts before ${last[0]} ends`); last = [nm, e]; }
+  const inp = { height: 32, fontFamily: sans, fontSize: 13, width: mobile ? 104 : 112 };
+  const lab = { fontSize: 11, fontWeight: 700, color: C.sub, textTransform: "uppercase", letterSpacing: 0.3 };
+  return (
+    <div style={{ ...card, marginBottom: 16 }}>
+      <Panelhead text="Period times & breaks" count={T.some((x) => x && x.s) ? `${B.length} break${B.length === 1 ? "" : "s"}` : "not set"} />
+      <div style={{ padding: 14, display: "grid", gap: 12 }}>
+        <div className="tt-callout">Set when each period starts and ends, and the breaks between them (interval, lunch…). The times are printed on the class and teacher timetables, with each break as a narrow column in its place. All periods get the same width and every day the same height.</div>
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", padding: "10px 12px", borderRadius: 12, background: "#f8fafc", border: `1px solid ${C.line}` }}>
+          <label style={{ display: "grid", gap: 4 }}><span style={lab}>School starts</span><input type="time" className="tt-in" value={auto.start} onChange={(e) => setAuto({ ...auto, start: e.target.value })} style={inp} /></label>
+          <label style={{ display: "grid", gap: 4 }}><span style={lab}>Each period (min)</span><input type="number" min={5} max={120} className="tt-in" value={auto.len} onChange={(e) => setAuto({ ...auto, len: e.target.value })} style={{ ...inp, width: 90, textAlign: "center" }} /></label>
+          <button className="tt-btn" onClick={fill} style={solidBtn}>Fill all times</button>
+          <span style={{ fontSize: 12, color: C.sub, flex: "1 1 200px" }}>Fills every period one after another and keeps each break's length. You can then change any time by hand.</span>
+        </div>
+        <div className="tt-scroll" style={{ overflowX: "auto" }}>
+          <table style={{ borderCollapse: "separate", borderSpacing: "6px 4px" }}>
+            <thead><tr><th style={{ ...lab, textAlign: "left" }}>Period</th><th style={lab}>Starts</th><th style={lab}>Ends</th><th style={lab}>Minutes</th></tr></thead>
+            <tbody>{cfg.periods.map((pn, i) => { const x = T[i] || {}, a = tmin(x.s), b = tmin(x.e); return (
+              <React.Fragment key={i}>
+                <tr>
+                  <td style={{ fontWeight: 800, fontFamily: mono, color: th.g2 }}>P{pn}{i === fnCount(cfg) - 1 ? <span style={{ fontSize: 10, color: C.accent, fontFamily: sans }}> · end of FN</span> : null}</td>
+                  <td><input type="time" className="tt-in" value={x.s || ""} onChange={(e) => setT(i, "s", e.target.value)} style={inp} /></td>
+                  <td><input type="time" className="tt-in" value={x.e || ""} onChange={(e) => setT(i, "e", e.target.value)} style={inp} /></td>
+                  <td style={{ textAlign: "center", fontSize: 12.5, color: a !== null && b !== null && b > a ? C.ink : C.sub }}>{a !== null && b !== null && b > a ? b - a : "—"}</td>
+                </tr>
+                {B.filter((bk) => +bk.after === i).map((bk) => (
+                  <tr key={bk.id} style={{ background: "#fdf2e3" }}>
+                    <td style={{ padding: "4px 6px", borderRadius: 8 }}><input className="tt-in" value={bk.name || ""} onChange={(e) => setB(bk.id, "name", e.target.value)} placeholder="Interval" style={{ ...inp, width: mobile ? 110 : 130, fontWeight: 700, color: "#94620b" }} /></td>
+                    <td><input type="time" className="tt-in" value={bk.s || ""} onChange={(e) => setB(bk.id, "s", e.target.value)} style={inp} /></td>
+                    <td><input type="time" className="tt-in" value={bk.e || ""} onChange={(e) => setB(bk.id, "e", e.target.value)} style={inp} /></td>
+                    <td style={{ whiteSpace: "nowrap" }}>
+                      <select className="tt-sel" value={bk.after} onChange={(e) => setB(bk.id, "after", e.target.value)} title="Comes after" style={{ width: 92, height: 32, fontFamily: sans, fontSize: 12.5 }}>{cfg.periods.slice(0, -1).map((p2, j) => <option key={j} value={j}>after P{p2}</option>)}</select>
+                      <button className="tt-btn" onClick={() => delB(bk.id)} aria-label="Remove break" style={{ border: "none", background: "transparent", color: C.clash, fontSize: 18, cursor: "pointer", marginLeft: 4 }}>×</button>
+                    </td>
+                  </tr>))}
+              </React.Fragment>); })}</tbody>
+          </table>
+        </div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <button className="tt-btn" onClick={addB} style={ghostBtn}>+ Add a break (interval / lunch)</button>
+          {T.some((x) => x && (x.s || x.e)) && <button className="tt-btn" onClick={() => update((n) => { delete n.ptimes; delete n.breaks; })} style={{ ...ghostBtn, color: C.clash }}>Clear all times</button>}
+          {probs.length > 0 && <span style={{ fontSize: 12.5, color: C.clash, fontWeight: 600 }}>⚠ {probs.slice(0, 3).join(" · ")}</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
 function SetupView({ cfg, update, ask, askPw, mobile, teacherLoad, me, acc }) {
   const can = (k) => !acc || !acc.setup || acc.setup.includes(k);
   const [name, setName] = useState("");
@@ -7199,6 +7292,7 @@ function SetupView({ cfg, update, ask, askPw, mobile, teacherLoad, me, acc }) {
           </div>
         )}
       </div>
+      <PeriodTimesPanel cfg={cfg} update={update} mobile={mobile} />
       <div style={{ ...card, marginBottom: 16 }}>
         <Panelhead text="Periods per day — classes that have fewer" count={Object.keys(cfg.classMaxP || {}).filter((c) => classPeriods(cfg, c) < cfg.periods.length).length || undefined} />
         <div style={{ padding: 14, display: "grid", gap: 12 }}>
@@ -7322,14 +7416,31 @@ function openPrint(title, css, bodyHtml) {
   w.document.close();
 }
 
-function subTint(sub) { var hex = SUBJECT_BAR[sub]; if (!hex) return "#ffffff"; var nn = parseInt(hex.slice(1), 16); return "rgba(" + ((nn >> 16) & 255) + "," + ((nn >> 8) & 255) + "," + (nn & 255) + ",0.16)"; }
+function subTint(sub) { var hex = SUBJECT_BAR[sub]; if (!hex) return "#ffffff"; var nn = parseInt(hex.slice(1), 16); return "rgba(" + ((nn >> 16) & 255) + "," + ((nn >> 8) & 255) + "," + (nn & 255) + ",0.2)"; }
 function subCol(sub) { return SUBJECT_BAR[sub] || "#444"; }
 
 
 function gridHead(cfg) {
-  var head = "<tr><th>Day / Period</th>", fn = fnCount(cfg);
-  for (var pi = 0; pi < cfg.periods.length; pi++) head += "<th>P" + cfg.periods[pi] + (pi === 0 ? "<div style='font-size:9.5px;opacity:.85;font-weight:700;letter-spacing:.5px'>FN</div>" : pi === fn ? "<div style='font-size:9.5px;opacity:.85;font-weight:700;letter-spacing:.5px'>AN</div>" : "") + "</th>";
+  var head = "<tr><th>Day / Period</th>", fn = fnCount(cfg), hasB = (cfg.breaks || []).length > 0;
+  for (var pi = 0; pi < cfg.periods.length; pi++) {
+    var tm = pTime(cfg, pi);
+    head += "<th>P" + cfg.periods[pi] + (tm ? "<div class='tm'>" + esc(tm) + "</div>" : "") + (!hasB && pi === 0 ? "<div style='font-size:9.5px;opacity:.85;font-weight:700;letter-spacing:.5px'>FN</div>" : !hasB && pi === fn ? "<div style='font-size:9.5px;opacity:.85;font-weight:700;letter-spacing:.5px'>AN</div>" : "") + "</th>";
+    breaksAfter(cfg, pi).forEach(function () { head += "<th class='brk'></th>"; });
+  }
   return head + "</tr>";
+}
+// break columns: one tall cell per break, written in the first row only
+function brkCells(cfg, pi, di) {
+  if (di) return "";
+  return breaksAfter(cfg, pi).map(function (b) { return "<td class='brk' rowspan='" + cfg.days.length + "'><div class='v'>" + esc(b.name || "Break") + (brkTime(b) ? " &middot; " + esc(brkTime(b)) : "") + "</div></td>"; }).join("");
+}
+function gridCols(cfg) { var s = "<colgroup><col style='width:24mm'>"; for (var pi = 0; pi < cfg.periods.length; pi++) { s += "<col>"; breaksAfter(cfg, pi).forEach(function () { s += "<col style='width:9mm'>"; }); } return s + "</colgroup>"; }
+function gridFitCss(cfg, paper) {
+  var ph = { A3: 277, Letter: 196, Legal: 196 }[paper] || 190, rh = Math.max(12, Math.floor(((ph - 78) / Math.max(1, cfg.days.length)) * 10) / 10);
+  return " table{height:auto!important;flex:none!important} tbody tr{height:" + rh + "mm} td{overflow:hidden} .ft{margin-top:auto!important}" +
+    " thead th .tm{font-size:10px;font-weight:700;opacity:.92;margin-top:1px;white-space:nowrap}" +
+    " th.brk{background:#d98a2b!important;padding:0} td.brk{background:#fdf2e3!important;color:#94620b;padding:0;font-size:10.5px;font-weight:800;letter-spacing:.6px;text-transform:uppercase} td.brk .v{writing-mode:vertical-rl;transform:rotate(180deg);white-space:nowrap;margin:0 auto;display:inline-block}" +
+    " td .s .tc{font-weight:800}";
 }
 
 function teacherAt(cfg, t, d, p) {
@@ -7409,19 +7520,20 @@ function exportClassesPDF(cfg, paper, only) {
       for (var p = 0; p < cfg.periods.length; p++) {
         var slot = (cfg.grid[c] && cfg.grid[c][d] && cfg.grid[c][d][p]) || [null, null];
         var cs = (cfg.combined || []).find(function (x) { return x.name === slot[0]; }); var who = cs ? cs.teachers.join(" ") : slot[0];
-        if (p >= classPeriods(cfg, c)) { row += '<td style="background:#e4e6ea"></td>'; continue; }
+        if (p >= classPeriods(cfg, c)) { row += '<td style="background:#e4e6ea"></td>' + brkCells(cfg, p, di); continue; }
         if (slot[0]) { var key = slot[1] + "|" + who; if (!sum[key]) { sum[key] = { sub: slot[1], who: who, n: 0 }; order.push(key); } sum[key].n++; }
-        row += slot[0] ? ('<td style="background:' + subTint(slot[1]) + ';border-left:5px solid ' + subCol(slot[1]) + '"><span class="t" style="color:' + subCol(slot[1]) + '">' + esc(slot[1]) + '</span><br><span class="s">' + esc(who) + '</span></td>') : "<td></td>";
+        row += slot[0] ? ('<td style="background:' + subTint(slot[1]) + ';border-left:5px solid ' + subCol(slot[1]) + '"><span class="t" style="color:' + subCol(slot[1]) + '">' + esc(slot[1]) + '</span><br><span class="s">' + String(who).split(" ").map(function (x) { return '<span class="tc" style="color:' + teacherCol(x) + '">' + esc(x) + '</span>'; }).join(" ") + '</span></td>') : "<td></td>";
+        row += brkCells(cfg, p, di);
       }
       body += row + "</tr>";
     }
     var strip = order.map(function (k) { var x = sum[k]; return '<span><b style="color:' + subCol(x.sub) + '">' + esc(x.sub) + '</b>' + esc(x.who) + ' &times;' + x.n + '</span>'; }).join("");
     var total = order.reduce(function (a, k) { return a + sum[k].n; }, 0);
     pages += '<div class="page">' + pdfLetterhead(cfg, "Class Time Table", "Class " + c, "Class teacher: " + esc(cfg.classTeacher[c] || "-") + " &middot; " + total + " periods / week") +
-      '<table><thead>' + head + '</thead><tbody>' + body + '</tbody></table>' + (strip ? '<div class="sm">' + strip + '</div>' : '') +
+      '<table>' + gridCols(cfg) + '<thead>' + head + '</thead><tbody>' + body + '</tbody></table>' + (strip ? '<div class="sm">' + strip + '</div>' : '') +
       pdfFooter(esc(cfg.school || "") + " &middot; Class " + esc(c), ["Class Teacher", "Headmaster"], cfg, "class") + '</div>';
   }
-  openPrint(esc(cfg.school) + (list.length === 1 ? " - Class " + esc(list[0]) : " - Class timetables"), gridCss(paper) + fnCss(cfg), pages);
+  openPrint(esc(cfg.school) + (list.length === 1 ? " - Class " + esc(list[0]) : " - Class timetables"), gridCss(paper) + fnCss(cfg) + gridFitCss(cfg, paper), pages);
 }
 
 function exportTeachersPDF(cfg, paper, only) {
@@ -7433,16 +7545,16 @@ function exportTeachersPDF(cfg, paper, only) {
       for (var p = 0; p < cfg.periods.length; p++) {
         var r = teacherAt(cfg, t, d, p);
         if (r) { placed++; String(r.c).split(", ").forEach(function (x) { cls[x] = 1; }); }
-        row += r ? ('<td style="background:' + subTint(r.sub) + ';border-left:5px solid ' + subCol(r.sub) + '"><span class="t">' + esc(r.c) + '</span><br><span class="s" style="color:' + subCol(r.sub) + '">' + esc(r.sub) + (r.combined ? " &middot; combined" : "") + '</span></td>') : (off ? '<td style="background:#e4e6ea;color:#8a93a3;font-size:11px">off</td>' : "<td></td>");
+        row += (r ? ('<td style="background:' + subTint(r.sub) + ';border-left:5px solid ' + subCol(r.sub) + '"><span class="t">' + esc(r.c) + '</span><br><span class="s" style="color:' + subCol(r.sub) + '">' + esc(r.sub) + (r.combined ? " &middot; combined" : "") + '</span></td>') : (off ? '<td style="background:#e4e6ea;color:#8a93a3;font-size:11px">off</td>' : "<td></td>")) + brkCells(cfg, p, di);
       }
       body += row + "</tr>";
     }
     var free = teacherCap(cfg, t) - placed, cl = Object.keys(cls).sort(cmpClass);
     pages += '<div class="page">' + pdfLetterhead(cfg, "Teacher Time Table", t, placed + " periods / week &middot; " + free + " free") +
-      '<table><thead>' + head + '</thead><tbody>' + body + '</tbody></table>' + (cl.length ? '<div class="sm"><span><b>Classes</b>' + esc(cl.join(", ")) + '</span></div>' : '') +
+      '<table>' + gridCols(cfg) + '<thead>' + head + '</thead><tbody>' + body + '</tbody></table>' + (cl.length ? '<div class="sm"><span><b>Classes</b>' + esc(cl.join(", ")) + '</span></div>' : '') +
       pdfFooter(esc(cfg.school || "") + " &middot; Teacher " + esc(t), ["Teacher", "Headmaster"], cfg, "teacher") + '</div>';
   }
-  openPrint(esc(cfg.school) + (list.length === 1 ? " - " + esc(list[0]) : " - Teacher timetables"), gridCss(paper) + fnCss(cfg), pages);
+  openPrint(esc(cfg.school) + (list.length === 1 ? " - " + esc(list[0]) : " - Teacher timetables"), gridCss(paper) + fnCss(cfg) + gridFitCss(cfg, paper), pages);
 }
 
 
